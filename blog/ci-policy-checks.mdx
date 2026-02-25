@@ -1,0 +1,126 @@
+---
+title: "Stop Missing Regressions in PRs: Complexity Policy Checks in CI"
+description: "Turn subjective code review into objective guardrails. Fail risky changes before they merge."
+pubDate: 2026-02-22
+author: "Stephen Collins"
+tags: ["ci", "quality-gates", "complexity", "hotspots"]
+ogImage: "/og.png"
+summary: "Add guardrails to your PRs in minutes. Hotspots’ delta policies block new critical functions and excessive regressions without slowing your pipeline."
+introContent: "Code review misses slow creep. Use Hotspots policies in CI to stop risky complexity changes before they merge — start warn‑only, then flip to blocking."
+---
+
+Hotspots lets you refactor with precision — but the real win is preventing regressions from landing at all. This post shows how to add risk policies to CI so problematic changes fail pre‑merge.
+
+## Quick start (10 minutes)
+
+```bash
+hotspots analyze . --mode delta --policy --format text
+```
+
+Copy‑paste a GitHub Actions workflow (or adapt for your CI):
+
+```yaml
+name: hotspots-ci
+on: { pull_request: {} }
+jobs:
+  risk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --bin hotspots
+      - run: ./target/release/hotspots analyze . --mode delta --policy --format text
+```
+
+## The problem: subjective reviews miss slow creep
+
+Reviewers aren’t CPUs. They miss gradual increases in nesting or branching, especially in busy files. Over time, “just one more condition” turns a healthy function into a critical hotspot.
+
+## Delta mode + policies
+
+In CI you want to evaluate the change, not the whole repo. Delta mode compares the current snapshot with the parent (or merge‑base in PRs), then evaluates policies against the diff.
+
+```bash
+hotspots analyze . --mode delta --policy --format json
+```
+
+Exit codes:
+
+- 0: no blocking failures (warnings may be present)
+- 1: blocking failures (e.g., critical introduction, excessive regression)
+
+## Built‑in policies
+
+- Critical Introduction: New function enters the critical band (e.g., LRS ≥ 9.0)
+- Excessive Regression: LRS delta exceeds a threshold (e.g., +1.0)
+- Watch/Attention: Approaching thresholds (warn only)
+- Rapid Growth: Complexity growing unusually fast
+- Repository Net Regression: Total LRS increases beyond a threshold (warn or fail)
+
+Tune thresholds and weights via config (e.g., `.hotspotsrc.json`).
+
+## Minimal CI example
+
+GitHub Actions (CLI installed from source or cached):
+
+```yaml
+name: hotspots-ci
+on:
+  pull_request:
+jobs:
+  risk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --bin hotspots
+      - run: |
+          ./target/release/hotspots analyze . \
+            --mode delta --policy --format text
+```
+
+For native Workers/other CIs, call the same CLI command. If you want HTML artifacts, run snapshot mode and upload the report.
+
+## Handling real‑world constraints
+
+Suppressions — Some complex code can’t be touched yet. Add a suppression comment with a reason:
+
+```ts
+// hotspots-ignore: legacy integration; rewrite scheduled Q3
+function legacyBillingLogic() {
+  // ...
+}
+```
+
+Suppressed functions remain visible in reports but won’t fail policy checks.
+
+Merge‑base awareness — On PRs, delta mode compares against the merge‑base when available, so you don’t fail for unrelated history.
+
+Co‑change context — Policy output can include co‑change deltas (hidden coupling) so reviewers see why a change may be riskier than it looks.
+
+## Rollout plan (week 1)
+
+1) Baseline only (no fail): Run `--mode delta --policy` with warn‑only thresholds. Share a few PR screenshots.
+2) Flip on failers: Enable “critical introduction.”
+3) Tighten gradually: Add “excessive regression” with a modest threshold.
+4) Monitor trends: Track counts of critical/high functions; adjust.
+
+## Developer experience matters
+
+- Keep logs concise: Use `--format text` for humans; `--format json` for bots.
+- Fast path first: Start without per‑function touches; enable deeper metrics if needed.
+- Make policies actionable: Pair with explain mode during reviews and refactors.
+
+## Bottom line
+
+Turn code review from “I think this is too complex” into “this change exceeds our risk policy.”
+
+It’s clearer. It’s fairer. And it keeps your codebase from slowly boiling the frog.
+
+---
+
+## FAQ (Policies)
+
+- Which policies fail the build? Critical Introduction and Excessive Regression (by default). Others warn only.
+- Can I tune thresholds? Yes — via `.hotspotsrc.json` or CLI flags.
+- What if a spike is justified? Add a suppression with a reason; it’s tracked but won’t block.

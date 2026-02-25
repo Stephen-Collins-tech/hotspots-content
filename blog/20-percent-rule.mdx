@@ -1,0 +1,132 @@
+---
+title: "The 20% Rule of Code: Find the Functions Causing 80% of Your Pain"
+description: "Stop guessing what to refactor. Combine complexity and change to reveal true hotspots — then block regressions in CI."
+pubDate: 2026-02-22
+author: "Stephen Collins"
+tags: ["hotspots", "refactoring", "complexity", "tech-debt", "ci"]
+ogImage: "/og.png"
+summary: "Hotspots finds the intersection of complexity and change — the functions most likely to cause incidents and slow reviews — and gives you guardrails to keep them from regressing."
+introContent: "Risk isn’t just complexity. It’s complexity × change. Use Hotspots to rank functions, focus refactors, and block risky deltas in CI."
+---
+
+Most teams refactor by vibes. A file “looks messy,” a diff “feels risky,” a reviewer says “can we clean this up?”
+
+Sometimes that works. Often it doesn’t. The code that repeatedly bites you lives at the intersection of two realities:
+
+1) It’s complex. Multiple branches, deep nesting, many early exits, lots of calls.
+2) It changes frequently. Churn in the last month, touched by many commits, touched recently.
+
+That overlap — complex and volatile — is where incidents are born. Those are your hotspots.
+
+## Why complexity alone isn’t enough
+
+Raw complexity metrics are useful. But a gnarly function that hasn’t changed in a year is not your biggest problem today. In practice, “risky” is complexity multiplied by change.
+
+Hotspots computes a Local Risk Score (LRS) per function from:
+
+- CC (Cyclomatic Complexity)
+- ND (Nesting Depth)
+- FO (Fan‑Out)
+- NS (Non‑structured exits)
+
+Then enriches with change signals from git:
+
+- Churn (lines changed in the last 30 days)
+- Touch frequency (commit count touching the function/file)
+- Recency (days since last change)
+- Call graph influence (fan‑in/out; hidden coupling via co‑change)
+
+The result: a prioritized list of functions that are both complex and active — the 20% creating 80% of your pain.
+
+## What a hotspot looks like
+
+```bash
+hotspots analyze src/
+
+Critical (LRS ≥ 9.0):
+processPlanUpgrade    src/api/billing.ts:142    LRS 12.4  CC 15  ND 4  FO 8  NS 3
+
+High (6.0 ≤ LRS < 9.0):
+validateSession       src/auth/session.ts:67    LRS 9.8   CC 11  ND 3  FO 7  NS 2
+applySchema           src/db/migrations.ts:203  LRS 8.1   CC 10  ND 2  FO 5  NS 2
+```
+
+Add `--explain` for driver labels and actions:
+
+```bash
+hotspots analyze . --mode snapshot --format text --explain --top 10
+```
+
+You’ll see a primary driver per function (e.g., `high_complexity`, `deep_nesting`, `high_fanin_complex`) and a concise Action line (e.g., “Reduce branching; extract sub‑functions”).
+
+## Make it stick: block regressions in CI
+
+Refactoring a hotspot is great. Preventing the next one is better. Add policy checks to CI so risky changes fail before merge:
+
+```bash
+hotspots analyze src/ --mode delta --policy
+# Exit code 1 if blocking policies fail
+```
+
+Key policies:
+
+- Critical Introduction: Fail if a new function lands in the critical band
+- Excessive Regression: Fail if LRS increases by a large delta
+- Watch/Attention: Warn when functions approach thresholds
+- Rapid Growth: Flag unusually fast complexity growth
+
+## A pragmatic triage model
+
+Not all red flags are equal. The triage view groups functions by band + activity:
+
+- fire: high/critical + active (touches or recent change)
+- debt: high/critical + not active
+- watch: moderate/low + active
+- ok: everything else
+
+Start with “fire.” Those are the functions most likely to ruin your week.
+
+## A lightweight playbook (2 weeks)
+
+1) Baseline
+   - Run a snapshot: `hotspots analyze src/ --mode snapshot --format html`
+   - Share the HTML report; align on top 10 hotspots (fire quadrant)
+
+2) Guardrails
+   - Turn on CI checks: `--mode delta --policy`
+   - Start with critical/high thresholds; tighten later
+
+3) Refactor sprints
+   - Target 2–3 functions per sprint
+   - Use explain mode (drivers) to focus the refactor
+   - Validate improvement by re‑running analysis
+
+4) Tell the story
+   - Track counts of critical/high functions and average LRS
+   - Capture before/after diffs in PRs and quarterly reviews
+
+## Common questions
+
+“We already use ESLint/SonarQube” — Keep them. They flag style, smells, and raw complexity. Hotspots adds change‑aware risk, CI policies, and trend tracking. They’re complementary.
+
+“Will this slow CI?” — The default delta check is fast. Start with a minimal config and scale up if needed.
+
+“Can people game the score?” — Policies target band transitions and deltas, not micro‑optimizations. Driver‑based guidance encourages real simplification, not trickery.
+
+## Try it now
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Stephen-Collins-tech/hotspots/main/install.sh | sh
+hotspots analyze src/
+hotspots analyze src/ --mode delta --policy
+```
+
+Refactor what actually matters — and keep it from creeping back.
+
+---
+
+## Key Points (Quick Answers)
+
+- Why not just use ESLint/Sonar? Because they miss activity. Hotspots blends complexity with git signals to surface what’s risky right now.
+- Won’t this slow CI? No — delta mode is fast and can start warn‑only. Flip to blocking once you’re ready.
+- What if some functions can’t change yet? Add a suppression with a reason; they stay visible but won’t fail policy checks.
