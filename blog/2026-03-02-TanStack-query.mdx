@@ -1,0 +1,86 @@
+---
+title: "Hotspots on TanStack/query: the 5 functions with the highest activity-weighted risk"
+description: "A Hotspots analysis of TanStack/query at commit 391db36, surfacing the top functions by activity-weighted risk score."
+pubDate: 2026-03-02
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "TanStack/query"
+commit: "391db367b3e7adeff9a0dd647474d1575a31a787"
+language: "typescript"
+report_html: "https://reports.hotspots.dev/TanStack/query/391db367b3e7adeff9a0dd647474d1575a31a787/index.html"
+report_json: "https://reports.hotspots.dev/TanStack/query/391db367b3e7adeff9a0dd647474d1575a31a787/snapshot.json"
+hotspots_version: "1.2.0"
+analyzed_at: "2026-03-02T14:16:06Z"
+clone_depth: 25
+topPatterns: ["exit_heavy", "complex_branching", "deeply_nested", "god_function", "long_function"]
+patternCounts: {complex_branching: 4, deeply_nested: 4, exit_heavy: 5, god_function: 4, long_function: 4}
+---
+
+TanStack Query is a foundational data-fetching and state management library for modern web applications, with 3031 functions across TypeScript packages. The codebase shows elevated structural risk: 84 critical functions exist, concentrated in persistence, codemod, and devtools layers where both complexity and recent activity align. This analysis identifies functions where structural debt meets active churn—the highest-priority targets for review cycles.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC |
+|---|---|---|---|
+| `experimental_createQueryPersister` | packages/query-persist-client-core/src/createPersister.ts | 16 | 14 |
+| `<anonymous>` | packages/query-codemods/src/v5/remove-overloads/transformers/filter-aware-usage-transformer.cjs | 16 | 23 |
+| `<anonymous>` | packages/query-codemods/src/v5/remove-overloads/transformers/filter-aware-usage-transformer.cjs | 15 | 11 |
+| `restoreQueries` | packages/query-persist-client-core/src/createPersister.ts | 15 | 19 |
+| `Explorer` | packages/query-devtools/src/Explorer.tsx | 15 | 26 |
+
+## Hotspot Analysis
+
+### `experimental_createQueryPersister` — packages/query-persist-client-core/src/createPersister.ts
+
+This function orchestrates query persistence initialization and likely manages serialization, cache hydration, and subscription logic. With CC 14, ND 6, and FO 27, it combines moderate-to-high cyclomatic branching with deep nesting that makes control flow difficult to trace, plus broad fan-out that creates coupling to 27 distinct downstream functions. The activity_risk score of 16.82 (driven by LRS 15.79) signals active modification to an already-complex core function—each change carries regression risk across the persistence subsystem.
+
+**Recommendation:** Before next refactor, map the 27 callees to identify whether fan-out can be consolidated via dependency injection or facade patterns. Extract nested conditional blocks (ND 6) into named helper functions to reduce cognitive load and test surface; prioritize characterization tests covering each of the 14 independent code paths.
+
+### `restoreQueries` — packages/query-persist-client-core/src/createPersister.ts
+
+A sibling function in the same persistence module, restoreQueries manages hydration of cached query state with CC 19 and ND 6. The deep nesting and multiple exit paths (exit_heavy pattern) mean test coverage must account for many early returns and conditional branches. Activity_risk 15.56 reflects steady modification to restoration logic—a critical path where bugs directly impact cache correctness and user experience.
+
+**Recommendation:** Audit all return paths and early-exit conditions to ensure each is covered by integration tests. Consider extracting validation and error-handling blocks into separate helper functions to flatten ND from 6 to 3–4, improving readability without changing behavior.
+
+### `Explorer` — packages/query-devtools/src/Explorer.tsx
+
+The devtools Explorer component is a high-fan-out hub (FO 38) with CC 26 branching complexity, orchestrating state display, filtering, and interaction across the DevTools UI. Its activity_risk of 15.44 and exit_heavy, god_function patterns reveal that despite moderate nesting (ND 3), the sheer number of callees and independent logic paths creates a wide blast radius—changes here propagate across DevTools interactions and monitoring features.
+
+**Recommendation:** Decompose Explorer into smaller, single-responsibility components (e.g., ExplorerHeader, ExplorerQuery, ExplorerActions) to distribute the 38 fan-out calls and reduce CC per component. Review which state-management concerns belong in a custom hook versus component logic.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 5 |
+| `complex_branching` | 4 |
+| `deeply_nested` | 4 |
+| `god_function` | 4 |
+| `long_function` | 4 |
+
+_Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Vendor Files in Results
+
+The second and third hotspots appear in `packages/query-codemods/src/v5/remove-overloads/transformers/filter-aware-usage-transformer.cjs`, a code transformation tool. Although these anonymous functions score highly (activity_risk 16.34 and 15.67), they are part of the codemod tooling layer—not core query runtime—and serve a narrower audience (upgrade automation). If you choose to exclude codemod transformations from hotspot monitoring, add `**/query-codemods/**` to the `.hotspotsrc.json` exclude patterns to focus review effort on runtime packages that affect production behavior.
+
+## Key Takeaways
+
+- The persistence core (`createPersister.ts`) contains two critical hotspots with activity_risk >15.5, both in the `complex-active` quadrant. Prioritize extracting nested conditionals (ND 6) and characterization tests before making further modifications to either `experimental_createQueryPersister` or `restoreQueries`.
+- Explorer (devtools) exhibits god_function antipattern with FO 38—the highest fan-out among the top 5. Each change risks unexpected side effects across monitoring and interaction logic; decompose into feature-focused child components to reduce coupling and testing burden.
+- All five hotspots display exit_heavy patterns (multiple return paths), indicating that test suites must cover many conditional branches. Audit existing coverage for CC 14–26 functions; add integration tests targeting rare branches and error conditions before undertaking refactoring.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/TanStack/query
+cd query
+git checkout 391db367b3e7adeff9a0dd647474d1575a31a787
+hotspots analyze . --mode snapshot
+```
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
