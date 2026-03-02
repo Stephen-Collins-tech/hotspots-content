@@ -1,6 +1,6 @@
 ---
-title: "Hotspots on TanStack/query: the 5 functions with the highest activity-weighted risk"
-description: "A Hotspots analysis of TanStack/query at commit 391db36, surfacing the top functions by activity-weighted risk score."
+title: "TanStack/query has 84 critical functions; persistence and codemod layers show the highest activity-weighted risk."
+description: "Experimental persistence API and v5 codemod transformers combine high cyclomatic complexity (14–26) with recent churn; 5 of top 5 hotspots are exit-heavy."
 pubDate: 2026-03-02
 tags: ["oss", "typescript", "refactoring", "code-health"]
 draft: true
@@ -10,45 +10,50 @@ language: "typescript"
 report_html: "https://reports.hotspots.dev/TanStack/query/391db367b3e7adeff9a0dd647474d1575a31a787/index.html"
 report_json: "https://reports.hotspots.dev/TanStack/query/391db367b3e7adeff9a0dd647474d1575a31a787/snapshot.json"
 hotspots_version: "1.2.0"
-analyzed_at: "2026-03-02T14:16:06Z"
+analyzed_at: "2026-03-02T14:41:45Z"
 clone_depth: 25
 topPatterns: ["exit_heavy", "complex_branching", "deeply_nested", "god_function", "long_function"]
 patternCounts: {complex_branching: 4, deeply_nested: 4, exit_heavy: 5, god_function: 4, long_function: 4}
 ---
 
-TanStack Query is a foundational data-fetching and state management library for modern web applications, with 3031 functions across TypeScript packages. The codebase shows elevated structural risk: 84 critical functions exist, concentrated in persistence, codemod, and devtools layers where both complexity and recent activity align. This analysis identifies functions where structural debt meets active churn—the highest-priority targets for review cycles.
+TanStack/query's critical risk is concentrated in two layers: the experimental query persistence API and the v5 codemod infrastructure. Across 3,031 total functions, 84 are flagged critical; the top 5 hotspots all occupy the fire quadrant (complex and actively changing), with activity_risk scores between 15.44 and 16.82. Four of the five exhibit deeply nested control flow (ND 5–6) and exit-heavy patterns—multiple return paths that increase test-case burden and regression risk.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
 ## Top 5 Hotspots
 
-| Function | File | Risk | CC |
-|---|---|---|---|
-| `experimental_createQueryPersister` | packages/query-persist-client-core/src/createPersister.ts | 16 | 14 |
-| `<anonymous>` | packages/query-codemods/src/v5/remove-overloads/transformers/filter-aware-usage-transformer.cjs | 16 | 23 |
-| `<anonymous>` | packages/query-codemods/src/v5/remove-overloads/transformers/filter-aware-usage-transformer.cjs | 15 | 11 |
-| `restoreQueries` | packages/query-persist-client-core/src/createPersister.ts | 15 | 19 |
-| `Explorer` | packages/query-devtools/src/Explorer.tsx | 15 | 26 |
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `experimental_createQueryPersister` | packages/query-persist-client-core/src/createPersister.ts | 16.8 | 14 | 6 | 27 |
+| `<anonymous>` | …/query-codemods/…/filter-aware-usage-transformer.cjs | 16.3 | 23 | 5 | 20 |
+| `<anonymous>` | …/query-codemods/…/filter-aware-usage-transformer.cjs | 15.7 | 11 | 5 | 30 |
+| `restoreQueries` | packages/query-persist-client-core/src/createPersister.ts | 15.6 | 19 | 6 | 8 |
+| `Explorer` | packages/query-devtools/src/Explorer.tsx | 15.4 | 26 | 3 | 38 |
+
+
+## Codemod / Tooling Files in Results
+
+Rows 2 and 3 in the table above are two distinct anonymous functions inside `packages/query-codemods/src/v5/remove-overloads/transformers/filter-aware-usage-transformer.cjs`. This is a codemod tooling file—not core query logic—that scores high due to the structural complexity of AST transformation (CC 23 and 11, fan-out 20 and 30). Codemods are maintenance-time tools; high CC here reflects the combinatorial logic of matching and rewriting AST nodes, not production risk. If you want to focus your analysis on core library code, add this to `.hotspotsrc.json`: `"exclude": ["packages/query-codemods/**"]`.
 
 ## Hotspot Analysis
 
 ### `experimental_createQueryPersister` — packages/query-persist-client-core/src/createPersister.ts
 
-This function orchestrates query persistence initialization and likely manages serialization, cache hydration, and subscription logic. With CC 14, ND 6, and FO 27, it combines moderate-to-high cyclomatic branching with deep nesting that makes control flow difficult to trace, plus broad fan-out that creates coupling to 27 distinct downstream functions. The activity_risk score of 16.82 (driven by LRS 15.79) signals active modification to an already-complex core function—each change carries regression risk across the persistence subsystem.
+This experimental persistence factory has the highest activity_risk (16.82) and sits squarely in the fire quadrant. Its CC of 14 indicates moderate-to-high branching complexity; the ND of 6 reveals deeply nested control structures that make reasoning about state transitions difficult. With a fan-out of 27, changes here have broad coupling implications across the persistence subsystem. The experimental_ prefix signals this API is not yet stable—high activity combined with structural complexity means the team is iterating on logic that affects query hydration and cache restoration.
 
-**Recommendation:** Before next refactor, map the 27 callees to identify whether fan-out can be consolidated via dependency injection or facade patterns. Extract nested conditional blocks (ND 6) into named helper functions to reduce cognitive load and test surface; prioritize characterization tests covering each of the 14 independent code paths.
+**Recommendation:** Before refactoring, map the 27 callees to identify which ones handle critical paths (e.g., cache validation, retry logic). Extract independent orchestration steps into smaller, testable functions; in particular, isolate branching logic that decides whether to restore vs. discard persisted state. Add characterization tests to lock down current behavior before simplifying nesting depth.
 
 ### `restoreQueries` — packages/query-persist-client-core/src/createPersister.ts
 
-A sibling function in the same persistence module, restoreQueries manages hydration of cached query state with CC 19 and ND 6. The deep nesting and multiple exit paths (exit_heavy pattern) mean test coverage must account for many early returns and conditional branches. Activity_risk 15.56 reflects steady modification to restoration logic—a critical path where bugs directly impact cache correctness and user experience.
+`restoreQueries` runs at app initialization: it reads serialized query state from the persistence backend (IndexedDB, localStorage, etc.) and decides which cached results are still valid to hydrate back into the QueryClient. CC 19 means 19 independent decision paths through that initialization logic—every branch is a different answer to "is this persisted query still usable?" Max nesting depth of 6 makes those decisions hard to follow in sequence. Despite lower fan-out (8), the exit-heavy pattern scatters the success/failure/expiry validation across multiple early returns rather than concentrating it at the top.
 
-**Recommendation:** Audit all return paths and early-exit conditions to ensure each is covered by integration tests. Consider extracting validation and error-handling blocks into separate helper functions to flatten ND from 6 to 3–4, improving readability without changing behavior.
+**Recommendation:** Extract validation and recovery logic into named helper functions (e.g., isRestoredQueryValid, applyRestoredQueryState). Replace early returns with a clear state machine or decision table at the top level. This will reduce ND and make test coverage for each recovery path explicit.
 
 ### `Explorer` — packages/query-devtools/src/Explorer.tsx
 
-The devtools Explorer component is a high-fan-out hub (FO 38) with CC 26 branching complexity, orchestrating state display, filtering, and interaction across the DevTools UI. Its activity_risk of 15.44 and exit_heavy, god_function patterns reveal that despite moderate nesting (ND 3), the sheer number of callees and independent logic paths creates a wide blast radius—changes here propagate across DevTools interactions and monitoring features.
+The Explorer component is a god_function in the devtools layer: CC 26 indicates many conditional branches, and fan-out of 38 means it orchestrates broadly across the devtools UI. Unlike the persistence functions, its ND is moderate (3), but the combination of high CC with 38 distinct function calls—plus recent churn (activity_risk 15.44)—suggests it is a hub for state inspection and mutation. The exit-heavy pattern compounds the coupling risk: changes to branching logic ripple across many dependents.
 
-**Recommendation:** Decompose Explorer into smaller, single-responsibility components (e.g., ExplorerHeader, ExplorerQuery, ExplorerActions) to distribute the 38 fan-out calls and reduce CC per component. Review which state-management concerns belong in a custom hook versus component logic.
+**Recommendation:** Decompose by feature or inspection mode: separate query list rendering, filter logic, and cache inspection into isolated child components or hooks. This will reduce fan-out and CC simultaneously. Add snapshot tests for each mode before refactoring to catch unintended UI regressions.
 
 ## Patterns Found
 
@@ -62,17 +67,15 @@ Antipatterns detected across the top functions in this snapshot:
 | `god_function` | 4 |
 | `long_function` | 4 |
 
-_Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+That all five top hotspots share this exact cluster is itself a finding: structural debt isn't isolated to one poorly-written function — it's a consistent style across the persistence, codemod, and devtools layers simultaneously.
 
-## Vendor Files in Results
-
-The second and third hotspots appear in `packages/query-codemods/src/v5/remove-overloads/transformers/filter-aware-usage-transformer.cjs`, a code transformation tool. Although these anonymous functions score highly (activity_risk 16.34 and 15.67), they are part of the codemod tooling layer—not core query runtime—and serve a narrower audience (upgrade automation). If you choose to exclude codemod transformations from hotspot monitoring, add `**/query-codemods/**` to the `.hotspotsrc.json` exclude patterns to focus review effort on runtime packages that affect production behavior.
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
 
 ## Key Takeaways
 
-- The persistence core (`createPersister.ts`) contains two critical hotspots with activity_risk >15.5, both in the `complex-active` quadrant. Prioritize extracting nested conditionals (ND 6) and characterization tests before making further modifications to either `experimental_createQueryPersister` or `restoreQueries`.
-- Explorer (devtools) exhibits god_function antipattern with FO 38—the highest fan-out among the top 5. Each change risks unexpected side effects across monitoring and interaction logic; decompose into feature-focused child components to reduce coupling and testing burden.
-- All five hotspots display exit_heavy patterns (multiple return paths), indicating that test suites must cover many conditional branches. Audit existing coverage for CC 14–26 functions; add integration tests targeting rare branches and error conditions before undertaking refactoring.
+- experimental_createQueryPersister and restoreQueries both have activity_risk > 15 and ND ≥ 6; prioritize reducing nesting depth in the persistence layer before the API graduates from experimental status.
+- The Explorer devtools component couples 38 distinct callees with CC 26; extract presentation logic into focused subcomponents to isolate UI changes from state-inspection refactors.
+- All 5 top hotspots exhibit exit-heavy patterns (multiple returns); introduce guard clauses and decision points at function entry to concentrate control flow, which will also improve test coverage clarity.
 
 ## Reproduce This Analysis
 
