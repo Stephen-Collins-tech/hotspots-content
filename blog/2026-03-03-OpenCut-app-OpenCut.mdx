@@ -1,0 +1,95 @@
+---
+title: "OpenCut's timeline and audio subsystems show critical activity risk: five functions combining high complexity with recent churn demand immediate test coverage and refactoring."
+description: "Timeline drag-drop, audio playback, and time parsing functions in OpenCut are actively changing while carrying CC 15–53 and broad coupling (fan-out 5–42), creating regression risk across 123 critical functions."
+pubDate: 2026-03-03
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "OpenCut-app/OpenCut"
+commit: "dc58c10e64fae45f370b42494ebe0a74561a0c2d"
+language: "typescript"
+report_html: "https://reports.hotspots.dev/OpenCut-app/OpenCut/dc58c10e64fae45f370b42494ebe0a74561a0c2d/index.html"
+report_json: "https://reports.hotspots.dev/OpenCut-app/OpenCut/dc58c10e64fae45f370b42494ebe0a74561a0c2d/snapshot.json"
+hotspots_version: "1.2.1"
+analyzed_at: "2026-03-03T04:49:21Z"
+clone_depth: 25
+topPatterns: ["exit_heavy", "long_function", "complex_branching", "god_function", "deeply_nested"]
+patternCounts: {complex_branching: 3, deeply_nested: 2, exit_heavy: 5, god_function: 3, long_function: 4, middle_man: 1}
+---
+
+OpenCut's hotspot analysis reveals a concentration of activity-weighted risk in its timeline interaction and audio management layers. Five functions span the critical band with activity_risk scores of 14.98–16.6, driven by both structural complexity (cyclomatic complexity 15–53) and recent commit velocity. Across 2,797 total functions, 123 are flagged as critical; the top hotspots show that the highest-risk code is not simply complex—it is complex *and actively changing*, which multiplies the likelihood of regression.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `useTimelineDragDrop` | apps/web/src/hooks/timeline/use-timeline-drag-drop.ts | 16.6 | 15 | 5 | 42 |
+| `runClipIterator` | apps/web/src/core/managers/audio-manager.ts | 15.4 | 18 | 5 | 8 |
+| `useElementInteraction` | apps/web/src/hooks/timeline/element/use-element-interaction.ts | 15.1 | 18 | 3 | 37 |
+| `parseTimeCode` | apps/web/src/lib/time.ts | 15.1 | 53 | 3 | 5 |
+| `collectAudioElements` | apps/web/src/lib/media/audio.ts | 15.0 | 18 | 4 | 12 |
+
+## Hotspot Analysis
+
+### `useTimelineDragDrop` — apps/web/src/hooks/timeline/use-timeline-drag-drop.ts
+
+This React hook manages drag-and-drop interactions on the timeline editor, a core UX feature. Its activity_risk of 16.6 (highest in the codebase) stems from CC 15, ND 5, and exceptionally broad fan-out of 42 distinct functions called. The 'god_function' and 'deeply_nested' patterns indicate this hook orchestrates many concerns—event routing, state updates, and multi-level control flow—making it a coordination hub for timeline manipulation. Each recent commit carries high blast-radius risk because changes here cascade across 42 dependents.
+
+**Recommendation:** Map the 42 callees to functional domains (drag start/move/end, selection, viewport updates, etc.) and extract domain-specific sub-hooks. Add characterization tests documenting current behavior before any refactoring; ND 5 and CC 15 together mean at least 15 independent execution paths, each a potential regression surface.
+
+### `parseTimeCode` — apps/web/src/lib/time.ts
+
+This time-parsing utility carries the highest cyclomatic complexity in the top five: CC 53. Despite low fan-out (5), its activity_risk of 15.1 signals recent churn on a function with 53 independent execution paths—meaning 53 distinct test cases are theoretically required for coverage. The 'exit_heavy' pattern indicates multiple early returns, each a branching point. Time parsing is foundational to audio playback and timeline rendering; bugs here corrupt downstream state across the entire editor.
+
+**Recommendation:** Extract parsing logic by timecode format (HH:MM:SS vs. frames vs. milliseconds) into separate, lower-CC functions. Use mutation testing to identify which of the 53 paths are actually reachable and which branches are dead code or duplicated logic.
+
+### `runClipIterator` — apps/web/src/core/managers/audio-manager.ts
+
+This audio playback orchestrator combines CC 18, ND 5, and recent activity (lrs 14.35) to deliver activity_risk 15.38. The 'complex_branching' and 'deeply_nested' patterns suggest it handles multiple playback states (playing, paused, stopped) and audio clip transitions with nested conditionals at depth 5. Low fan-out (8) shows tight coupling to a few audio-related functions, but depth and branching together make the function hard to reason about during code review.
+
+**Recommendation:** Refactor the nested state-machine logic into explicit state classes or a switch-based dispatcher. Validate the ND 5 nesting by walking a current code dump; if the depth includes loop + conditional + conditional, consider extracting the innermost loop body into a separate function.
+
+### `useElementInteraction` — apps/web/src/hooks/timeline/element/use-element-interaction.ts
+
+This hook manages user interactions with individual timeline elements (clips, markers, etc.), showing activity_risk 15.14 from CC 18 and fan-out 37. Unlike useTimelineDragDrop, it has moderate nesting (ND 3) but exhibits the 'god_function' pattern—orchestrating 37 different concerns across element selection, dragging, editing, and deletion. High fan-out combined with recent activity means changes here risk unexpected side effects in many dependent components.
+
+**Recommendation:** Enumerate the 37 callees and group by interaction type (selection, drag, edit, delete). Consider extracting each interaction type into a custom hook factory (e.g., useElementSelection, useElementDrag) to reduce fan-out per function and improve testability.
+
+### `collectAudioElements` — apps/web/src/lib/media/audio.ts
+
+This audio element collection function holds activity_risk 14.98 from CC 18 and ND 4 (at the threshold of 'hard to reason about'). The 'god_function' and 'complex_branching' patterns suggest it traverses a media tree, filters clips by type or state, and applies multiple validation checks nested four levels deep. Recent activity indicates the audio data model or validation rules have been in flux.
+
+**Recommendation:** Flatten the four levels of nesting by extracting filtering logic (e.g., isValidAudioClip, isInTimeRange) into named predicates. Add a comment documenting the traversal order and any assumptions about audio element structure; this will make the function's intent clearer during the next round of changes.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 5 |
+| `long_function` | 4 |
+| `complex_branching` | 3 |
+| `god_function` | 3 |
+| `deeply_nested` | 2 |
+| `middle_man` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- Timeline hooks (useTimelineDragDrop, useElementInteraction) dominate the critical hotspots and exhibit god_function patterns with fan-out 37–42; prioritize extracting interaction domains into separate, testable hooks before timeline features ship.
+- parseTimeCode's CC 53 combined with recent activity is a regression magnet—add characterization tests immediately and consider format-specific parsing functions to reduce branching by ~50%.
+- Five functions show 'exit_heavy' patterns with multiple return paths; invest in mutation testing to distinguish real branching from dead code paths, and use the results to guide refactoring priority.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/OpenCut-app/OpenCut
+cd OpenCut
+git checkout dc58c10e64fae45f370b42494ebe0a74561a0c2d
+hotspots analyze . --mode snapshot
+```
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
