@@ -1,0 +1,96 @@
+---
+title: "tldraw's editor core carries the highest activity risk — 5 critical functions to address first"
+description: "Five functions in tldraw's editor and content-handling layers have a risk score of 18+; three live in Editor.ts with extreme cyclomatic complexity (36–122) and nesting depth 5–7, creating high regression risk during active development."
+pubDate: 2026-03-04
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "tldraw/tldraw"
+commit: "3383b00fff8351606f5432a608e769b9e7dce122"
+language: "typescript"
+report_html: "https://reports.hotspots.dev/tldraw/tldraw/3383b00fff8351606f5432a608e769b9e7dce122/index.html"
+report_json: "https://reports.hotspots.dev/tldraw/tldraw/3383b00fff8351606f5432a608e769b9e7dce122/snapshot.json"
+hotspots_version: "1.2.1"
+analyzed_at: "2026-03-04T04:47:36Z"
+clone_depth: 25
+topPatterns: ["complex_branching", "exit_heavy", "deeply_nested", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 4, exit_heavy: 5, god_function: 4, long_function: 4, hub_function: 1, middle_man: 1}
+---
+
+tldraw's structural hotspots cluster in two areas: Editor.ts in the core editor package, and the Excalidraw content handler. Three of the top five critical functions live in Editor.ts, with _flushEventForTick hitting cc 122 and getShapeAtPoint at cc 59—both deeply nested and actively changing. Across 14,187 total functions, 699 are critical; these five represent the highest-risk intersection of complexity and recent churn.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `putContentOntoCurrentPage` | packages/editor/src/lib/editor/Editor.ts | 19.3 | 36 | 7 | 51 |
+| `putExcalidrawContent` | packages/tldraw/src/lib/utils/excalidraw/putExcalidrawContent.ts | 18.8 | 41 | 6 | 48 |
+| `getShapeAtPoint` | packages/editor/src/lib/editor/Editor.ts | 18.8 | 59 | 7 | 12 |
+| `fetch` | apps/mcp-app/src/cloudflare-worker.ts | 18.7 | 17 | 4 | 9 |
+| `_flushEventForTick` | packages/editor/src/lib/editor/Editor.ts | 18.2 | 122 | 5 | 35 |
+
+## Hotspot Analysis
+
+### `putContentOntoCurrentPage` — packages/editor/src/lib/editor/Editor.ts
+
+This content-placement function combines cc 36, nesting depth 7, and 51 distinct callees—the highest fan-out in the dataset. Its breadth of dependencies (51 functions) means changes here can silently break callers across the codebase; the depth (nd 7) makes it hard to trace control flow mentally. The god_function pattern indicates this is a central operation being actively modified, amplifying the blast radius.
+
+**Recommendation:** Audit the 51 callees to identify clusters (e.g., shape creation, event dispatch, state sync) and extract those into focused helper functions. This will reduce fan-out and make the function's contract clearer—start with one cohesive cluster and measure test coverage gains before proceeding.
+
+### `putExcalidrawContent` — packages/tldraw/src/lib/utils/excalidraw/putExcalidrawContent.ts
+
+Excalidraw content migration reaches cc 41 with nd 6, plus 48 callees—the second-highest fan-out. This is likely a multi-step shape-import process handling format conversion, validation, and state updates across the tldraw ecosystem. The combination of high complexity, nesting, and high recent commit activity suggests the import logic is still stabilizing as new Excalidraw features are added.
+
+**Recommendation:** Decompose by import stage: parse → validate → normalize → insert. Create a small state object passed through each stage so each function has a clear input/output contract. This isolates format-handling changes from state-mutation logic.
+
+### `getShapeAtPoint` — packages/editor/src/lib/editor/Editor.ts
+
+Hit detection logic with cc 59 and nd 7 makes this a high-complexity search/filter operation. Despite lower fan-out (12), the 59 branches mean each coordinate query path must be tested; active changes suggest the hit-detection logic is being refined or extended. The exit_heavy pattern signals multiple early returns that complicate coverage verification.
+
+**Recommendation:** Extract spatial-query branches (bounding-box checks, layer filtering, point-in-shape tests) into separate testable predicates. This allows unit testing each geometry case independently and simplifies the main control flow from 59 to ~5–10 paths.
+
+### `fetch` — apps/mcp-app/src/cloudflare-worker.ts
+
+The Cloudflare Worker entry point carries cc 17 with nd 4—modest complexity for a routing function, but the hub_function pattern flags it as a central dispatcher that many request paths flow through. The complex_branching and exit_heavy patterns confirm multiple request-type branches with conditional early returns. At risk score 18.7, this sits at the top of the critical band despite lower raw complexity, indicating high recent commit activity relative to its structure.
+
+**Recommendation:** Extract each request-type handler into a dedicated function and use a routing table or pattern-match to dispatch. This keeps the entry point thin and routes all logic changes to the appropriate handler.
+
+### `_flushEventForTick` — packages/editor/src/lib/editor/Editor.ts
+
+This internal event-flushing function carries extreme cyclomatic complexity (cc 122)—the highest in the top five—with 35 distinct callees and five nesting levels. The 122 independent execution paths represent 122 required test cases to achieve full branch coverage; combined with high recent commit activity, this function is a regression risk magnet. The complex_branching and exit_heavy patterns confirm multiple conditional exits and decision trees that make reasoning about state flow difficult.
+
+**Recommendation:** Before refactoring, map the actual decision tree and extract cohesive event-type handlers into separate functions. Add characterization tests for each major branch to prevent regressions, then incrementally break _flushEventForTick into smaller, single-responsibility event processors.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `exit_heavy` | 5 |
+| `deeply_nested` | 4 |
+| `god_function` | 4 |
+| `long_function` | 4 |
+| `hub_function` | 1 |
+| `middle_man` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- Editor.ts dominates the critical hotspot list: three of the top five functions live there, with _flushEventForTick at cc 122 and getShapeAtPoint at cc 59. Extract event and shape-detection sub-handlers into focused modules before the file becomes unmaintainable.
+- Fan-out risk is underestimated: putContentOntoCurrentPage calls 51 distinct functions. Map the dependency clusters and extract helpers to reduce blast radius—changes to central operations propagate unpredictably at this breadth.
+- Nesting depth 5–7 across four critical functions signals widespread use of conditional branching and exception handling in rapid-iteration code. Consider flattening control flow via guard clauses and early returns in getShapeAtPoint and putExcalidrawContent before adding new hit-detection or import logic.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/tldraw/tldraw
+cd tldraw
+git checkout 3383b00fff8351606f5432a608e769b9e7dce122
+hotspots analyze . --mode snapshot
+```
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
