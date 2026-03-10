@@ -1,0 +1,97 @@
+---
+title: "umami's API and tracker layer carry the highest activity risk — 5 functions to address first"
+titleSeo: "umami-software/umami code health: API send route and tracker index lead refactoring priority"
+description: "umami's POST handler in src/app/api/send/route.ts scores an activity risk of 15.52 with CC 28 and fan-out 35, making it the highest-priority refactoring target across 2,159 analyzed functions."
+introContent: "umami's event ingestion endpoint and client tracker are structurally complex and still actively changing — a combination that makes regressions hard to catch and fixes expensive to ship."
+pubDate: 2026-03-10
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "umami-software/umami"
+commit: "0a838649b773122cc68cbd0c3df78d4251b981c5"
+language: "typescript"
+report_html: "https://reports.hotspots.dev/umami-software/umami/0a838649b773122cc68cbd0c3df78d4251b981c5/index.html"
+report_json: "https://reports.hotspots.dev/umami-software/umami/0a838649b773122cc68cbd0c3df78d4251b981c5/snapshot.json"
+hotspots_version: "1.5.1"
+analyzed_at: "2026-03-10T19:06:21Z"
+clone_depth: 25
+topPatterns: ["long_function", "exit_heavy", "god_function", "hub_function", "complex_branching"]
+patternCounts: {hub_function: 1, complex_branching: 1, exit_heavy: 5, god_function: 5, long_function: 6}
+qaSection:
+  - question: "What is a god function and why does it matter in umami?"
+    answer: "A god function is one that has accumulated too many distinct responsibilities — validation, coordination, data transformation, and side effects — all in a single body. In umami, five of the top hotspots carry this pattern, including the event-ingestion POST handler and the client tracker, which means a developer fixing a bug in one concern risks accidentally breaking another. The high fan-out values (up to 42) in these functions amplify the problem: a single edit can ripple through dozens of downstream call sites."
+  - question: "How do I reduce cyclomatic complexity in TypeScript?"
+    answer: "Extract distinct conditional branches into named functions with single, clear responsibilities — this directly reduces the number of independent paths through the parent function and makes each branch independently testable. For React components like MetricLabel, a component registry or lookup table keyed on metric type can replace long chains of conditionals entirely."
+  - question: "Is umami actively maintained?"
+    answer: "Yes — the lrs scores across the top hotspots (15.36 for the POST handler, 14.10 for the tracker, 14.07 for MetricLabel) reflect high recent commit frequency, indicating that core data-ingestion and UI reporting paths are under continuous active development. This also means that structural complexity in those areas carries immediate regression risk, not just long-term maintenance cost."
+  - question: "How do I reproduce this analysis?"
+    answer: "Run the hotspots CLI against the umami-software/umami repository at commit 0a83864 to reproduce these exact results."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Complexity × recent commit frequency — functions that are hard to understand AND actively changing are the highest priority for refactoring."
+---
+
+Across 2,159 functions in umami-software/umami, 35 have reached critical band — and the most urgent is the POST handler in src/app/api/send/route.ts, which carries an activity risk score of 15.52 driven by an lrs of 15.36. That lrs value means this function isn't just structurally overloaded with CC 28 and fan-out 35 — it is one of the most frequently and recently touched functions in the entire codebase, which makes every change to it a live regression risk rather than a deferred cleanup item. umami is an open-source web analytics platform, and this concentration of critical complexity in its data-ingestion and tracker subsystems means the code paths that process the most user traffic are also the ones carrying the most structural debt.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `POST` | src/app/api/send/route.ts | 15.5 | 28 | 4 | 35 |
+| `<anonymous>` | src/tracker/index.js | 14.1 | 32 | 2 | 42 |
+| `MetricLabel` | src/components/metrics/MetricLabel.tsx | 14.1 | 41 | 3 | 10 |
+| `Journey` | src/app/(main)/websites/[websiteId]/(reports)/journeys/Journey.tsx | 13.9 | 19 | 3 | 32 |
+| `parseDateRange` | src/lib/date.ts | 12.3 | 19 | 1 | 21 |
+
+## Hotspot Analysis
+
+### `POST` — src/app/api/send/route.ts
+
+This is umami's primary event-ingestion endpoint — the HTTP handler that receives analytics payloads from tracked websites. A cyclomatic complexity of 28 means there are at least 28 independent execution paths through a single handler, each a potential bug surface and a required test case. The fan-out of 35 is especially telling: this function calls 35 distinct downstream functions, meaning it acts as a god function that orchestrates validation, parsing, enrichment, and persistence all in one place — and its lrs of 15.36 confirms it is under active, continuous change right now.
+
+**Recommendation:** Before any refactoring, add characterization tests covering the highest-risk branches to lock in current behavior. Then extract distinct responsibilities — payload validation, session resolution, and event persistence — into dedicated handlers to reduce both CC and the blast radius of future changes.
+
+### `<anonymous>` — src/tracker/index.js
+
+The anonymous root function in src/tracker/index.js is umami's client-side tracking script — the code embedded in end-users' browsers. With CC 32 and fan-out 42, it is the structurally most complex function in this top-five set, branching across dozens of paths to handle different event types, environments, and configurations from within a single scope. The fan-out of 42 — the highest in the dataset — means it directly coordinates more distinct behaviors than any other function, and its lrs of 14.10 confirms it is being actively modified despite this breadth.
+
+**Recommendation:** Decompose the tracker into named, single-responsibility modules (e.g., event collection, payload serialization, transport) and refactor the root function to be an orchestrator only. The exit-heavy pattern also signals that test coverage needs to explicitly exercise each early-return condition before any structural changes are made.
+
+### `MetricLabel` — src/components/metrics/MetricLabel.tsx
+
+MetricLabel is a React component responsible for rendering labeled metric values in umami's reporting UI. A cyclomatic complexity of 41 is high for a UI component — it suggests this single component has absorbed rendering logic for many different metric types, formats, or conditional display states rather than delegating to specialized sub-components. With an lrs of 14.07 it is actively changing, meaning new metric variants or display conditions are still being added to an already overloaded function.
+
+**Recommendation:** Audit the branching logic to identify distinct metric-type rendering paths and extract each into a focused sub-component. A CC of 41 in a React component strongly suggests a switch-on-type or cascading conditional pattern that would map cleanly onto a component registry or strategy pattern.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 6 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `hub_function` | 1 |
+| `complex_branching` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- The POST handler in src/app/api/send/route.ts has an lrs of 15.36 — the highest in the project — meaning it is both the most structurally complex entry point (CC 28, fan-out 35) and the most actively changed. Prioritize characterization tests here before any other refactoring work.
+- The anonymous tracker function in src/tracker/index.js has a fan-out of 42, the broadest coupling footprint in the top hotspots. Any change to this function can ripple into 42 downstream call sites; map those dependencies explicitly before modifying it.
+- MetricLabel in src/components/metrics/MetricLabel.tsx has CC 41 — unusually high for a UI component — and is still actively changing (lrs 14.07). Decomposing it into per-metric sub-components would reduce regression risk and make individual metric display logic independently testable.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/umami-software/umami
+cd umami
+git checkout 0a838649b773122cc68cbd0c3df78d4251b981c5
+hotspots analyze . --mode snapshot
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
