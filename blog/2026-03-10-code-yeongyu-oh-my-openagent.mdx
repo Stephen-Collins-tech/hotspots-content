@@ -1,9 +1,11 @@
 ---
-title: "Hotspots on code-yeongyu/oh-my-openagent: the 5 functions with the highest activity-weighted risk"
+title: "oh-my-openagent's event plugin carries the highest activity risk — 5 functions to address first"
+titleSeo: "oh-my-openagent Code Health: 5 High-Risk Functions in Event Routing and Hook Execution"
 description: "A Hotspots analysis of code-yeongyu/oh-my-openagent at commit 85e7a24, surfacing the top functions by activity-weighted risk score."
+introContent: "oh-my-openagent's event routing and Claude Code hook execution top the activity-weighted risk chart — these 5 functions combine deep structural complexity with frequent recent changes."
 pubDate: 2026-03-10
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "code-yeongyu/oh-my-openagent"
 commit: "85e7a24e265aa4c2e60ae63abef138a0b80856e7"
 language: "typescript"
@@ -14,10 +16,20 @@ analyzed_at: "2026-03-10T04:44:56Z"
 clone_depth: 25
 topPatterns: ["complex_branching", "deeply_nested", "god_function", "long_function", "exit_heavy"]
 patternCounts: {complex_branching: 5, deeply_nested: 5, god_function: 5, long_function: 5, exit_heavy: 3}
+qaSection:
+  - question: "What is oh-my-openagent?"
+    answer: "oh-my-openagent is a TypeScript plugin framework for customizing AI agent behavior, with a hook system that intercepts Claude Code's tool execution lifecycle (pre-tool-use and post-tool-use events). The name evokes oh-my-zsh: a user-extensible layer on top of an existing runtime."
+  - question: "Why is the anonymous function in event.ts the highest risk?"
+    answer: "With a cyclomatic complexity of 90 and 55 distinct callees (fan-out), the anonymous function in src/plugin/event.ts handles a very large set of event routing cases in a single body. CC 90 implies at least 90 independent execution paths — any change risks touching unintended branches."
+  - question: "What is the exit_heavy pattern and why does it matter in the hook functions?"
+    answer: "exit_heavy flags functions with an unusually high number of early return statements. In executePreToolUseHooks and executePostToolUseHooks, many early returns are nested 7–9 levels deep inside condition checks. This makes the 'happy path' hard to identify and increases the risk of skipping hook logic unintentionally."
+  - question: "Are the pre-tool-use and post-tool-use hooks structurally similar?"
+    answer: "Yes — both carry all five structural patterns (complex_branching, deeply_nested, exit_heavy, god_function, long_function), and the same refactoring approach applies to each: extract named guard functions, then separate success and error outcome paths. The post-hook has a higher CC (42 vs 36) reflecting additional outcome-handling branches."
+  - question: "Does this mean oh-my-openagent's code is broken?"
+    answer: "No. Hotspots highlights structural complexity combined with recent commit frequency — these functions are worth reviewing because they're both complex and actively changing, not because they contain bugs. The findings are a prioritization aid, not a defect report."
 ---
 
-{/* TODO: one paragraph — what this project is and why it's interesting */}
-Intro paragraph here.
+[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) is a TypeScript plugin framework that wraps the Claude Code agent runtime with a hook and event system, letting users extend agent behavior at the tool execution boundary. The project defines pre- and post-tool-use hooks, a central event dispatch layer, and background task formatting — all actively developed at the commit analyzed here. This snapshot surfaces the five functions where structural complexity and recent commit frequency combine to produce the highest change risk.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -33,11 +45,35 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 ## Hotspot Analysis
 
-### `(fill in)` — (fill in)
+### `<anonymous>` — src/plugin/event.ts
 
-{/* TODO: insight */}
+A cyclomatic complexity of 90 is exceptional — it implies at least 90 independent execution paths through a single anonymous function body. With fan-out 55, this function also coordinates 55 distinct callees, marking it as the central event dispatch hub of the plugin system. The `complex_branching`, `deeply_nested`, `god_function`, and `long_function` patterns all fire together: the function branches on a large set of event types, nests those branches 8 levels deep, and takes on far more than one conceptual responsibility. Any change to the event surface risks touching unintended branches.
 
-**Recommendation:** {/* TODO: action */}
+**Recommendation:** The anonymous function most likely matches on event type and delegates behavior for each. Extract named handler functions for each event category (e.g., `handleToolEvent`, `handleSessionEvent`, `handleConfigEvent`) and reduce the master function to a dispatch table or switch statement. Each handler can then be tested in isolation. This alone should cut CC dramatically while making the full event surface explicit.
+
+### `createEventHandler` — src/plugin/event.ts
+
+`createEventHandler` sits in the same file and holds the highest fan-out in the snapshot (FO 62). Where the anonymous function dispatches on events, `createEventHandler` assembles the handler — coordinating 62 distinct callees through 8 levels of nesting and 43 execution paths. The combination of high CC and record fan-out signals that the factory function is doing too much: building the handler, wiring up dependencies, and encoding conditional behavior all in one body.
+
+**Recommendation:** Separate construction from logic. Extract dependency wiring into a builder or configuration object so that `createEventHandler` stays focused on returning a correctly shaped handler. A fan-out of 62 strongly suggests that many collaborators are being resolved inline rather than injected — parameterizing those dependencies will lower fan-out, reduce CC, and make the function straightforward to test.
+
+### `executePreToolUseHooks` — src/hooks/claude-code-hooks/pre-tool-use.ts
+
+The pre-tool-use hook is the deepest function in the snapshot (ND 9). It orchestrates which hooks run before each Claude Code tool invocation — handling plugin registration, condition checking, and early exits across 36 execution paths. The `exit_heavy` pattern fires alongside `deeply_nested`: many of those paths are guarded early returns triggered by condition checks, which makes the actual happy path difficult to locate inside the deep nesting.
+
+**Recommendation:** Invert the condition logic. Replace each nested early-exit block with a named guard function (e.g., `isHookApplicable`, `isPluginEnabled`) so the happy path becomes a linear sequence of calls at the top level. ND 9 combined with `exit_heavy` is a reliable signal that guard extraction will cut apparent complexity significantly without changing behavior.
+
+### `executePostToolUseHooks` — src/hooks/claude-code-hooks/post-tool-use.ts
+
+The post-tool-use counterpart carries a higher CC (42 vs 36) despite shallower nesting (ND 7). The extra branching likely reflects the broader range of post-execution concerns: success vs. error outcomes, result transformation, and plugin-specific finalization. Fan-out 16 is the second-highest in the snapshot and indicates a wide set of collaborators for a single function. All five structural patterns fire here.
+
+**Recommendation:** Separate the success and error paths into dedicated functions (e.g., `handleToolSuccess`, `handleToolError`). The CC difference between the pre and post hooks suggests the post-hook has accrued extra branches incrementally. Decomposing by outcome will make each path's responsibilities explicit and independently testable, and will also reduce the fan-out by confining each collaborator to the path that actually needs it.
+
+### `formatFullSession` — src/tools/background-task/full-session-format.ts
+
+`formatFullSession` is the lowest-risk entry in the top five (18.1) but still carries all five structural patterns. It serializes a background agent's complete session transcript — a task that naturally accumulates branching as it handles different message types, tool call records, error states, and truncation rules. Fan-out 18 is the second-highest in the snapshot.
+
+**Recommendation:** Identify the distinct message-type branches and extract a formatting function for each (e.g., `formatToolCallEntry`, `formatAssistantTurn`, `formatErrorEntry`). A central `formatFullSession` that delegates to these focused formatters will have far lower CC and be straightforward to extend when new message types are added to the session transcript format.
 
 ## Patterns Found
 
@@ -55,9 +91,9 @@ _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, 
 
 ## Key Takeaways
 
-- {/* TODO: takeaway 1 */}
-- {/* TODO: takeaway 2 */}
-- {/* TODO: takeaway 3 */}
+- The anonymous function and `createEventHandler` in `src/plugin/event.ts` are the clearest refactoring targets: CC 90/43 with FO 55/62 puts the event dispatch layer at high change risk for the entire plugin system.
+- The pre and post tool-use hooks are structurally similar and should be refactored together — guard extraction and outcome separation apply to both, and improvements to one will naturally inform the other.
+- `formatFullSession`'s all-five-pattern score at a relatively lower risk score (18.1) makes it a lower-urgency but straightforward win: decompose by message type without requiring deep architectural changes.
 
 ## Reproduce This Analysis
 
