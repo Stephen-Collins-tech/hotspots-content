@@ -1,0 +1,101 @@
+---
+title: "What Happens When You Run Hotspots on 102,000 Functions"
+description: "I stress-tested Hotspots against VS Code, fixed an O(N³) bug I didn't know existed, and added approximate betweenness centrality to keep callgraph analysis viable at scale."
+pubDate: 2026-03-14
+author: "Stephen Collins"
+tags: ["editorial", "hotspots", "performance", "callgraph", "engineering"]
+draft: false
+introContent: "I stress-tested Hotspots against VS Code (102k functions) and found an O(N³) bug, a sampling tail exclusion bug, and a philosophical question about approximation accuracy — all in one sitting."
+---
+
+Most tools are built on small repos and optimized for demos. I wanted to find out what happens when you run Hotspots on a codebase it was never designed for.
+
+The target: [VS Code](https://github.com/microsoft/vscode). 102,313 functions, 50,772 call edges.
+
+## The Bug I Didn't Know Existed
+
+Hotspots computes betweenness centrality for the callgraph — a measure of how many shortest paths between function pairs pass through a given node. High betweenness means a function sits at a structural crossroads: change it, and you affect many other paths through the codebase.
+
+The algorithm is Brandes' — the standard O(N × (N+E)) approach. Fast enough on small repos. On VS Code, the math said ~134 minutes.
+
+That alone was worth fixing. But while profiling, I found something worse.
+
+**The BFS queue was a `Vec` with `insert(0, item)`.**
+
+Every enqueue was O(N). Every BFS pass — one per source node — was O(N²) instead of O(N+E). The full algorithm was effectively O(N³). On anything beyond a toy graph, this was silently paying a cubic cost.
+
+The fix was a one-line swap to `VecDeque`. `push_back` and `pop_front` are both O(1). The algorithm dropped to true O(N×(N+E)).
+
+Two other issues turned up in the same pass:
+
+- **Fan-in computation was O(N×E)**: finding entry points (nodes with no callers) called `fan_in(node)` — which iterates all edges — for every node. A single O(N+E) pass building a `HashMap` fixed it.
+- **PageRank was sorting caller lists on every iteration**: callers don't change between iterations, only ranks do. Sort once, before the loop.
+
+None of these were visible on repos with a few hundred functions. At 100k, they were the difference between running and not running.
+
+## The Accuracy Question
+
+With the O(N³) bug fixed, exact betweenness was still quadratic at scale. For VS Code, that's still estimated at hours. And betweenness in Hotspots isn't an input to risk scoring — it's a display signal, used for ranking and identifying structural hubs.
+
+Paying O(N²) for a display field is hard to justify.
+
+The solution is k-source sampling. Brandes works by summing each source node's contribution to betweenness independently. Sample k sources instead of all N, scale the result by N/k, and you get an unbiased estimator with error O(1/√k).
+
+The threshold is N > 2,000 nodes: below that, exact. Above that, approximate with k=256 by default. The `betweenness_approximate` field in snapshot output tells you which regime you're in.
+
+### But Do You Lose Signal?
+
+This was the question worth spending time on.
+
+The honest answer: the estimated *values* are noisier. The *ranking* is not meaningfully affected at k=256 — especially for the highest-betweenness nodes, which appear as intermediaries on a disproportionate number of paths and accumulate signal from almost any source set.
+
+What Hotspots cares about isn't the exact betweenness score — it's whether the biggest structural offenders appear at the top of the list. A function that brokers 30% of shortest paths will be identified whether you sample 32 sources or 10,000.
+
+The approximation is also deterministic: sources are selected by systematic sampling over the sorted node list, not random sampling. Same graph, same sample, same output. The byte-for-byte determinism invariant the codebase enforces is preserved.
+
+I encoded this guarantee directly in the test suite:
+
+```rust
+fn test_approx_betweenness_top_hubs_rank_preserved() {
+    // Three dumbbell clusters: hub_a (50×50), hub_b (30×30), hub_c (15×15)
+    // ~193 nodes, k=32 — a real approximation
+    // Assert: exact ranking hub_a > hub_b > hub_c
+    // Assert: approx ranking hub_a > hub_b > hub_c
+    // Assert: all three hubs appear in approximate top-3
+}
+```
+
+If this test ever fails, something broke in the sampling logic — not just the values, but the fundamental structural signal the feature is supposed to provide.
+
+## The Vendor Noise Problem
+
+When I ran on ESLint, vendored polyfills and test fixtures dominated the top-risk list. `css-vars-ponyfill@2.js`, `jshint.js`, `large.js` — all scoring critical, all completely irrelevant to the actual codebase health.
+
+I added two detection heuristics to `analyze_file_with_config`:
+
+**Line-length detection:** If ≥ 3 lines exceed 1,000 characters, the file is likely minified or machine-generated. A single long line is common in authored TypeScript (long imports, embedded strings). Three consecutive long lines is not.
+
+**Path-based detection:** Common vendor directory conventions (`vendor/`, `third_party/`, `assets/js/`, `static/js/`, etc.) are flagged as likely third-party code.
+
+Both emit a `warning:` to stderr suggesting the user add the file to `exclude` in `.hotspotsrc.json`.
+
+On VS Code, this produced exactly 9 warnings — zero false positives on authored code. All 9 were genuine: embedded Unicode lookup tables, vendored libraries, base64-encoded images, terminal recordings.
+
+## The Results
+
+| Codebase | Functions | Betweenness | Cold start | Warm run |
+|---|---|---|---|---|
+| ESLint | 11,396 | Approximate | ~2 min | 1.6 s |
+| VS Code | 102,313 | Approximate | ~27 min | 38 s |
+
+No crashes. No OOM. The callgraph computation is no longer the bottleneck at any scale I've tested.
+
+The remaining cold-start cost is the per-function `git log -L` subprocess — one shell call per function, sequential, to compute touch frequency and days since last change. At 100k functions, that's ~27 minutes. The warm run (touch cache hit) is 38 seconds. That gap is the next target.
+
+## What This Means
+
+The algorithmic fixes and approximation work were driven by a simple question: what breaks first?
+
+The answer, on a codebase with 102k functions, was a cubic queue and a quadratic fan-in scan — bugs that were invisible on the repos I'd been testing against. This is the value of stress testing against real, large, production-grade codebases: the failure modes are different in kind, not just degree.
+
+Hotspots v1.8.0 ships with all of this. The Kubernetes-scale stress test is next.
