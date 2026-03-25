@@ -1,0 +1,96 @@
+---
+title: "drawdb's editor and SQL layer carry the highest activity risk — 5 functions to address first"
+titleSeo: "drawdb code health: ControlPanel and SQL utilities lead refactoring priority in drawdb-io/drawdb"
+description: "ControlPanel.jsx is a live regression risk with CC 55 and nesting depth 15 while actively changing; diffToSQL.js carries CC 162 structural debt with extreme blast radius."
+introContent: "drawdb's diagram editor hides a live regression risk: its ControlPanel component is both deeply complex and actively changing right now — CC 55, nesting depth 15, and 163 distinct callees."
+pubDate: 2026-03-25
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: false
+repo: "drawdb-io/drawdb"
+commit: "cf7577db3ceef3eb042e44da7e7daaae0e971c82"
+language: "javascript"
+hotspots_version: "1.10.0"
+analyzed_at: "2026-03-25T04:57:25Z"
+clone_depth: 25
+topPatterns: ["exit_heavy", "long_function", "god_function", "complex_branching", "deeply_nested"]
+patternCounts: {complex_branching: 7, deeply_nested: 6, exit_heavy: 10, god_function: 8, long_function: 10, hub_function: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in drawdb?"
+    answer: "A god function is one that takes on too many responsibilities at once — it handles so many concerns that understanding, testing, or safely changing any one part requires understanding all of it. In drawdb, `ControlPanel` is a clear example: its location at the center of the editor header means it likely coordinates dozens of distinct user actions, which is reflected in its 163 distinct callees. A bug fix or feature addition anywhere in that function risks inadvertently breaking unrelated behavior elsewhere in the editor."
+  - question: "How do I reduce cyclomatic complexity in JavaScript?"
+    answer: "The most direct technique is extract-method refactoring: identify groups of branches that share a single responsibility — a type conversion, a dialect check, a specific action handler — and pull them into named, independently testable functions. For dispatch-heavy functions like `getTypeString`, replacing long if/switch chains with a plain object lookup or a Map cuts cyclomatic complexity to near 1 for the dispatch itself."
+  - question: "Is drawdb actively maintained?"
+    answer: "`ControlPanel` in `src/components/EditorHeader/ControlPanel.jsx` sits in the \"fire\" quadrant with a recent activity score of 20.01, which is direct evidence that the editor layer is seeing active development right now. The SQL utility functions rank in the \"debt\" quadrant, suggesting that the migration and export infrastructure is stable but has accumulated complexity that hasn't been addressed during recent development cycles."
+  - question: "How do I reproduce this analysis?"
+    answer: "Run the Hotspots CLI against the drawdb-io/drawdb repository at commit cf7577d to reproduce these exact scores and rankings."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Complexity × recent commit frequency — functions that are hard to understand AND actively changing are the highest priority for refactoring."
+---
+
+The top risk in drawdb-io/drawdb is split across two layers: `ControlPanel` in `src/components/EditorHeader/ControlPanel.jsx` is a "fire" quadrant hotspot — cyclomatic complexity of 55, max nesting depth of 15, and a recent activity score of 20.01 mean it is both structurally hard to reason about and actively changing right now, making it a live regression risk at every commit. Sitting just behind it, an anonymous function in `src/utils/migrations/diffToSQL.js` carries a cyclomatic complexity of 162 — the highest in the codebase — and represents deep structural debt with an enormous blast radius whenever it is next touched. Across 1,912 total functions, Hotspots flagged 85 as critical, and the top five alone span the editor UI, SQL migration, SQL import, and SQL export layers.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `ControlPanel` | src/components/EditorHeader/ControlPanel.jsx | 21.0 | 55 | 15 | 163 |
+| `<anonymous>` | src/utils/migrations/diffToSQL.js | 19.7 | 162 | 8 | 36 |
+| `<anonymous>` | src/components/EditorHeader/ControlPanel.jsx | 18.8 | 49 | 14 | 40 |
+| `<anonymous>` | src/utils/importSQL/postgres.js | 18.2 | 22 | 8 | 36 |
+| `getTypeString` | src/utils/exportSQL/generic.js | 18.2 | 72 | 6 | 6 |
+
+## Hotspot Analysis
+
+### `ControlPanel` — src/components/EditorHeader/ControlPanel.jsx
+
+Based on its name and location in `EditorHeader`, `ControlPanel` almost certainly renders and orchestrates the primary toolbar for the diagram editor — the hub through which most editor-level user actions flow. Its cyclomatic complexity of 55 means at least 55 independent execution paths, its max nesting depth of 15 is well beyond the refactoring threshold of 8, and its fan-out of 163 means it calls 163 distinct functions — making it one of the broadest coupling points in the codebase. With a recent activity score of 20.01, it is both structurally complex and actively being changed right now; every commit touching this file is a live regression risk across a large surface area.
+
+**Recommendation:** Before the next feature lands here, extract logical sub-sections — menu groups, export actions, import handlers — into dedicated child components or custom hooks to reduce fan-out and bring nesting depth below 8. Add characterization tests against current behavior first so regressions are caught during the decomposition.
+
+### `<anonymous>` — src/utils/migrations/diffToSQL.js
+
+The name and path strongly suggest this anonymous function computes a SQL diff — translating a structural difference between two schema states into SQL migration statements. A cyclomatic complexity of 162 is extreme by any standard, indicating the function encodes a large number of branching rules for handling schema change types, dialects, or edge cases. Its recent activity score of 19.73 is high, and it represents significant accumulated structural debt; the risk is that any modification will be made inside a 162-path function with nesting depth 8 and fan-out 36, with very little room for safe change.
+
+**Recommendation:** Decompose this function by extracting each category of schema diff (table additions, column changes, constraint modifications, etc.) into individually testable, named functions before the next feature requires changes here — the current structure makes incremental, safe modification extremely difficult.
+
+### `getTypeString` — src/utils/exportSQL/generic.js
+
+From its name and path, `getTypeString` likely maps an internal column type representation to its SQL string equivalent for export — a function with a case for each supported data type and dialect variation. Its cyclomatic complexity of 72 reflects a large number of type-branching paths, and although its nesting depth of 6 is more manageable, 72 independent paths each represent a required test case and a potential bug surface. With a recent activity score of 16.68 it hasn't been recently changed, but its complexity and its role as a shared export utility (fan-out of 6 callers likely means it is called across multiple SQL dialects) give it a high blast radius when next modified.
+
+**Recommendation:** Replace the branching type-dispatch logic with a lookup table or strategy map keyed by type identifier, which will reduce cyclomatic complexity dramatically and make adding or correcting type mappings a data-level change rather than a code-level one.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 10 |
+| `long_function` | 10 |
+| `god_function` | 8 |
+| `complex_branching` | 7 |
+| `deeply_nested` | 6 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- `ControlPanel` in `src/components/EditorHeader/ControlPanel.jsx` has fan-out of 163 and is actively changing (recent activity score 20.01) — decompose it into focused sub-components before adding any new editor toolbar features.
+- The anonymous function in `src/utils/migrations/diffToSQL.js` has cyclomatic complexity of 162 and is structural debt: establish a characterization test suite around it now, before the next schema-diff feature forces a change inside it.
+- `getTypeString` in `src/utils/exportSQL/generic.js` has 72 execution paths — replacing its branching logic with a data-driven type map would cut complexity and make dialect-specific corrections safe and isolated.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/drawdb-io/drawdb
+cd drawdb
+git checkout cf7577db3ceef3eb042e44da7e7daaae0e971c82
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
