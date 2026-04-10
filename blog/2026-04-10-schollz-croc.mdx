@@ -1,0 +1,96 @@
+---
+title: "croc's core transfer layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "schollz/croc code health: Send, Receive, and CLI transfer functions lead refactoring priority"
+description: "croc's file-transfer core in src/croc/croc.go and src/cli/cli.go dominates risk, with four fire-quadrant god functions actively changing at the highest complexity in the codebase."
+introContent: "Four of croc's five riskiest functions are actively changing right now — and they all live in the same two files that orchestrate every file transfer. That's a live regression risk, not a backlog item"
+pubDate: 2026-04-10
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "schollz/croc"
+commit: "9a3d42ae7d4eecbf99266dafb79330e5774f81f3"
+language: "go"
+hotspots_version: "1.12.0"
+analyzed_at: "2026-04-10T05:28:26Z"
+clone_depth: 25
+topPatterns: ["god_function", "long_function", "exit_heavy", "deeply_nested", "complex_branching"]
+patternCounts: {deeply_nested: 4, exit_heavy: 8, god_function: 10, long_function: 9, complex_branching: 4, neighbor_risk: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in croc?"
+    answer: "A god function is one that has accumulated so many responsibilities that it becomes the single point of coordination for a broad slice of the system — in croc, 10 of the top hotspot functions carry this pattern, most prominently `Send` in croc.go with 50 outbound calls. The problem is coupling: when one function touches that many other parts of the codebase, any change to it — even a small one — can have unintended ripple effects far from the edit site. It also makes the function nearly impossible to unit-test in isolation, because its behavior depends on the behavior of dozens of collaborators."
+  - question: "How do I reduce fan-out in Go?"
+    answer: "Introduce intermediate coordinator types or service structs that group related collaborators behind a single interface, so the high-fan-out function delegates to a small set of well-defined collaborators rather than calling 40–50 disparate functions directly; this also makes the function's dependencies explicit and injectable for testing."
+  - question: "Is croc actively maintained?"
+    answer: "The data strongly suggests yes: four of the five top-risk functions — `Send`, `send`, `receive`, and `Receive` — are in the fire quadrant, meaning they combine high structural complexity with high recent commit activity, which hotspots only assigns when a function is genuinely being modified in recent history. The top function's recent activity score of 16.37 is the highest in the dataset, indicating sustained attention to the core transfer logic."
+  - question: "How do I reproduce this analysis?"
+    answer: "Run the hotspots CLI against the schollz/croc repository at commit 9a3d42a to reproduce the scores and quadrant assignments shown here."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Complexity × recent commit frequency — functions that are hard to understand AND actively changing are the highest priority for refactoring."
+---
+
+croc, the peer-to-peer file transfer tool, has 33 critical-band functions out of 161 total — and its four highest-risk hotspots are all in the 'fire' quadrant, meaning they combine structural complexity with active recent commit churn. The top-ranked function, `Send` in `src/croc/croc.go`, carries a recent activity score of 16.37 and a fan-out of 50, making every change to it a potential ripple across half the codebase. These aren't cleanup candidates sitting in a backlog — they are live regression surfaces being modified today.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `Send` | src/croc/croc.go | 17.2 | 8 | 7 | 50 |
+| `send` | src/cli/cli.go | 16.2 | 12 | 4 | 40 |
+| `receive` | src/cli/cli.go | 15.4 | 15 | 3 | 32 |
+| `Receive` | src/croc/croc.go | 15.2 | 12 | 4 | 43 |
+| `processMessageFileInfo` | src/croc/croc.go | 14.6 | 10 | 5 | 23 |
+
+## Hotspot Analysis
+
+### `Send` — src/croc/croc.go
+
+As the core library-level entry point for initiating a file transfer, `Send` is almost certainly responsible for orchestrating the entire outbound transfer lifecycle — connection setup, file preparation, relay negotiation, and progress reporting. Its fan-out of 50 is the highest in the dataset, meaning it directly invokes 50 distinct functions, giving it an enormous blast radius: a signature change or behavioral shift here propagates across virtually the entire codebase. A max nesting depth of 7 signals deeply layered conditional logic that is hard to reason about in isolation, and with a recent activity score of 16.37 in the fire quadrant, this function is being actively modified while already carrying that structural load — a textbook live regression risk. The god_function and long_function patterns confirm it is doing far more than any single function should.
+
+**Recommendation:** Before the next commit touches `Send`, write characterization tests that capture its current input/output behavior across transfer scenarios; then begin extracting sub-responsibilities — connection orchestration, file chunking coordination, and progress lifecycle — into dedicated functions to reduce the fan-out from 50 toward something reviewable.
+
+### `send` — src/cli/cli.go
+
+The lowercase `send` in `src/cli/cli.go` is the CLI-layer counterpart to the library's `Send` — it likely parses user flags, validates arguments, builds the options struct, and delegates to the library. Its cyclomatic complexity of 12 means there are at least 12 independent execution paths through its branching logic, each a required test case, and its fan-out of 40 shows it reaches broadly into the codebase despite being a CLI entry point. The neighbor_risk pattern is a notable flag here: changes to `send` in cli.go are correlated with required edits in adjacent code, meaning a focused change here tends to become a wider, coordinated edit. With a recent activity score of 14.31 in the fire quadrant, this function is actively changing under those conditions right now.
+
+**Recommendation:** Decompose the 12-path branching logic by extracting flag validation and options construction into separate, independently testable functions; address the neighbor_risk signal by auditing which adjacent functions in cli.go are most frequently co-edited with `send` and consider co-locating shared logic.
+
+### `receive` — src/cli/cli.go
+
+The `receive` function in `src/cli/cli.go` is the CLI entry point for inbound file transfers, and at a cyclomatic complexity of 15 it is the most branch-heavy of the CLI-layer functions — 15 independent execution paths representing every combination of flags, error conditions, and user prompts the receiver must handle. Its fan-out of 32 shows it still reaches broadly across the codebase, and the exit_heavy pattern indicates multiple return paths that are each a gap in test coverage. In the fire quadrant with a recent activity score of 13.63, it is actively being changed at a complexity level that makes each edit risky to get right.
+
+**Recommendation:** Use the CC of 15 as a decomposition target: identify the dominant branching axes — likely overwrite prompts, relay selection, and password handling based on what a CLI receiver must do — and extract each into a named function so that individual paths can be unit-tested in isolation.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 10 |
+| `long_function` | 9 |
+| `exit_heavy` | 8 |
+| `deeply_nested` | 4 |
+| `complex_branching` | 4 |
+| `neighbor_risk` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- `Send` in src/croc/croc.go has a fan-out of 50 and is in the fire quadrant — add characterization tests before any further modifications to contain blast radius.
+- The `receive` function in src/cli/cli.go has the highest cyclomatic complexity of the top hotspots at 15, meaning at minimum 15 test cases are needed to cover its branches; audit current test coverage against that number.
+- `processMessageFileInfo` in src/croc/croc.go is the one debt-quadrant function in the top five — it hasn't been under recent pressure, but its nesting depth of 5 and fan-out of 23 mean it carries high blast radius when next touched; treat it as a refactoring prerequisite before the next feature push into croc.go.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/schollz/croc
+cd croc
+git checkout 9a3d42ae7d4eecbf99266dafb79330e5774f81f3
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
