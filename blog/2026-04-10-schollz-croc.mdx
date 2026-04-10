@@ -5,7 +5,7 @@ description: "croc's file-transfer core in src/croc/croc.go and src/cli/cli.go d
 introContent: "Four of croc's five riskiest functions are actively changing right now — and they all live in the same two files that orchestrate every file transfer. That's a live regression risk, not a backlog item"
 pubDate: 2026-04-10
 tags: ["oss", "go", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "schollz/croc"
 commit: "9a3d42ae7d4eecbf99266dafb79330e5774f81f3"
 language: "go"
@@ -60,6 +60,18 @@ The lowercase `send` in `src/cli/cli.go` is the CLI-layer counterpart to the lib
 The `receive` function in `src/cli/cli.go` is the CLI entry point for inbound file transfers, and at a cyclomatic complexity of 15 it is the most branch-heavy of the CLI-layer functions — 15 independent execution paths representing every combination of flags, error conditions, and user prompts the receiver must handle. Its fan-out of 32 shows it still reaches broadly across the codebase, and the exit_heavy pattern indicates multiple return paths that are each a gap in test coverage. In the fire quadrant with a recent activity score of 13.63, it is actively being changed at a complexity level that makes each edit risky to get right.
 
 **Recommendation:** Use the CC of 15 as a decomposition target: identify the dominant branching axes — likely overwrite prompts, relay selection, and password handling based on what a CLI receiver must do — and extract each into a named function so that individual paths can be unit-tested in isolation.
+
+### `Receive` — src/croc/croc.go
+
+`Receive` is the library-level entry point for inbound file transfers — the counterpart to the CLI's `receive` in cli.go. Its fan-out of 43 is second only to `Send` in this dataset, meaning it reaches into 43 distinct functions to coordinate the receiving side of a transfer: relay negotiation, decryption, file assembly, and progress handling. A cyclomatic complexity of 12 adds at least 12 independent execution paths through its branching logic, and those two factors together earn it the god_function label. Unlike its CLI counterpart, `Receive` operates at the library layer where callers outside croc's own CLI can invoke it directly, making its interface harder to change safely. At Risk 15.2 in the fire quadrant, it is under active change pressure right now.
+
+**Recommendation:** Audit `Receive`'s 43 callees and group them by responsibility — relay setup, cryptographic handshake, file I/O, and progress reporting are likely natural seams. Extracting each group into a dedicated coordinator function reduces fan-out to a reviewable number and makes the inbound transfer lifecycle readable at a glance.
+
+### `processMessageFileInfo` — src/croc/croc.go
+
+`processMessageFileInfo` is the one debt-quadrant function in the top five: its Risk score of 14.6 reflects structural weight rather than recent churn, meaning it is complex but not currently under heavy modification. A nesting depth of 5 signals layered conditional logic — likely parsing and validating the file metadata messages exchanged during a transfer — and a fan-out of 23 combined with a cyclomatic complexity of 10 means any future edit to this function must navigate significant branching and callee coupling. Debt-quadrant functions are lower urgency than fire-quadrant ones, but they become live risks the moment a new feature or protocol change forces a modification.
+
+**Recommendation:** Before the next change to the file-info message protocol touches this function, extract the validation logic for each metadata field into a named helper — this reduces both the CC and the nesting depth, and leaves the function as a thin dispatcher that is straightforward to follow when the next change arrives.
 
 ## Patterns Found
 
