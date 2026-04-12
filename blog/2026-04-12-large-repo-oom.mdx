@@ -1,0 +1,143 @@
+---
+title: "Running Hotspots on expo/expo Without Running Out of Memory"
+description: "expo/expo crashed Hotspots with an OOM. Here's what caused it, what I changed — a SQLite snapshot store, parallel touch metrics, convergence PageRank, and a set of large-repo escape hatches — and what the numbers look like now."
+pubDate: 2026-04-12
+author: "Stephen Collins"
+tags: ["editorial", "hotspots", "performance", "engineering", "rust"]
+introContent: "expo/expo crashed Hotspots with an OOM. Here's the full account: what broke, the systematic fixes across memory and CPU, and the new escape-hatch flags that make very large repos practical."
+---
+
+After the VS Code stress test last month, I knew Hotspots had an O(N³) callgraph bug. I fixed it. Approximate betweenness held up at 102k functions. Things looked reasonable.
+
+Then I tried expo/expo.
+
+expo is a React Native platform with a massive monorepo — the kind of codebase that tests every assumption you made about "large." The analysis didn't produce a slow result. It produced an OOM and a crash.
+
+That was the start of a focused push to make Hotspots genuinely viable on large repos, not just fast-on-demos viable.
+
+## What Was Causing the OOM
+
+The first thing I did was look at where memory actually accumulates during analysis.
+
+The snapshot pipeline in Hotspots works roughly like this: parse files, compute metrics, run the callgraph, collect touch data from git, assemble `FunctionRiskReport` structs, and then serialize them. The problem was that all of those structs were accumulated in a `Vec` in memory before any serialization happened. For a repo with 50k+ functions, each with callgraph metrics, touch counts, driver labels, and risk factor breakdowns, that Vec becomes very large before anything is written to disk.
+
+The fix was to move to a **SQLite-backed snapshot store** (T4 in the internal ticket numbering). Instead of accumulating function reports in RAM, each function is written to SQLite as it's produced. The serialization pipeline — whether to JSON, JSONL, or HTML — reads from SQLite row by row. Peak memory is now bounded by the size of a single row plus the SQLite page cache, not the full dataset.
+
+The schema is straightforward: a `commits` table keyed by SHA, a `functions` table keyed by `(commit_sha, file, name, start_line)`, and a `percentile_thresholds` table computed once per commit using `NTILE(100)` over the function scores. The `TempDb` type (in-memory SQLite) handles analysis mode; `SnapshotDb` (file-backed) handles the persistent snapshot store.
+
+```rust
+// Before: accumulate everything, then serialize
+let mut reports: Vec<FunctionRiskReport> = Vec::new();
+// ... populate ...
+let json = serde_json::to_string(&reports)?;  // full dataset in RAM
+
+// After: write as you go, stream on read
+let db = TempDb::new()?;
+for report in reports_iter {
+    db.insert_function(&commit_sha, &report)?;
+}
+// Read back row-by-row when serializing
+```
+
+806 lines of new code in `hotspots-core/src/db/mod.rs`, replacing what had been an implicit accumulation pattern spread across the pipeline.
+
+## The Touch Metrics Problem
+
+Memory wasn't the only bottleneck. Touch metrics — how many times a function was changed in the last 30 days — required `git log -L` calls. Per-function, that's one subprocess per function. On a repo with 50k+ functions, this adds up quickly.
+
+**Parallel touch metrics (`--jobs`)** was the first fix. The touch computation was moved to a channel-based parallel pipeline: a configurable number of worker threads each drain a shared queue of `git log -L` requests. The `--jobs` flag controls parallelism. For local development on a laptop, `--jobs 4` is reasonable; the benchmark infrastructure runs at `--jobs 2` for reproducibility.
+
+**Batched stale-file detection** was a related fix. A separate git call was checking last-modified dates for "stale" files (not recently changed). This was running one `git log` call per file instead of batching all files into a single invocation. On a repo with thousands of source files, this produced a visible CPU spike during analysis — many short-lived subprocesses instead of one longer one.
+
+These two changes together make touch metrics practical at scale. But for very large repos, even a parallel, batched implementation pays a real cost. The `--skip-touch-metrics` flag provides a hard exit:
+
+```bash
+hotspots analyze . --skip-touch-metrics
+```
+
+All touch counts are reported as `0`. Fan-out, fan-in, cyclomatic complexity, nesting depth — everything except the git-log-derived fields — still runs. For a first-pass analysis on a 50k+ function codebase, skipping touch metrics reduces cold-start time significantly (measured at ~66 seconds saved on expo/expo).
+
+There's also `--no-per-function-touches`, a softer version: use file-level touch batching (one `git log` per file, shared across all functions in that file) instead of the more accurate per-function `git log -L`. Less git I/O, slightly lower accuracy.
+
+The choice between the three modes:
+
+| Mode | Accuracy | Cold-start cost |
+|---|---|---|
+| Per-function (`--per-function-touches`) | Highest | ~66s (expo/expo) |
+| File-level batching (`--no-per-function-touches`) | Good | ~15s (expo/expo) |
+| Skip entirely (`--skip-touch-metrics`) | Touch = 0 | Negligible |
+
+## The CPU Problem: Callgraph at Scale
+
+The betweenness approximation from the VS Code work handles large callgraphs correctly — but it's still doing real work. For repos where the callgraph has an extremely high edge count, even the approximate algorithm is expensive.
+
+**`--callgraph-skip-above N`** is an escape hatch: if the callgraph has more than N edges, skip betweenness centrality computation entirely. Fan-in and fan-out are still computed (those are O(N+E) passes); only the O(N×(N+E)) betweenness (and the derived PageRank) is skipped. The flag accepts a threshold in edges:
+
+```bash
+hotspots analyze . --callgraph-skip-above 100000
+```
+
+Alongside this, **convergence PageRank** replaced the fixed-iteration approach. The previous PageRank ran a fixed number of iterations regardless of whether the values had stabilized. The new implementation exits early when the maximum rank delta across all nodes drops below 1e-6. For most callgraphs this converges in 20–40 iterations; the old fixed-iteration default was 100. On a large repo where PageRank is actually running, this is a real reduction in wall time.
+
+## Eliminating Duplicate Allocations in the Callgraph (T3.1)
+
+While profiling expo/expo, I found that function IDs were being allocated twice per function during callgraph construction: once when building the node index, and again when resolving call edges. This was a linear-cost redundancy — not a bottleneck on small repos, but visible on a 50k-function graph.
+
+The fix was a single-pass construction that reuses the node ID from the initial insertion during edge resolution. 60 lines changed in `lib.rs`. No behavior change, ~2× fewer allocations during callgraph build.
+
+## Go Support
+
+While working on the Kubernetes benchmark (a comparably large codebase), vendored and generated files dominated the top-risk list — same problem as the minified JS issue in VS Code, but in Go form. `vendor/**`, `*.pb.go`, and `zz_generated*.go` are now part of the default excludes:
+
+```rust
+// Added to DEFAULT_EXCLUDES in config.rs
+"**/vendor/**",
+"**/*.pb.go",
+"**/zz_generated*.go",
+```
+
+No config file needed. Go projects get clean analysis output by default.
+
+## The Benchmark Infrastructure
+
+All of this was driven by a real benchmark setup: a Docker container that clones expo/expo (or Kubernetes, or React), runs analysis with and without various flags, and records peak RSS, wall time, and output size. The benchmark tooling (`benchmarks/memory-crash/`) now has a consolidated `bench.py` with `stress` and `show` subcommands, CSV output for each run, and PNG plots via matplotlib.
+
+The container runs as a non-root user (`bench`, UID 1001) and clones repos into `/repo`. The benchmark entrypoint handles the dispatch so that fly.io CLI doesn't get confused by flags in the command string.
+
+Having real numbers from real repos — not synthetic benchmarks — is what made it possible to measure progress concretely.
+
+## What This Looks Like in Practice
+
+If you're running Hotspots on a large repo and hitting performance issues, the practical recommendation:
+
+**Small-to-medium repos (< 5k functions):** No changes needed. Default settings work.
+
+**Large repos (5k–50k functions):** Add `--no-per-function-touches` to use file-level touch batching. Consider `--callgraph-skip-above 50000` if callgraph analysis is slow.
+
+**Very large repos (50k+ functions):** Start with `--skip-touch-metrics` for a fast first pass. If you need touch data, run without the flag and let the cache warm — subsequent runs are fast.
+
+```bash
+# First pass on a large repo
+hotspots analyze . --skip-touch-metrics --callgraph-skip-above 100000
+
+# Once you have a sense of the codebase, warm the touch cache
+hotspots analyze . --callgraph-skip-above 100000
+```
+
+The configuration file equivalents:
+
+```json
+{
+  "per_function_touches": false
+}
+```
+
+The `--skip-touch-metrics` flag doesn't have a config file equivalent by design — it's meant as a conscious override, not a default you set and forget.
+
+## The SQLite Architecture Going Forward
+
+The SQLite store is T4 in a longer planned refactor (documented in `docs/architecture/sqlite-pipeline-refactor.md`). The goal is to pipeline every phase of analysis through SQLite rather than holding intermediate data in memory. Phase outputs feed directly into the next phase as SQL queries rather than in-memory data structures.
+
+At the extremes — repos with 200k+ functions — the current approach still materializes some intermediate state. The next phase of this work would replace those remaining in-memory collections with SQL views and streaming cursors. The infrastructure for that is now in place; T4 was the foundation.
+
+For now, the OOM is gone, expo/expo runs to completion, and the escape-hatch flags make the tradeoffs explicit. That's a reasonable place to be.
