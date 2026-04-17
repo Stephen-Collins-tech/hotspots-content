@@ -5,7 +5,7 @@ description: "Analysis of iced-rs/iced at commit dffc676 finds run_action (CC 16
 introContent: "Two functions in iced's winit and widget layers carry extreme cyclomatic complexity — one topping CC 166 — making them the highest blast-radius targets before the next development push."
 pubDate: 2026-04-17
 tags: ["oss", "rust", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "iced-rs/iced"
 commit: "dffc6765238090db89e33b4b84400a12e7dacfa2"
 language: "rust"
@@ -55,11 +55,23 @@ As the core event-handling function for the text input widget, `update` almost c
 
 **Recommendation:** Decompose `update` in `widget/src/text_input.rs` by input category — separate handlers for cursor/selection logic, clipboard operations, and character insertion — each testable in isolation; this alone should reduce the effective CC dramatically and make the exit-heavy paths traceable to their specific input contracts.
 
+### `run` — test/src/lib.rs
+
+Despite a relatively modest cyclomatic complexity of 18, `run` in iced's test harness ranks third due to higher recent commit activity — this function is touched regularly as the test infrastructure evolves alongside the framework. A fan-out of 18 means it dispatches broadly across test helpers, and as the top-level executor for iced's test layer it is a likely breakage point whenever core event-dispatch or state APIs change. The combination of moderate complexity and active churn makes it a higher immediate priority than it would appear from structural metrics alone.
+
+**Recommendation:** Keep `run`'s responsibilities narrow by extracting the three main concerns — harness setup, event dispatch, and result collection — into focused helpers; this caps future fan-out growth and makes regressions easier to isolate when the test API changes.
+
 ### `run_action` — winit/src/lib.rs
 
-Sitting alongside `run_instance` in the winit integration layer, `run_action` likely dispatches the full set of runtime actions — window commands, clipboard requests, drag-and-drop, and platform-specific operations — across the application. With a cyclomatic complexity of 166, the highest in the entire top-5 list, it represents an extraordinary number of branching paths; despite a relatively contained nesting depth of 4, the complex-branching pattern and god-function classification confirm it is doing far more than a single well-scoped function should. Its recent activity score of 15.45 is in the debt quadrant — it is structural debt that has not been actively touched recently, but its CC of 166 and fan-out of 53 mean a single modification here can ripple across more than half a hundred call sites.
+Sitting alongside `run_instance` in the winit integration layer, `run_action` likely dispatches the full set of runtime actions — window commands, clipboard requests, drag-and-drop, and platform-specific operations — across the application. With a cyclomatic complexity of 166, the highest in the entire top-5 list, it represents an extraordinary number of branching paths; despite a relatively contained nesting depth of 4, the complex-branching pattern and god-function classification confirm it is doing far more than a single well-scoped function should. Its activity-weighted risk score of 15.6 places it in the debt quadrant — it has not been actively touched recently, but its CC of 166 and fan-out of 53 mean a single modification here can ripple across more than half a hundred call sites.
 
 **Recommendation:** Map `run_action`'s 53 outbound calls by action category (rendering, windowing, I/O, etc.) and extract each category into a dedicated dispatcher function; this reduces the single-function CC and makes each action group independently testable and reviewable.
+
+### `update` — widget/src/mouse_area.rs
+
+The mouse area widget's `update` handles the full range of pointer events — enter, leave, press, release, move — each as a separate branch. A cyclomatic complexity of 40 is high for a widget event handler, indicating many distinct interaction paths are packed into one function rather than delegated to helpers. Fan-out of 6 is contained, but the complex-branching pattern means the logic is dense with conditionals. With a risk score of 14.2 this function sits in the debt quadrant — not actively churning right now, but the high branch count makes it fragile ground for future pointer-event additions.
+
+**Recommendation:** Extract named handlers for each pointer event category (`on_press`, `on_release`, `on_enter`, `on_exit`) into separate focused methods; each becomes independently testable and the aggregate CC of `update` drops to a manageable level.
 
 ## Patterns Found
 
