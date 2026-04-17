@@ -1,0 +1,88 @@
+---
+title: "Hub functions are a frontend framework problem — here's the data"
+titleSeo: "TypeScript hub functions: why UI framework repos concentrate coupling in coordinator functions"
+description: "In our corpus of 53 OSS repos, hub_function appears almost exclusively in TypeScript UI framework and library repos. useReactFlow, useFieldArray, putContentOntoCurrentPage — here's why the pattern clusters there and what to do about it."
+pubDate: 2026-04-17
+author: "Stephen Collins"
+tags: ["editorial", "typescript", "code-health", "refactoring", "data"]
+draft: false
+introContent: "hub_function barely appears in Go, Rust, or Python repos. In TypeScript UI framework code it's concentrated in coordinator functions with fan-out values of 37–112. Here's why."
+summary: "Hub functions — high fan-out coordinator functions with broad coupling — cluster in TypeScript UI framework repos. The cause is structural, not stylistic."
+qaSection:
+  - question: "What is a hub_function?"
+    answer: "A hub_function is a Tier 2 relational pattern flagged by Hotspots when a function has unusually high fan-out (many distinct callees) and acts as a coordination point between many other parts of the codebase. Unlike a god_function, which is identified primarily by raw structural complexity (high CC), a hub_function may have moderate cyclomatic complexity — it's a connector, not a decision-maker. The risk is fragility: a hub function is exposed to interface changes in every one of its callees, making it brittle even when its own internal logic is simple."
+  - question: "Why do hub functions appear in UI frameworks but not in Go or systems code?"
+    answer: "UI frameworks built on React (or similar component models) naturally produce coordinator functions: the primary public hook that exposes an entire API surface, the root component that wires together rendering, state, and event handling, the form control factory that must know about fields, validation, and submission simultaneously. These patterns are structural — they exist because the framework needs a single binding point. Go CLI tools and Rust systems code tend toward sequential pipeline architectures where each step is bounded, without the fan-in pressure that React's hook model creates."
+  - question: "What are examples of hub functions in real TypeScript repos?"
+    answer: "useReactFlow in xyflow (FO 37) — the primary public hook that aggregates the entire React Flow API. useFieldArray in react-hook-form (FO 52) — coordinates array field operations across the form control layer. putContentOntoCurrentPage in tldraw (FO 51) — the editor's central content-placement API. createFormControl in react-hook-form (FO 112) — the factory function that produces every form instance. App in vadimdemedes/ink (FO 47) — the terminal UI root component."
+  - question: "How do I reduce fan-out in a hub function?"
+    answer: "The most effective approach is to introduce intermediate abstraction layers that group related callees behind a focused collaborator. For a React hook like useReactFlow, splitting into domain-specific sub-hooks (viewport, node mutations, edge management) lets each sub-hook own a bounded slice of the API surface, with the top-level hook simply composing them. The goal is not to eliminate the coordinator — some coordination is necessary — but to ensure it delegates to a small number of well-scoped collaborators rather than reaching directly across the full codebase."
+  - question: "Is a hub_function always a problem?"
+    answer: "Not always. Some hub functions are intentional API aggregation points — useReactFlow exists specifically to be the single import a consumer needs. The question is whether the function's fan-out has grown beyond its intended scope. A hub function that exposes 10 tightly related capabilities is different from one that has accumulated 80 callees across unrelated subsystems. The signal to act is when the hub function is also the highest-risk target for breakage when its callees change — at that point its blast radius has become a liability."
+---
+
+Across the 53 repositories we've analysed with Hotspots, one pattern is conspicuously absent from Go, Rust, Python, and Java repos: `hub_function`. It appears in just 5 repos — and all 5 are TypeScript projects, all building UI frameworks, component libraries, or browser-based applications.
+
+This isn't a coincidence. It reflects a structural difference in how UI framework code is organised, and it has a specific implication for how those codebases should be refactored.
+
+## The Five Repos
+
+| Repo | Hub function | Fan-out | CC | Role |
+|---|---|---|---|---|
+| `xyflow/xyflow` | `useReactFlow` | 37 | 16 | Primary public API hook |
+| `react-hook-form/react-hook-form` | `useFieldArray` | 52 | 28 | Array field coordinator |
+| `react-hook-form/react-hook-form` | `createFormControl` | 112 | 174 | Form instance factory |
+| `tldraw/tldraw` | `putContentOntoCurrentPage` | 51 | 36 | Central editor content API |
+| `umami-software/umami` | Tracker function | 42 | 32 | Analytics event coordinator |
+| `vadimdemedes/ink` | `App` | 47 | 10 | Terminal UI root component |
+
+A few things stand out. First, the fan-out values are large — 37 to 112 distinct callees from a single function. Second, several of these functions have moderate cyclomatic complexity relative to their fan-out: `useReactFlow` has CC 16, and ink's `App` has CC 10. They are not complex decision-makers. They are connectors.
+
+That's the defining characteristic of a hub function: high fan-out without proportionally high branching. The function's risk profile comes from its dependencies, not its own logic.
+
+## Why UI Framework Code Produces Hub Functions
+
+React's programming model creates pressure toward coordinator functions that other paradigms don't.
+
+A React hook that exposes a library's public API must aggregate capabilities from across the codebase into a single import. `useReactFlow` in xyflow is the function every consumer calls — it needs to expose viewport controls, node manipulation, edge management, and selection state. It could split those into domain-specific hooks, but offering one unified hook is a deliberate API choice that concentrates fan-out.
+
+The same pressure applies to the form control factory (`createFormControl` in react-hook-form), the root component (`App` in ink), and the central editor API (`putContentOntoCurrentPage` in tldraw). Each exists because the framework needs a binding point that knows about everything. Over time, as the framework grows, these binding points accumulate more and more callees.
+
+In contrast, Go CLI tools like `schollz/croc` use sequential pipelines where each step (`Send`, `receive`, `processMessageFileInfo`) handles a bounded stage. No function needs to aggregate the full API surface. The same is true for Rust systems code: ownership rules actively discourage the shared-mutable-state patterns that produce high fan-in, and the ecosystem doesn't have a "primary hook" convention.
+
+## The Risk Profile Is Different from a God Function
+
+A hub function with moderate CC but high fan-out is a different kind of risk than a god function with high CC and high fan-out.
+
+A **god function** is brittle because of its own internal complexity — there are many paths through it, any of which can break when the function is modified. The danger is internal.
+
+A **hub function** (in the pure case, low CC / high FO) is brittle because of its dependencies — every callee is a potential source of interface changes that require the hub to update. A callee that changes its signature, its error behaviour, or its return type creates a change requirement in the hub. With 50+ callees, the probability of a callee changing in any given development cycle approaches 1. The danger is external.
+
+This distinction matters for refactoring strategy:
+
+- For a god function, the intervention is decomposition: extract internal logic into named sub-functions to reduce CC.
+- For a hub function, the intervention is **layering**: introduce intermediate collaborators that own a bounded slice of the callees, so the hub delegates to a small number of well-scoped objects rather than 50+ individual functions.
+
+`useReactFlow` doesn't need to be decomposed — its logic is already flat. It needs its 37 callees grouped into 3–4 domain objects (`viewport`, `nodes`, `edges`, `selection`) that the hook composes. The fan-out from `useReactFlow` drops to 4; the domain objects absorb the rest.
+
+## The Exception: createFormControl
+
+`createFormControl` in react-hook-form is both a hub function and a god function — CC 174 and FO 112 simultaneously. This is the worst-case combination: the function has extreme internal complexity and extreme external coupling. It is flagged with both patterns.
+
+In these cases, the refactoring is harder because both internal and external problems need to be addressed, and they interact. Extracting logic from `createFormControl` into sub-functions is correct, but those sub-functions will themselves inherit some of the fan-out. The right sequence is to stabilise the callee interfaces first (reduce the churn sources), then decompose the internal logic once the dependency surface is predictable.
+
+## What to Watch For
+
+If you're building a TypeScript UI library or framework, hub functions will appear — some are inevitable and intentional. The signal that one has crossed from deliberate to problematic:
+
+- It appears in your top-5 risk functions by activity-weighted score (meaning it's being actively changed while already broadly coupled)
+- Its fan-out has grown past the scope of its stated purpose — it's reached into subsystems that aren't really its responsibility
+- A change in a single callee triggers a cascade of changes in the hub
+
+At that point, the intervention is layering, not deletion. The hub should still exist; it should just delegate to well-scoped collaborators instead of reaching directly across the codebase.
+
+---
+
+This analysis covers 53 open-source repositories analysed with Hotspots between March and April 2026. Hub function data reflects the top-5 hotspot functions per repo as scored by activity-weighted risk. Part of a series: [five patterns in TypeScript OSS repos](/blog/typescript-structural-patterns) and [why branching leads over exit_heavy in TypeScript](/blog/typescript-branching-complexity).
+
+_Hotspots highlights structural and activity risk — not "bad code." [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
