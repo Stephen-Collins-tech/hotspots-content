@@ -1,0 +1,131 @@
+---
+title: "Hotspots now handles monorepos — what changed from v1.11 to v1.15.1"
+description: "From --auto-analyze to a SQLite pipeline to hybrid touch mode, here's what went into making hotspots run on expo/expo (28k functions, 107 MB peak RSS) without OOM."
+pubDate: 2026-04-24
+author: "Stephen Collins"
+tags: ["editorial", "hotspots", "performance", "monorepo", "release"]
+ogImage: "/og.png"
+introContent: "The diff command shipped in v1.11. Since then: four months of OOM fixes, a new SQLite pipeline, hybrid touch mode, and --auto-analyze. Hotspots now handles 28k-function monorepos at 107 MB peak RSS."
+qaSection:
+  - question: "What is --auto-analyze in hotspots diff?"
+    answer: "With --auto-analyze, hotspots diff handles a cold start automatically. If either snapshot is missing, it checks out the ref into a temporary git worktree, runs hotspots analyze --mode snapshot there, persists the result, and continues with the diff — all in one command. Without it, a missing snapshot exits with code 3 and tells you to create it manually."
+  - question: "What is hybrid touch mode and when should I use it?"
+    answer: "Hybrid touch mode (--hybrid-touches N) uses file-level git commit counts for rarely-changed files and switches to precise per-function git log -L tracking only for files with N or more commits in the last 30 days. Use it when analyzing large monorepos where full per-function tracking would exhaust memory. The default threshold in the cloud pipeline is 5 commits/30d."
+  - question: "Why did large repos cause OOM before v1.15.1?"
+    answer: "Two root causes. First, the analysis pipeline held multiple large data structures in memory simultaneously — FunctionRiskReport, CallGraph, and FunctionSnapshot all overlapping, peaking around 250 MB on expo/expo. Second, commits touching more than 200 files (version bumps, mass renames) generated O(n²) co-change string pairs that could exhaust memory entirely. Both are fixed in v1.15.1."
+  - question: "How does the SQLite pipeline reduce peak RSS?"
+    answer: "The refactored pipeline uses an in-memory SQLite database (TempDb) as the single store between phases. Each phase writes its results to SQLite and then drops its in-memory structure before the next phase starts. This means only one large structure lives in RAM at a time, instead of three overlapping."
+  - question: "What version should I be on?"
+    answer: "v1.15.1, released 2026-04-24. Install or upgrade with: curl -fsSL https://raw.githubusercontent.com/Stephen-Collins-tech/hotspots/main/install.sh | sh"
+---
+
+In [March we shipped `hotspots diff`](/blog/hotspots-diff-command/) — a command that compares any two git refs rather than just a commit to its parent. The post included a FAQ answer that acknowledged a gap:
+
+> *The `--auto-analyze` flag (coming in a future release) will handle this by spinning up temporary git worktrees automatically.*
+
+That future is v1.15.1, released today. But getting here took more than one flag. Between v1.11.0 and v1.15.1, the most significant work was making hotspots run on large monorepos at all — repos with tens of thousands of functions where the analysis process was simply being killed by the operating system.
+
+This post covers what changed and why.
+
+---
+
+## --auto-analyze closes the cold-start gap
+
+The diff command requires snapshots at both refs before it can run. Without `--auto-analyze`, a missing snapshot exits with code 3:
+
+```
+error: no snapshot found for ref 'main' (3a8f12c)
+  → run: git checkout main && hotspots analyze --mode snapshot
+```
+
+With `--auto-analyze`, that case is handled inline:
+
+```bash
+hotspots diff main HEAD --auto-analyze
+```
+
+If either snapshot is missing, hotspots checks out the ref into a temporary git worktree (leaving your working tree untouched), runs a full snapshot analysis there, persists the result to `.hotspots/snapshots/`, and continues with the diff. The worktree is removed when done.
+
+The tradeoff: a cold start now runs two analyses instead of one. But it eliminates the separate "create snapshot on push to main" CI step and the cache layer needed to pass it to the PR job. For teams starting out, a single self-contained diff command is usually the right starting point.
+
+`--auto-analyze` shipped in **v1.12.0**. A follow-up in the same release (v1.12.0) fixed unique worktree path generation to prevent collisions when multiple diff jobs run concurrently — the initial implementation used a predictable path that could race.
+
+---
+
+## The OOM problem
+
+Running `hotspots analyze . --mode snapshot` on a large monorepo — expo/expo, kubernetes, similar — would fail with an out-of-memory kill. The analysis never completed.
+
+There were two separate root causes, fixed in separate releases.
+
+### Root cause 1: pipeline memory overlap (v1.13.0 → v1.15.0)
+
+The original analysis pipeline built each data structure in sequence and held them all in memory simultaneously during the overlap periods:
+
+| Phase | What was in RAM |
+|---|---|
+| After analysis | `Vec<FunctionRiskReport>` (~23 MB) |
+| Building call graph | `FunctionRiskReport` + `CallGraph` (~48 MB) |
+| After `Snapshot::new` | `CallGraph` + `Vec<FunctionSnapshot>` (~75 MB) |
+| JSON output (pre-streaming) | `FunctionSnapshot` + JSON string (~200 MB) |
+
+On expo/expo with a depth-25 clone, this peaked around 250 MB before streaming JSON output was added in v1.13.0. Even after streaming, the CallGraph and FunctionSnapshot overlap kept peak RSS in the 150–200 MB range.
+
+**v1.13.0** addressed this in two ways. First, it added streaming JSON output so the full snapshot string is never held in memory. Second, it introduced a `--jobs` flag and channel-based touch metrics to allow parallelism tuning. This got large repos to complete in many cases, but the peak was still too high for memory-constrained CI runners.
+
+**v1.15.0** went further. The CallGraph was rewritten to use integer indices instead of string keys, eliminating per-BFS HashMap allocations. Metric types were converted from heap-allocated strings to enums. These changes reduced the CallGraph's footprint substantially.
+
+v1.15.0 also introduced **hybrid touch mode** (`--hybrid-touches N`): instead of running `git log -L` on every function to get precise per-function touch counts, it runs file-level commit counts first (cheap), then upgrades to per-function tracking only for files that have been touched N or more times in the last 30 days. This bounds the number of expensive `git log -L` subprocess calls without sacrificing accuracy for the functions that matter most.
+
+### Root cause 2: co-change pair explosion (v1.15.1)
+
+Even after the pipeline improvements, expo/expo would still occasionally OOM. The culprit was co-change analysis.
+
+Co-change pairs are extracted from git history: for each commit, every pair of files modified together is recorded. On a normal commit touching 5–10 files, that's 10–45 pairs — fine. But commits that touch 200+ files (version bumps, mass renames, dependency updates) generate up to 20,000 pairs per commit. At scale, this was exhausting memory before analysis even started.
+
+**v1.15.1** caps this by skipping the pair-counting loop for commits that touch more than 200 files. Those commits add noise rather than signal to co-change analysis — a version bump commit doesn't tell you that two source files are meaningfully coupled — so skipping them improves both memory and accuracy.
+
+The same release also added a SQLite-based pipeline buffer (`TempDb`): an in-memory SQLite database that acts as the single store between pipeline phases. Each phase writes its results to SQLite and drops its in-memory structure before the next phase starts. Only one large structure lives in RAM at a time.
+
+Combined result: **expo/expo at 28k functions, 5.5k files, depth-25 clone — 107 MB peak RSS, validated exit 0 with a 7 GB memory cap.**
+
+---
+
+## UX: knowing what's happening during a long run
+
+On a large repo, the touch metrics phase — where hotspots queries git history for each function — can take several minutes. Before v1.14.0, this phase was silent.
+
+**v1.14.0** added two things:
+
+- **Cold cache miss warning**: on first run, the touch cache is empty. Hotspots now prints a message explaining this and estimates how long the cold run will take.
+- **Per-item progress**: during touch metric collection, the output shows `N/M functions` so you can see it's making progress rather than stalled.
+
+Neither is a functional change, but both matter in practice. A silent process that takes three minutes looks like a hang.
+
+---
+
+## Using it today
+
+For typical repos, nothing changes. Run `hotspots analyze . --mode snapshot` as before.
+
+For large repos where you've hit memory pressure, use hybrid touch mode:
+
+```bash
+hotspots analyze . --mode snapshot --hybrid-touches 5
+```
+
+This keeps per-function touch precision for the 5% of files that are actively changing, and uses cheaper file-level counts for the rest.
+
+For zero-ceremony diffs that handle their own snapshots:
+
+```bash
+hotspots diff main HEAD --auto-analyze --policy
+```
+
+To upgrade to v1.15.1:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Stephen-Collins-tech/hotspots/main/install.sh | sh
+```
+
+Check your current version with `hotspots --version`.
