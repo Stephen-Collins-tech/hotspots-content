@@ -5,7 +5,7 @@ description: "In sharkdp/fd, the poll function in src/walk.rs tops the risk rank
 introContent: "fd's walk and exec subsystems concentrate the most complex, high-blast-radius code in the codebase — 11 critical functions across 274 total, with structural debt that warrants attention before the nex"
 pubDate: 2026-04-29
 tags: ["oss", "rust", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "sharkdp/fd"
 commit: "2250bb0ad13bf2ab93f4d56977811e648b3f62dc"
 language: "rust"
@@ -45,7 +45,7 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 ### `poll` — src/walk.rs
 
-poll in src/walk.rs almost certainly drives fd's core directory traversal loop — likely implementing an async or iterator polling interface over the filesystem walk. Its cyclomatic complexity of 25 means there are at least 25 independent execution paths to reason about and test, while a max nesting depth of 5 makes those paths genuinely hard to follow visually. The exit_heavy and deeply_nested patterns compound this: multiple exit points scattered across deep nesting means each path must be traced individually to understand termination behavior. With an activity risk of 14.29 and a debt quadrant classification, this function has not been recently active — but its structural weight means any future change here carries the highest blast radius in the codebase.
+poll in src/walk.rs almost certainly drives fd's core directory traversal loop — likely implementing an async or iterator polling interface over the filesystem walk. Its cyclomatic complexity of 25 means there are at least 25 independent execution paths to reason about and test, while a max nesting depth of 5 makes those paths genuinely hard to follow visually. The exit_heavy and deeply_nested patterns compound this: multiple exit points scattered across deep nesting means each path must be traced individually to understand termination behavior. With a risk score of 14.3 and a debt quadrant classification, this function has not been recently active — but its structural weight means any future change here carries the highest blast radius in the codebase.
 
 **Recommendation:** Before the next feature touches src/walk.rs, add characterization tests that document the existing exit paths — this will catch regressions when CC 25 branches interact unexpectedly. Then consider decomposing poll into smaller, named sub-functions that each handle one phase of the traversal decision, reducing both nesting depth and the number of exit points per logical unit.
 
@@ -57,9 +57,21 @@ execute_commands in src/exec/command.rs is likely responsible for spawning and m
 
 ### `execute_batch` — src/exec/mod.rs
 
-execute_batch in src/exec/mod.rs likely handles fd's --exec-batch mode, collecting matched paths and invoking a command with all of them at once rather than one at a time. Sharing an identical cyclomatic complexity of 13 with execute_commands, and flagged for complex_branching with a max nesting depth of 4, it sits one nesting level deeper and is also in the debt quadrant with an activity risk of 9.61. The structural similarity between execute_batch and execute_commands suggests the two functions may share logic that has diverged over time — a common source of subtle inconsistency between single and batch execution modes.
+execute_batch in src/exec/mod.rs likely handles fd's --exec-batch mode, collecting matched paths and invoking a command with all of them at once rather than one at a time. Sharing an identical cyclomatic complexity of 13 with execute_commands, and flagged for complex_branching with a max nesting depth of 4, it sits one nesting level deeper and is also in the debt quadrant with a risk score of 9.6. The structural similarity between execute_batch and execute_commands suggests the two functions may share logic that has diverged over time — a common source of subtle inconsistency between single and batch execution modes.
 
 **Recommendation:** Audit execute_batch and execute_commands side-by-side for duplicated branching logic; shared paths between the two functions are strong candidates for extraction into a common helper, which would reduce both CC scores and make future changes to exec behavior apply consistently across both modes.
+
+### `run` — src/main.rs
+
+run in src/main.rs is fd's CLI entry point — responsible for parsing arguments, building configuration, and dispatching the core file-finding operation. Its cyclomatic complexity of 6 is modest and its max nesting depth of 1 means branching is shallow, but a fan-out of 5 reflects the breadth of coordination it performs. The `long_function` pattern flagged here is consistent with a function that sequences many concerns: argument validation, config construction, thread setup, and result dispatch are each small individually but accumulate into a single long body. Despite sitting in the debt quadrant with no recent churn, the entry point touches enough of the system that an unintended change here would have wide reach.
+
+**Recommendation:** Consider splitting run into two phases — argument parsing and validation, then execution dispatch. A dedicated `build_config` helper would make the setup logic independently testable and reduce the function's length without changing its coordination role.
+
+### `fmt` — src/fmt/mod.rs
+
+fmt in src/fmt/mod.rs handles output formatting for fd's matched paths, deciding how results are presented based on user configuration. With a cyclomatic complexity of 14 and a max nesting depth of 1, this function uses broad flat branching rather than deep nesting — likely a sequence of conditional checks or match arms each handling a different output mode. Its fan-out of 1 confirms it is largely self-contained. The `exit_heavy` pattern is the primary concern: 14 independent paths with multiple potential exit points means test coverage must explicitly exercise each output mode to avoid silent gaps. A change to one output variant can affect other paths in non-obvious ways when exit points are interleaved.
+
+**Recommendation:** Audit the existing test suite for fmt against each of the 14 cyclomatic paths — missing cases are likely edge-mode formatting options such as color output, null-separator mode, or absolute-path formatting. Unifying exit points through a single return value built by exhaustive match arms would reduce the mental overhead of tracing termination behavior and make each case independently verifiable.
 
 ## Patterns Found
 
@@ -78,6 +90,8 @@ _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, 
 
 - poll in src/walk.rs has a cyclomatic complexity of 25 and max nesting depth of 5 — add characterization tests covering its exit paths before any future traversal work to avoid silent regressions.
 - execute_commands and execute_batch share identical CC scores of 13 and both sit in the debt quadrant — audit them together for diverged shared logic before the next exec feature lands.
+- run in src/main.rs flags the `long_function` pattern with fan-out of 5 — extracting the configuration-building phase into a dedicated helper would make each setup concern independently testable.
+- fmt in src/fmt/mod.rs carries CC 14 in a flat, exit-heavy structure — audit test coverage for each of its output formatting paths before adding new display modes.
 - All five top-ranked functions are in the debt quadrant, meaning the risk here is not active churn but accumulated structural weight — the priority is establishing test coverage now, while these functions are stable, rather than after the next change destabilizes them.
 
 ## Reproduce This Analysis
