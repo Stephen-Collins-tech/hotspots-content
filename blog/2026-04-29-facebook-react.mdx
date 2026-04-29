@@ -1,11 +1,11 @@
 ---
-title: "React's compiler and hooks tooling carries the highest activity risk — 5 functions to address first"
+title: "React's compiler and hooks plugin carry the highest activity risk — 5 functions"
 titleSeo: "facebook/react code health: compiler and hooks plugin lead refactoring priority in 2024"
 description: "Five god-functions in BuildHIR.ts and ExhaustiveDeps.ts dominate React's structural risk, combining cyclomatic complexity up to 150 with active recent commit churn across both the new compiler and the exhaustive-deps lint rule."
 introContent: "React's new compiler and its exhaustive-deps lint rule are where structural complexity meets live development pressure — five functions account for the repo's highest combined complexity and recent ac"
 pubDate: 2026-04-29
 tags: ["oss", "javascript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "facebook/react"
 commit: "ad5dfc82b7107728da1430dd142f75b97b684dac"
 language: "javascript"
@@ -60,11 +60,23 @@ Based on its name and location in the HIR (High-level Intermediate Representatio
 
 **Recommendation:** Audit the 76 callees via fan-out analysis to map the blast radius, then prioritize extracting expression-category sub-functions (e.g., member expressions, call expressions, literals) as independent units — this directly reduces both the CC and the coupling surface before the next compiler feature lands.
 
+### `lowerAssignment` — compiler/packages/babel-plugin-react-compiler/src/HIR/BuildHIR.ts
+
+`lowerAssignment` handles the translation of assignment expressions into the compiler's HIR — a narrower task than `lowerStatement` but still responsible for branching across every assignment form JavaScript supports (simple assignment, destructuring, compound assignment, optional chaining targets). A cyclomatic complexity of 72 and a nesting depth of 6 indicate significant branching, and its fan-out of 42 means changes propagate to 42 downstream components in the compiler pipeline. It sits alongside `lowerStatement` and `lowerExpression` in the "fire" quadrant, confirming it is actively modified as the compiler evolves.
+
+**Recommendation:** Since `lowerAssignment` shares a file with the two higher-ranked hotspots, coordinate any refactoring effort across all three — changes to assignment lowering will likely surface shared utilities that can also simplify the broader `lowerStatement` and `lowerExpression` surfaces. Start by extracting destructuring and compound-assignment branches as independent helpers with clear input contracts.
+
 ### `visitFunctionWithDependencies` — packages/eslint-plugin-react-hooks/src/rules/ExhaustiveDeps.ts
 
 From its name and location in the exhaustive-deps lint rule, `visitFunctionWithDependencies` likely orchestrates the core analysis that walks a React hook's callback, resolves its dependency scope, and validates the dependency array — the most logic-dense part of the rule. A cyclomatic complexity of 131 combined with a max nesting depth of 10 — the deepest in the dataset — makes this function particularly hard to reason about locally; ND 10 means the innermost logic is ten control-structure levels removed from the function signature. With a fan-out of 74 and a recent activity score of 20.2 in the "fire" quadrant, structural complexity and active development pressure are coinciding right now, making untested edge-case regressions a concrete near-term risk.
 
 **Recommendation:** The nesting depth of 10 is the most urgent signal here: identify the innermost nested blocks and extract them into named helper functions with clear contracts, which will also make the dependency-resolution logic independently unit-testable without exercising the full visitor path.
+
+### `create` — packages/eslint-plugin-react-hooks/src/rules/ExhaustiveDeps.ts
+
+`create` is the rule factory for the exhaustive-deps lint rule — the entry point that Babel/ESLint calls to instantiate the rule's visitor object. With a cyclomatic complexity of 125, a nesting depth of 10, and a fan-out of 89 — the highest callout count of any function in this dataset — it is both a structural hotspot and a coupling hub for the entire rule. Nearly every dependency-tracking path eventually connects through this function. Despite its role as an initializer, its complexity suggests it has accumulated significant inline logic that would be better expressed as named sub-visitors or helper functions. Its "fire" quadrant placement confirms active recent modification.
+
+**Recommendation:** The fan-out of 89 is the primary concern: audit which of the 89 callees are cohesive sub-responsibilities (e.g., scope analysis, dependency tracking, write detection) and extract each into a dedicated visitor or helper. This reduces both the CC and the coupling surface, and makes individual rule behaviors independently testable without instantiating the full rule factory.
 
 ## Patterns Found
 
