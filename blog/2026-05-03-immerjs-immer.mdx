@@ -1,0 +1,107 @@
+---
+title: "immer's array plugin carries the highest activity risk — 3 functions to address first"
+titleSeo: "immer code health: arrayMethods.ts and patches plugin lead refactoring priority"
+description: "Two functions in src/plugins/arrayMethods.ts are live fire-quadrant hotspots with fan-out scores of 28 and 13, while enablePatches carries CC 39 and fan-out 48 as untouched structural debt."
+introContent: "immer's array interception layer is changing right now — and two of its functions carry fan-out scores high enough to ripple across nearly the entire plugin surface when something goes wrong."
+pubDate: 2026-05-03
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: true
+repo: "immerjs/immer"
+commit: "cdccf1a6d0d349ad587a736f0eb8a3da43fc7747"
+language: "javascript"
+hotspots_version: "1.16.1"
+analyzed_at: "2026-05-04T12:32:10Z"
+clone_depth: 200
+topPatterns: ["long_function", "exit_heavy", "god_function", "neighbor_risk", "complex_branching"]
+patternCounts: {exit_heavy: 3, god_function: 3, long_function: 4, neighbor_risk: 3, complex_branching: 3, deeply_nested: 2, cyclic_hub: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in immer?"
+    answer: "A god function is one that handles too many distinct responsibilities, resulting in high fan-out — many other functions it calls or coordinates. In immer, enableArrayMethods is flagged as a god function with a fan-out of 28, meaning a single change to it can ripple through 28 downstream callees. That broad coupling makes defects harder to isolate and makes the function expensive to test thoroughly."
+  - question: "How do I reduce fan-out in JavaScript?"
+    answer: "Group related callees behind a narrower interface or dedicated coordinator function, so the top-level function delegates to a small number of focused helpers rather than calling 28 things directly. Extract-method refactoring — pulling cohesive chunks of logic into named sub-functions — is the most direct technique."
+  - question: "Is immer actively maintained?"
+    answer: "The data shows two fire-quadrant functions — enableArrayMethods and interceptedMethod — each with 1 commit in the last 30 days and days_since_changed of 0, which is evidence of active development on the array interception layer right now. The majority of functions (133 of 180) are in the ok quadrant, suggesting focused rather than broad churn."
+  - question: "How do I reproduce this analysis?"
+    answer: "Run the Hotspots CLI against the immerjs/immer repository at commit cdccf1a to reproduce these exact results."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Complexity × recent commit frequency — functions that are hard to understand AND actively changing are the highest priority for refactoring."
+---
+
+Across immer's 180 analyzed functions, the highest structural pressure sits inside src/plugins/arrayMethods.ts, where enableArrayMethods and interceptedMethod are both fire-quadrant hotspots — structurally complex and actively changing today. enableArrayMethods carries a recent activity score of 13.31 and a fan-out of 28, meaning a bug introduced during active development touches nearly every downstream caller in one shot. With 16 critical-band functions in a codebase of 180, roughly one in eleven functions warrants immediate attention.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `resolveOriginalName` | perf-testing/read-cpuprofile.js | 15.4 | 29 | 8 | 9 |
+| `enablePatches` | src/plugins/patches.ts | 15.3 | 39 | 3 | 48 |
+| `enableArrayMethods` | src/plugins/arrayMethods.ts | 14.8 | 7 | 4 | 28 |
+| `get` | src/core/proxy.ts | 14.6 | 15 | 2 | 9 |
+| `printSummaryTable` | perf-testing/immutability-benchmarks.mjs | 14.1 | 24 | 7 | 14 |
+
+## Codemod / Tooling Files in Results
+
+The function resolveOriginalName in perf-testing/read-cpuprofile.js is a performance-testing utility script rather than production library code — it parses CPU profiles to resolve symbol names and is not part of immer's public API. Despite scoring a top activity_risk of 15.4 (driven entirely by its structural metrics — CC 29, max nesting depth 8, and 0 touches in the last 30 days), it does not represent risk to immer's consumers. To exclude it from future analyses, add the following to your `.hotspotsrc.json`: `{ "exclude": ["perf-testing/"] }`.
+
+## Hotspot Analysis
+
+### `enableArrayMethods` — src/plugins/arrayMethods.ts
+
+Based on its name and file path, this function likely registers or activates immer's interception layer for JavaScript array methods — the entry point that wires up proxied behavior for array mutations. Its fan-out of 28 is the single most alarming metric here: 28 distinct callees means a change to this function can send ripple effects across nearly the entire plugin. It is flagged as both a god_function and exit_heavy, signaling that it handles too many responsibilities and has multiple return paths that each require independent test coverage. Critically, this is a fire-quadrant function with 1 commit in the last 30 days and days_since_changed of 0 — complexity and active development are colliding right now, making this a live regression risk rather than a backlog cleanup item.
+
+**Recommendation:** Before the next commit lands, add characterization tests that cover each of the exit paths to prevent silent regressions. Then pursue extract-method refactoring to decompose the god-function responsibilities into smaller, independently testable units — reducing fan-out by grouping related callees behind narrower interfaces.
+
+### `interceptedMethod` — src/plugins/arrayMethods.ts
+
+This function, co-located with enableArrayMethods in the array plugin, likely represents the runtime interception handler that executes when a proxied array method is called — the hot path for every array mutation immer tracks. Its cyclomatic complexity of 10 means there are 10 independent execution paths to reason about and test, and the complex_branching pattern confirms that branching logic is a meaningful share of its size. With a fan-out of 13 and neighbor_risk flagged alongside enableArrayMethods, changes here frequently require coordinated edits to adjacent code. Like its neighbor, it is fire-quadrant with 1 touch in the last 30 days and days_since_changed of 0 — active development on a CC-10 function is a concrete regression surface.
+
+**Recommendation:** Map the 10 execution paths and ensure each has at least one targeted test before the next modification. Consider extracting distinct branch clusters into named helper functions to bring CC below 5 and make the interception logic self-documenting.
+
+### `enablePatches` — src/plugins/patches.ts
+
+This function almost certainly activates immer's optional JSON-Patch plugin, registering the handlers that generate and apply RFC-6902-style patch objects. Its cyclomatic complexity of 39 and fan-out of 48 make it the most structurally complex production function in this dataset — 48 distinct callees means that a modification here has the broadest blast radius in the codebase. It is a debt-quadrant function: it has not been touched in 43 days and recorded 0 commits in the last 30 days. That dormancy is not reassuring — it means the structural debt has been accumulating unaddressed, and the next developer who needs to extend patch support will inherit all of it at once.
+
+**Recommendation:** Treat this as overdue for refactoring before the next feature development push on the patches plugin. Start by mapping the 48 fan-out targets to identify which callees can be grouped behind stable sub-interfaces, then extract the major operational phases into dedicated functions to bring CC down from 39 toward a maintainable range.
+
+### `handleSimpleOperation` — src/plugins/arrayMethods.ts
+
+This function, also in the array plugin, likely handles a specific category of straightforward array mutations — a support role for the more complex interception layer above it. Its metrics are modest: CC of 3, max nesting depth of 2, and fan-out of 5 place it firmly in the watch quadrant. It has 1 touch in the last 30 days and days_since_changed of 0, so it is active, but its low structural complexity means the risk of introducing a defect is substantially lower than in its neighbors.
+
+**Recommendation:** No refactoring is needed here, but continue monitoring it — if fan-out or CC begins to grow as the array plugin evolves, it is a candidate to absorb complexity that should be extracted out of enableArrayMethods.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 4 |
+| `exit_heavy` | 3 |
+| `god_function` | 3 |
+| `neighbor_risk` | 3 |
+| `complex_branching` | 3 |
+| `deeply_nested` | 2 |
+| `cyclic_hub` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- enableArrayMethods (fan-out 28, fire quadrant) is the single highest-priority refactoring target — add characterization tests immediately because active development is happening on it right now.
+- enablePatches has cyclomatic complexity of 39 and fan-out of 48 but hasn't been touched in 43 days — it is structural debt with the widest blast radius in the codebase and should be decomposed before the patches plugin is extended.
+- Three of the five production hotspots share the neighbor_risk pattern, meaning changes to any one of enableArrayMethods, interceptedMethod, or their neighbors likely require coordinated edits — treat the arrayMethods.ts file as a single refactoring unit, not individual functions.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/immerjs/immer
+cd immer
+git checkout cdccf1a6d0d349ad587a736f0eb8a3da43fc7747
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
