@@ -5,7 +5,7 @@ description: "Two god-functions in nanobot's WeChat channel and CLI command laye
 introContent: "nanobot's top two hotspots are both complex AND changing right now — one was touched today. That combination makes them live regression risks, not backlog items."
 pubDate: 2026-05-05
 tags: ["oss", "python", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "HKUDS/nanobot"
 commit: "9d6afd86b58f46437e796f586cd9be834b1db2ea"
 language: "python"
@@ -45,7 +45,7 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 ### `_process_message` — nanobot/channels/weixin.py
 
-Based on its name and file path, `_process_message` is almost certainly the central dispatch handler for inbound WeChat (Weixin) messages — a function responsible for routing, interpreting, and responding to a wide variety of message types and events. Its cyclomatic complexity of 127 is extreme by any standard: it represents at least 127 independent execution paths, each a potential bug surface and a required test case. A max nesting depth of 7 compounds this, meaning some logic is buried seven control-structure levels deep, and fan-out of 29 distinct callees means a change here sends ripple effects across nearly 30 downstream functions. With a recent activity score of 18.74 and a commit touching it just 7 days ago, this is a live regression risk — every edit navigates 127 branches with no obvious safety net.
+Based on its name and file path, `_process_message` is almost certainly the central dispatch handler for inbound WeChat (Weixin) messages — a function responsible for routing, interpreting, and responding to a wide variety of message types and events. Its cyclomatic complexity of 127 is extreme by any standard: it represents at least 127 independent execution paths, each a potential bug surface and a required test case. A max nesting depth of 7 compounds this, meaning some logic is buried seven control-structure levels deep, and fan-out of 29 distinct callees means a change here sends ripple effects across nearly 30 downstream functions. With an activity-weighted risk score of 19.6 and a commit touching it just 7 days ago, this is a live regression risk — every edit navigates 127 branches with no obvious safety net.
 
 **Recommendation:** Before any further changes, add characterization tests that exercise the major message-type branches to establish a behavioral baseline. Then begin decomposing `_process_message` using extract-method refactoring: each message type or event category is a natural extraction boundary, which will immediately reduce CC and ND while making individual paths independently testable.
 
@@ -55,11 +55,23 @@ The `agent` function in `nanobot/cli/commands.py` is almost certainly the top-le
 
 **Recommendation:** Map the 59 fan-out callees to identify which argument-parsing, configuration, and orchestration concerns can be extracted into focused helper functions — reducing coupling and making the command handler itself a thin coordinator. Prioritize this before the next feature addition, as each new commit to a CC-33, FO-59 function raises the probability of an unintended interaction.
 
-### `_is_direct_openai_base` — nanobot/providers/openai_compat_provider.py
+### `run` — nanobot/agent/runner.py
 
-From its name and location, `_is_direct_openai_base` is a predicate that determines whether a provider configuration points directly to the canonical OpenAI API base — likely used to branch behavior between native OpenAI and compatible third-party endpoints. Its structural metrics are low (CC 5, ND 1, FO 3), confirming it is not a refactoring priority. It sits in the watch quadrant: 1 commit touching it in the last 30 days and a recent activity score of 5.98 mean it bears monitoring as provider routing logic evolves, but it carries no meaningful blast-radius risk on its own.
+Based on its name and location in the runner module, `run` is the core agent execution loop — orchestrating the lifecycle of an AI agent turn: invoking tools, handling responses, and managing iteration until completion or a stop condition. Its cyclomatic complexity of 81 reflects the branching logic required to handle the many ways an agent turn can proceed — tool calls, streaming responses, errors, and termination. A nesting depth of 5 and fan-out of 45 indicate both layered conditional logic and broad coordination across the provider, tool, and state management layers. With an activity-weighted risk score of 18.6, any change to this function risks introducing subtle behavioral regressions across the core agent execution path.
 
-**Recommendation:** No immediate action required. Keep an eye on this function as the provider compatibility layer grows — if CC or fan-out begins rising alongside continued commit activity, it should be promoted to higher priority review.
+**Recommendation:** Decompose the execution loop by concern — tool dispatch, response handling, and loop termination are natural extraction boundaries. Reducing fan-out from 45 toward a narrower set of well-defined collaborators will make the function easier to test and reason about as the framework evolves.
+
+### `consume_sdk_stream` — nanobot/providers/openai_responses/parsing.py
+
+The `consume_sdk_stream` function handles streaming responses from the OpenAI Responses API — parsing incremental SDK events as they arrive and assembling them into structured output. Its nesting depth of 8 is the highest in the top 5, indicating deeply nested conditional logic for handling the variety of event types in a streaming protocol — each missed or mishandled event type is a potential silent data-loss bug. A cyclomatic complexity of 79 means there are at least 79 distinct paths through the parsing logic, and an activity-weighted risk score of 18.5 confirms this is an actively evolving function.
+
+**Recommendation:** Map each streaming event type to an explicit handler function, collapsing the nested conditionals into a dispatch table or match statement. This reduces nesting depth substantially while making each event path independently testable — critical for a parsing function where correctness is hard to observe at runtime.
+
+### `run_interactive` — nanobot/cli/commands.py
+
+The `run_interactive` function handles interactive CLI sessions — likely managing the REPL-style loop that allows users to interact with nanobot from the command line. Its cyclomatic complexity of 30 and nesting depth of 6 indicate meaningful branching over user input, command parsing, and session state. A fan-out of 35 means it coordinates across a broad set of downstream functions for each interaction. Sharing a file with the `agent` function (also in `nanobot/cli/commands.py`), the two command handlers are at risk of entanglement as CLI behavior grows.
+
+**Recommendation:** Separate input parsing from session orchestration — `run_interactive` likely mixes "what did the user type" with "what should happen next." Extracting the input loop into a thin coordinator that delegates to typed handlers will reduce both cyclomatic complexity and the nesting depth driven by input-type branching.
 
 ## Patterns Found
 
@@ -79,7 +91,7 @@ _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, 
 
 - `_process_message` in `nanobot/channels/weixin.py` has a cyclomatic complexity of 127 — add characterization tests covering its major branches before any further edits to avoid blind refactoring.
 - The `agent` function in `nanobot/cli/commands.py` calls 59 distinct downstream functions and was committed to today — its fan-out makes it the single highest-coupling point in the analyzed codebase and the most urgent candidate for decomposition.
-- All 829 fire-quadrant functions in nanobot are both structurally complex and recently active; the two critical-band leaders show that the WeChat channel and CLI orchestration layers are where that risk is most concentrated right now.
+- The 385 critical-band functions in nanobot are both structurally complex and recently active; the top hotspots show that the WeChat channel and CLI orchestration layers are where that risk is most concentrated right now.
 
 ## Reproduce This Analysis
 
