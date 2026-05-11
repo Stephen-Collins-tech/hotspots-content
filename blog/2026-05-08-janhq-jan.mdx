@@ -1,0 +1,91 @@
+---
+title: "jan's proxy and provider UI carry the highest first-party risk — 2 functions to address first"
+description: "Three of jan's top five hotspots are bundled Swagger UI code; the two first-party functions to act on are proxy_request (CC 191, fan-out 64) in the Tauri server layer and ProviderDetail (fan-out 106) in the provider settings UI."
+pubDate: 2026-05-08
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "janhq/jan"
+commit: "d642ff7e3f3d58029aadbc241973439ca6e11e1f"
+language: "typescript"
+hotspots_version: "1.16.1"
+analyzed_at: "2026-05-08T22:49:42Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 20.69
+topFunction: "dk"
+topFile: "src-tauri/static/swagger-ui/swagger-ui-bundle.js"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 2, long_function: 2, neighbor_risk: 1}
+---
+
+Jan's highest activity-weighted risk is concentrated in two places: bundled Swagger UI code under `src-tauri/static/swagger-ui/` and high-fan-out application code in the Tauri proxy and provider settings UI. The top five functions combine cyclomatic complexity from 92 to 196 with nesting depth of 7 or 8, so the immediate review priority is separating generated or vendored assets from first-party code before assigning refactoring work.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `dk` | src-tauri/static/swagger-ui/swagger-ui-bundle.js | 20.7 | 135 | 8 | 25 |
+| `createDOMPurify` | src-tauri/static/swagger-ui/swagger-ui-bundle.js | 20.6 | 196 | 8 | 78 |
+| `proxy_request` | src-tauri/src/core/server/proxy.rs | 20.1 | 191 | 7 | 64 |
+| `composeNode` | src-tauri/static/swagger-ui/swagger-ui-bundle.js | 20.0 | 118 | 7 | 26 |
+| `ProviderDetail` | web-app/src/routes/settings/providers/$providerName.tsx | 19.9 | 92 | 7 | 106 |
+
+## Large Repo Analysis
+
+jan is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Hotspot Analysis
+
+### `dk` — src-tauri/static/swagger-ui/swagger-ui-bundle.js
+
+`dk` is the highest-ranked function, but its location inside `swagger-ui-bundle.js` strongly suggests generated or bundled third-party code rather than first-party application logic. Its CC 135 and ND 8 are structurally severe, yet refactoring this function directly would likely be the wrong move if the file is produced by an upstream bundle.
+
+**Recommendation:** Verify whether `src-tauri/static/swagger-ui/swagger-ui-bundle.js` is generated or vendored. If it is, exclude it from future scans so the top-risk list reflects code Jan maintainers actually edit.
+
+### `proxy_request` — src-tauri/src/core/server/proxy.rs
+
+`proxy_request` is the first clearly first-party hotspot in the list. With CC 191, ND 7, and fan-out 64, it likely combines request routing, validation, forwarding, and response/error handling in one server-side path. That makes it a high-blast-radius function for changes to Jan's local proxy behavior.
+
+**Recommendation:** Add request/response characterization tests around the current proxy behavior, then split routing, upstream request construction, and response mapping into focused helpers before adding new proxy features.
+
+### `ProviderDetail` — web-app/src/routes/settings/providers/$providerName.tsx
+
+`ProviderDetail` has a fan-out of 106, the largest in the top five, which is unusual for a UI route component. That points to a component doing too much orchestration: data loading, state management, provider-specific rendering, and action handling may all be concentrated in one place.
+
+**Recommendation:** Extract provider-specific panels and action handlers into smaller components or hooks, leaving `ProviderDetail` as a thin route-level coordinator.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 2 |
+| `long_function` | 2 |
+| `neighbor_risk` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- Three of the top five hotspots are in `src-tauri/static/swagger-ui/swagger-ui-bundle.js`; confirm whether that bundle is generated and exclude it if maintainers do not edit it directly.
+- `proxy_request` is the most urgent first-party backend hotspot, with CC 191 and fan-out 64 in a server proxy path that can affect many request flows.
+- `ProviderDetail` has fan-out 106, which is a strong signal to split provider-specific UI and action handling away from the route component.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/janhq/jan
+cd jan
+git checkout d642ff7e3f3d58029aadbc241973439ca6e11e1f
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
