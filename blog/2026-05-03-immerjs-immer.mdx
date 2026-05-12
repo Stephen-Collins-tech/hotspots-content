@@ -1,0 +1,113 @@
+---
+title: "immer's perf scripts and plugins carry the highest risk — 5 functions to review first"
+titleSeo: "immer code health: perf scripts, patches, and proxy code lead refactoring priority"
+description: "In immer, the highest-ranked hotspots span performance tooling, the patches plugin, array method interception, and proxy access, with CC up to 39, nesting depth up to 8, and fan-out up to 48."
+introContent: "immer's highest-ranked hotspots are split between performance tooling and core plugin code. The production concern is concentrated in patches, array method interception, and proxy access paths."
+pubDate: 2026-05-03
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: false
+repo: "immerjs/immer"
+commit: "cdccf1a6d0d349ad587a736f0eb8a3da43fc7747"
+language: "javascript"
+hotspots_version: "1.16.1"
+analyzed_at: "2026-05-04T12:32:10Z"
+clone_depth: 200
+topPatterns: ["long_function", "exit_heavy", "god_function", "neighbor_risk", "complex_branching"]
+patternCounts: {exit_heavy: 3, god_function: 3, long_function: 4, neighbor_risk: 3, complex_branching: 3, deeply_nested: 2, cyclic_hub: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in immer?"
+    answer: "A god function is one that handles too many distinct responsibilities, resulting in high fan-out — many other functions it calls or coordinates. In immer, enableArrayMethods is flagged as a god function with a fan-out of 28, meaning a single change to it can ripple through 28 downstream callees. That broad coupling makes defects harder to isolate and makes the function expensive to test thoroughly."
+  - question: "How do I reduce fan-out in JavaScript?"
+    answer: "Group related callees behind a narrower interface or dedicated coordinator function, so the top-level function delegates to a small number of focused helpers rather than calling 28 things directly. Extract-method refactoring — pulling cohesive chunks of logic into named sub-functions — is the most direct technique."
+  - question: "Is immer actively maintained?"
+    answer: "The data shows focused activity rather than broad churn. `enableArrayMethods` in the array interception layer was touched recently, while `enablePatches` and the perf-testing utilities carry high structural complexity even though they are less active. The majority of functions (133 of 180) are in the ok quadrant, so the useful signal is concentrated in a small number of files rather than spread across the whole project."
+  - question: "How do I reproduce this analysis?"
+    answer: "Run the Hotspots CLI against the immerjs/immer repository at commit cdccf1a to reproduce these exact results."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity with recent commit frequency. Functions that are both hard to understand and actively changing receive higher priority than equally complex code that has been dormant, because they are more likely to be edited again soon."
+---
+
+Across immer's 180 analyzed functions, the highest-ranked hotspots split into two groups: performance tooling under `perf-testing/`, and production library code in the patches, array methods, and proxy layers. That distinction matters because `resolveOriginalName` and `printSummaryTable` are useful maintenance targets, but `enablePatches`, `enableArrayMethods`, and `get` are closer to behavior that library users depend on. With 16 critical-band functions in a codebase of 180, roughly one in eleven functions warrants immediate attention.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `resolveOriginalName` | perf-testing/read-cpuprofile.js | 15.4 | 29 | 8 | 9 |
+| `enablePatches` | src/plugins/patches.ts | 15.3 | 39 | 3 | 48 |
+| `enableArrayMethods` | src/plugins/arrayMethods.ts | 14.8 | 7 | 4 | 28 |
+| `get` | src/core/proxy.ts | 14.6 | 15 | 2 | 9 |
+| `printSummaryTable` | perf-testing/immutability-benchmarks.mjs | 14.1 | 24 | 7 | 14 |
+
+## Codemod / Tooling Files in Results
+
+Two top-five functions, `resolveOriginalName` and `printSummaryTable`, live under `perf-testing/`. They are performance-analysis utilities rather than production library code, so they do not represent direct API risk to immer consumers. They are still worth improving if benchmark maintenance is active. To focus future analyses only on shipped library code, add the following to your `.hotspotsrc.json`: `{ "exclude": ["perf-testing/"] }`.
+
+## Hotspot Analysis
+
+### `resolveOriginalName` — perf-testing/read-cpuprofile.js
+
+`resolveOriginalName` appears to parse CPU profile data and map generated or transformed stack-frame names back to readable symbols. Its cyclomatic complexity of 29 and max nesting depth of 8 make it hard to reason about, especially because profile formats often require many fallback cases. Its fan-out of 9 is modest, so the main risk is concentrated branching rather than broad coupling.
+
+**Recommendation:** Treat this as tooling debt: preserve representative CPU profile fixtures, then extract the name-resolution cases into small parser helpers. A fixture-driven test suite is the fastest way to make the 29 branches safe to simplify.
+
+### `enablePatches` — src/plugins/patches.ts
+
+`enablePatches` almost certainly activates immer's optional JSON-Patch plugin, registering the handlers that generate and apply patch objects. Its cyclomatic complexity of 39 and fan-out of 48 make it the most structurally complex production function in this dataset. A modification here has a broad blast radius because the function coordinates many callees from one plugin entry point, even though its nesting depth of 3 is not extreme.
+
+**Recommendation:** Start by mapping the 48 fan-out targets into operational phases: patch creation, inverse patch handling, path construction, and plugin registration. Extract those phases behind narrower helper functions, then add tests for each patch operation before changing the top-level control flow.
+
+### `enableArrayMethods` — src/plugins/arrayMethods.ts
+
+`enableArrayMethods` likely registers or activates immer's interception layer for JavaScript array methods — the entry point that wires up proxied behavior for array mutations. Its cyclomatic complexity of 7 is manageable, but its fan-out of 28 is the signal to watch: one function coordinates a large share of the array plugin surface. The max nesting depth of 4 also suggests there are branch clusters that can be made more explicit.
+
+**Recommendation:** Group related callees behind narrower interfaces so `enableArrayMethods` remains a registration point rather than a coordinator for every array behavior. Characterization tests around mutation interception should come first, because fan-out-driven changes can fail in indirect ways.
+
+### `get` — src/core/proxy.ts
+
+The `get` trap in `src/core/proxy.ts` is likely part of immer's proxy layer, where reads from draft objects are intercepted and resolved. Its cyclomatic complexity of 15 is high for a core access path, but its max nesting depth of 2 keeps the structure relatively flat. The fan-out of 9 means the function delegates to several helpers without becoming as broadly coupled as the patches or array-method entry points.
+
+**Recommendation:** Use a decision table for the read cases this proxy trap supports, then make sure each case has a targeted test. If the cases are already conceptually separate, extract them into named predicate or resolution helpers to keep the proxy trap easy to audit.
+
+### `printSummaryTable` — perf-testing/immutability-benchmarks.mjs
+
+`printSummaryTable` appears to format benchmark results for human review. Its cyclomatic complexity of 24 and max nesting depth of 7 indicate that display formatting, grouping, and conditional output rules are probably mixed together. The fan-out of 14 is high enough that adding a new benchmark column or summary mode could have surprising effects.
+
+**Recommendation:** Split benchmark summarization from terminal formatting: first compute a normalized table model, then pass that model to a printer. That creates a pure unit to test for the 24 branches while keeping presentation changes isolated.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 4 |
+| `exit_heavy` | 3 |
+| `god_function` | 3 |
+| `neighbor_risk` | 3 |
+| `complex_branching` | 3 |
+| `deeply_nested` | 2 |
+| `cyclic_hub` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- `enablePatches` has CC 39 and FO 48, making it the production hotspot with the widest blast radius; decompose it before extending patch behavior.
+- `enableArrayMethods` has manageable CC but FO 28, so the next array-plugin change should start with characterization tests around mutation interception.
+- `resolveOriginalName` and `printSummaryTable` are perf-testing utilities, not public API paths; improve them when benchmark maintenance is active, or exclude `perf-testing/` for a production-only analysis.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/immerjs/immer
+cd immer
+git checkout cdccf1a6d0d349ad587a736f0eb8a3da43fc7747
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
