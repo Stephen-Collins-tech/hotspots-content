@@ -1,9 +1,9 @@
 ---
-title: "Hotspots on vercel-labs/agent-browser: the 5 functions with the highest activity-weighted risk"
-description: "A Hotspots analysis of vercel-labs/agent-browser at commit 82eadce, surfacing the top functions by activity-weighted risk score."
+title: "agent-browser's React bridge has top activity risk — 5 functions to address first"
+description: "A Hotspots analysis of vercel-labs/agent-browser at commit 82eadce, surfacing React instrumentation, CLI, and command-parser functions with the highest activity-weighted risk."
 pubDate: 2026-05-13
 tags: ["oss", "rust", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "vercel-labs/agent-browser"
 commit: "82eadcee41240b1c8477870f846bc8528e77a8a6"
 language: "rust"
@@ -17,8 +17,7 @@ topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function"
 patternCounts: {complex_branching: 10, deeply_nested: 10, exit_heavy: 10, god_function: 7, long_function: 7}
 ---
 
-\{/* TODO: one paragraph — what this project is and why it's interesting */\}
-Intro paragraph here.
+vercel-labs/agent-browser combines a Rust CLI with browser-side instrumentation for inspecting and driving web applications. In this snapshot, the highest activity-weighted risk is concentrated in the React native hook bridge: three of the top five functions live in `cli/src/native/react/installHook.js`, led by `updateFiberRecursively` with a risk score of 21.7, cyclomatic complexity of 118, and max nesting depth of 15. The remaining hotspots sit in the Rust CLI entry point and command parser, so the priority is split between browser instrumentation and command orchestration.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -34,11 +33,35 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 ## Hotspot Analysis
 
-### `(fill in)` — (fill in)
+### `updateFiberRecursively` — cli/src/native/react/installHook.js
 
-\{/* TODO: insight */\}
+`updateFiberRecursively` appears to walk React Fiber nodes after an update, which is a naturally recursive path through component tree state, props, and child/sibling relationships. Its cyclomatic complexity of 118 means the traversal contains many independent execution paths, and its nesting depth of 15 is the strongest signal in the top five: readers may need to track deeply stacked conditions before they can understand a single branch. A fan-out of 38 adds enough downstream coupling that even small changes to traversal behavior can affect multiple instrumentation concerns.
 
-**Recommendation:** \{/* TODO: action */\}
+**Recommendation:** Extract the major Fiber cases into named handlers: update bookkeeping, child traversal, sibling traversal, and edge-case guards should be separable from the recursive control flow. Add characterization tests or fixture-based snapshots around representative Fiber shapes before changing the recursion, then flatten guard clauses to reduce the ND 15 nesting pressure.
+
+### `mountFiberRecursively` — cli/src/native/react/installHook.js
+
+`mountFiberRecursively` likely handles the initial version of the same tree walk that `updateFiberRecursively` handles after changes. Its cyclomatic complexity of 77 and nesting depth of 7 show substantial branching, while fan-out of 30 suggests the function coordinates several kinds of mount-time side effects or node classification helpers. Because it shares a file and traversal model with the top-ranked hotspot, duplication or drift between mount and update paths is a practical maintenance risk.
+
+**Recommendation:** Look for shared traversal mechanics between mount and update handling and extract them behind a small set of reusable Fiber-walk helpers. Keep mount-specific behavior in isolated callbacks or strategy functions so the recursive skeleton is tested once and the mount cases can be tested independently.
+
+### `renderer_attach` — cli/src/native/react/installHook.js
+
+`renderer_attach` is the broadest function in the top five by a large margin: the table records cyclomatic complexity of 800, nesting depth of 15, and fan-out of 306. Based on its name and location, it likely wires the React renderer hook into the browser-side instrumentation runtime, which explains the large coordination surface. Those numbers make this less a normal function and more an integration container: it probably owns setup, compatibility checks, renderer-specific branches, and many downstream callbacks in one body.
+
+**Recommendation:** Treat `renderer_attach` as a staged extraction project rather than a single cleanup. First separate renderer discovery, hook installation, compatibility handling, and callback registration into named functions, then add regression coverage for the supported renderer scenarios before moving logic. The immediate goal should be reducing FO 306 and ND 15, even if the top-level attach function remains the orchestration entry point.
+
+### `main` — cli/src/main.rs
+
+The Rust `main` function is the CLI entry point, so some orchestration is expected: parse configuration, dispatch commands, initialize runtime state, and handle errors. The risk here is scale rather than surprise. A cyclomatic complexity of 159 and fan-out of 49 indicate that the entry point is doing more than thin bootstrapping, while nesting depth of 6 suggests some command or setup branches remain embedded directly in the top-level flow.
+
+**Recommendation:** Move command-specific setup and execution into modules that expose narrow `run_*` entry points, leaving `main` responsible for argument parsing, initialization, and error reporting. Table-driven tests around command dispatch and failure modes will make it safer to reduce CC 159 without changing user-facing CLI behavior.
+
+### `parse_command_inner` — cli/src/commands.rs
+
+`parse_command_inner` is almost certainly the central parser for command input, and its cyclomatic complexity of 449 shows that it encodes a large command grammar or option matrix in one function. Its nesting depth of 6 is lower than the React hook functions, but the branch count is high enough that adding a new command or flag can easily affect existing parse paths. Fan-out of 38 adds further coupling to command constructors, validators, or helper parsers.
+
+**Recommendation:** Split the parser by command family or token shape, then route through a small dispatch table so each parser owns one command's options and validation rules. Add parser fixtures for existing commands before extraction; with CC 449, preserving edge-case behavior matters more than making the first refactor visually small.
 
 ## Patterns Found
 
@@ -56,9 +79,9 @@ _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, 
 
 ## Key Takeaways
 
-- \{/* TODO: takeaway 1 */\}
-- \{/* TODO: takeaway 2 */\}
-- \{/* TODO: takeaway 3 */\}
+- The React hook bridge is the first refactoring target: `updateFiberRecursively`, `mountFiberRecursively`, and `renderer_attach` all sit in `cli/src/native/react/installHook.js`, and two of them reach nesting depth 15.
+- `renderer_attach` is the broadest hotspot, with CC 800 and FO 306; start by extracting setup and registration stages before attempting deeper behavior changes.
+- The Rust CLI layer also needs attention: `main` and `parse_command_inner` combine very high branch counts with command orchestration, so parser fixtures and command-dispatch tests should come before structural refactoring.
 
 ## Reproduce This Analysis
 
