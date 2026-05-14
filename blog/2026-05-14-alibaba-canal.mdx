@@ -1,9 +1,9 @@
 ---
-title: "Hotspots on alibaba/canal: the 5 functions with the highest activity-weighted risk"
+title: "alibaba/canal's adapters carry the highest activity risk — 5 functions to address first"
 description: "A Hotspots analysis of alibaba/canal at commit cf97b2a, surfacing the top functions by activity-weighted risk score."
 pubDate: 2026-05-14
 tags: ["oss", "java", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "alibaba/canal"
 commit: "cf97b2ae3189a8d0d88bfcf151a8181dc2c40deb"
 language: "java"
@@ -17,8 +17,7 @@ topPatterns: ["exit_heavy", "god_function", "long_function", "deeply_nested", "c
 patternCounts: {complex_branching: 6, deeply_nested: 7, exit_heavy: 9, god_function: 8, long_function: 8, stale_complex: 3}
 ---
 
-\{/* TODO: one paragraph — what this project is and why it's interesting */\}
-Intro paragraph here.
+Canal is Alibaba's open-source change-data-capture (CDC) framework for MySQL. It parses MySQL binary logs and delivers row-level change events to downstream consumers — Elasticsearch, Phoenix/HBase, Kafka, and others. The project's client-adapter layer translates those events into target-system writes, while its driver layer manages the raw MySQL protocol. The five hotspots below sit at exactly those integration boundaries: schema DDL synchronisation, type mapping, message dispatching, and MySQL handshake negotiation.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -34,11 +33,35 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 ## Hotspot Analysis
 
-### `(fill in)` — (fill in)
+### `alter` — client-adapter/phoenix/src/main/java/com/alibaba/otter/canal/client/adapter/phoenix/service/PhoenixSyncService.java
 
-\{/* TODO: insight */\}
+`alter` handles DDL synchronisation for Apache Phoenix, the HBase SQL layer. With a CC of 21 and nesting depth of 9, it branches across every combination of column add, drop, rename, and modify — plus index changes and table renames — all inside a single method. A fan-out of 67 means it reaches directly into Phoenix JDBC, schema introspection utilities, SQL builders, and error handlers. The combination of god_function, long_function, complex_branching, deeply_nested, and exit_heavy patterns all apply here: every DDL variant adds another conditional arm, and early-return guards are nested inside those arms.
 
-**Recommendation:** \{/* TODO: action */\}
+**Recommendation:** Extract each DDL operation type (`addColumn`, `dropColumn`, `renameTable`, etc.) into its own dedicated method. The outer `alter` should become a thin dispatcher that identifies the operation and delegates, reducing CC per code path to single digits and flattening nesting to a manageable depth.
+
+### `typeConvert` — client-adapter/escore/src/main/java/com/alibaba/otter/canal/client/adapter/es/core/support/ESSyncUtil.java
+
+`typeConvert` maps MySQL column types to Elasticsearch field values. Its CC of 20 and nesting depth of 9 reveal deeply nested type-switch logic: null checks nested inside date-format branches, nested inside numeric-type branches, nested inside a top-level type discriminator. Fan-out of 62 reflects calls to date formatters, numeric converters, JSON serialisers, and Elasticsearch type utilities — one callsite per type variant.
+
+**Recommendation:** Replace the nested conditional cascade with a type-dispatch table. Register a converter per MySQL type at startup; `typeConvert` becomes a single lookup and delegation call. This collapses most of the CC and nesting, and makes it straightforward to add or override mappings for new MySQL types.
+
+### `messageReceived` — server/src/main/java/com/alibaba/otter/canal/server/netty/handler/SessionHandler.java
+
+`messageReceived` is the Netty pipeline handler that processes every incoming canal client request. Its standout metric is fan-out of 124 — it coordinates authentication, subscription, acknowledgement, rollback, client discovery, heartbeat, and error reporting all in one place. CC of 12 and nesting depth of 8 add to the load, but the broad fan-out is the defining concern: a change to any downstream subsystem risks rippling through this single handler.
+
+**Recommendation:** Introduce a command-dispatch map keyed on message type. Each handler (`handleSubscribe`, `handleAck`, `handleRollback`, etc.) becomes an isolated method or small inner class with its own narrow fan-out. This makes the canal wire protocol surface explicit and keeps individual handlers independently testable.
+
+### `negotiate` — driver/src/main/java/com/alibaba/otter/canal/parse/driver/mysql/MysqlConnector.java
+
+`negotiate` implements the MySQL client/server handshake — version detection, capability-flag selection, charset negotiation, and authentication plugin handling. Its CC of 22 is the highest in the top five, driven by the number of distinct protocol variants it must support: MySQL 4.x vs 5.x vs 8.x capability bits, multiple auth plugins, and optional SSL negotiation. Nesting depth of 7 and fan-out of 51 reflect the branching within each protocol path.
+
+**Recommendation:** Break the handshake into named phases: `readServerGreeting`, `selectCapabilities`, `sendClientResponse`, `readAuthResult`. Each phase has a much lower CC and maps directly to a step in the MySQL protocol specification, making future protocol-version support (e.g. caching_sha2_password) straightforward to add without touching unrelated paths.
+
+### `update` — client-adapter/escore/src/main/java/com/alibaba/otter/canal/client/adapter/es/core/service/ESSyncService.java
+
+`update` applies binlog row-change events to Elasticsearch documents. With CC of 20 and fan-out of 51, it handles upserts, partial field updates, script-based updates, and routing/parent logic inside a single method. A nesting depth of 7 reflects conditional layers for index aliasing, script existence checks, and retry logic stacked on top of each other.
+
+**Recommendation:** Separate update strategy selection from request construction. Introduce an `UpdateStrategy` interface — with concrete implementations for upsert, partial, and script strategies — and resolve the correct strategy at the start of `update`. The method then delegates to the chosen strategy, cutting CC significantly and isolating each update path for independent testing.
 
 ## Patterns Found
 
@@ -57,9 +80,9 @@ _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, 
 
 ## Key Takeaways
 
-- \{/* TODO: takeaway 1 */\}
-- \{/* TODO: takeaway 2 */\}
-- \{/* TODO: takeaway 3 */\}
+- The three adapter sync functions (`alter`, `typeConvert`, `update`) concentrate the highest structural risk. All three use deeply nested conditional dispatch where a type-registry or strategy pattern would eliminate the majority of branching and nesting in one refactoring pass.
+- `messageReceived` in `SessionHandler` has an unusually high fan-out of 124 — the highest in the snapshot — making it a coordination bottleneck where any protocol change creates widespread blast radius. Splitting message handling by command type is the most impactful single change available.
+- `negotiate` in `MysqlConnector` carries the highest CC (22), driven by MySQL protocol version branching that has accumulated across years of protocol evolution. Splitting it into protocol-phase methods makes each variant independently verifiable and lowers the cost of future MySQL version support.
 
 ## Reproduce This Analysis
 
