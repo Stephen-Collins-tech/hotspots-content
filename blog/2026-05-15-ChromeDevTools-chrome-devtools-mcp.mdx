@@ -1,11 +1,11 @@
 ---
-title: "chrome-devtools-mcp's response layer carries the highest activity risk — 2 functions to address first"
+title: "chrome-devtools-mcp's response layer carries the highest risk — 2 functions to fix first"
 titleSeo: "chrome-devtools-mcp code health: McpResponse format and handle lead refactoring priority"
 description: "Two functions in src/McpResponse.ts — format (CC 58, 10 commits in 30 days) and handle (CC 33, 8 commits) — concentrate nearly all critical structural risk in chrome-devtools-mcp's response layer."
 introContent: "Two functions in a single file are driving nearly all of chrome-devtools-mcp's live regression risk — and both were touched in the last two days."
 pubDate: 2026-05-15
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "ChromeDevTools/chrome-devtools-mcp"
 commit: "3efd8c019416ddc83316fd7c4c8803a7c7367837"
 language: "typescript"
@@ -30,7 +30,7 @@ qaSection:
     answer: "Activity-weighted risk multiplies a function's structural complexity — derived from its cyclomatic complexity, nesting depth, and fan-out — by a score that reflects how recently and frequently that function has been changed in git history. The result is that a deeply complex function sitting untouched for two years scores lower than a moderately complex function that has been committed to ten times this month, because the actively changing function carries near-term regression risk while the dormant one does not. In chrome-devtools-mcp, `format` scores an activity risk of 17.91 precisely because its CC of 58 and fan-out of 47 are compounded by 10 commits in the last 30 days — every one of those commits is a chance for one of its 58 execution paths to behave differently than callers expect. This framing helps teams focus refactoring where it reduces the probability of bugs being introduced right now, not just where the code looks complicated in the abstract."
 ---
 
-In ChromeDevTools/chrome-devtools-mcp, the response formatting layer is where structural complexity and active development collide hardest: `format` in src/McpResponse.ts carries a cyclomatic complexity of 58, was touched 10 times in the last 30 days, and has a recent activity score of 16.63 — making it a live regression risk, not a cleanup backlog item. Across 480 total functions, 35 are rated critical, and every one of the top-ranked critical functions sits in the "fire" quadrant, meaning high complexity and high recent activity are happening simultaneously. The entire codebase shows zero debt-quadrant functions and zero dormant functions — this is an actively developed project where structural risk is accumulating in real time.
+In ChromeDevTools/chrome-devtools-mcp, the response formatting layer is where structural complexity and active development collide hardest: `format` in src/McpResponse.ts carries a cyclomatic complexity of 58, was touched 10 times in the last 30 days, and ranks first by activity-weighted risk — making it a live regression risk, not a cleanup backlog item. Across 480 total functions, 35 are rated critical, and every one of the top-ranked critical functions sits in the "fire" quadrant, meaning high complexity and high recent activity are happening simultaneously. The entire codebase shows zero debt-quadrant functions and zero dormant functions — this is an actively developed project where structural risk is accumulating in real time.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -48,27 +48,33 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 ### `format` — src/McpResponse.ts
 
-Based on its name and file path, `format` is almost certainly responsible for serializing or structuring MCP responses — likely the central function that decides how any tool result gets shaped before it leaves the server. With a cyclomatic complexity of 58, it contains 58 independent execution paths, every one of which is a required test case and a potential bug surface. A fan-out of 47 means it calls 47 distinct functions, giving it one of the broadest coupling footprints in the codebase; with 10 commits touching it in the last 30 days and a recent activity score of 16.63, this is a live regression risk — each of those 47 callees is a point where an in-flight change could introduce a silent failure in the output contract.
+Based on its name and file path, `format` is almost certainly responsible for serializing or structuring MCP responses — likely the central function that decides how any tool result gets shaped before it leaves the server. With a cyclomatic complexity of 58, it contains 58 independent execution paths, every one of which is a required test case and a potential bug surface. A fan-out of 47 means it calls 47 distinct functions, giving it one of the broadest coupling footprints in the codebase; with 10 commits touching it in the last 30 days, this is a live regression risk — each of those 47 callees is a point where an in-flight change could introduce a silent failure in the output contract.
 
 **Recommendation:** Add a suite of characterization tests that cover the major output shapes before any further changes; then apply extract-method refactoring to decompose the 58-path logic into named sub-functions, each handling a distinct response category, which will also reduce the fan-out by localizing callee dependencies.
 
 ### `handle` — src/McpResponse.ts
 
-Also in src/McpResponse.ts, `handle` likely acts as the dispatcher or entry point that receives incoming tool calls and routes them through the response pipeline — the function that triggers `format` and its siblings. Its cyclomatic complexity of 33 and fan-out of 26 are significant on their own, but what makes this a fire-quadrant function is that it has been touched 8 times in the last 30 days with a recent activity score of 15.34 and was last changed just 2 days ago. The god_function and exit_heavy patterns together suggest it is both doing too much and relying on numerous early-return branches, each of which is a separate test obligation and a place where a fast-moving change could silently alter routing behavior.
+Also in src/McpResponse.ts, `handle` likely acts as the dispatcher or entry point that receives incoming tool calls and routes them through the response pipeline — the function that triggers `format` and its siblings. Its cyclomatic complexity of 33 and fan-out of 26 are significant on their own, but what makes this a fire-quadrant function is that it has been touched 8 times in the last 30 days and was last changed just 2 days ago. The god_function and exit_heavy patterns together suggest it is both doing too much and relying on numerous early-return branches, each of which is a separate test obligation and a place where a fast-moving change could silently alter routing behavior.
 
 **Recommendation:** Map the exit paths first — with multiple early returns and a CC of 33, a control-flow diagram will reveal which branches are untested; then extract the routing logic and the response-construction logic into separate functions to break the god-function coupling before the next round of commits lands.
 
-### `registerTool` — src/index.ts
+### `ensureBrowserConnected` — src/browser.ts
 
-In src/index.ts, `registerTool` is the function that wires a new tool into the MCP server — the registration seam that connects tool definitions to the dispatch layer. Its structural metrics are low (CC 4, max nesting depth 1, fan-out 2), which means the function itself is straightforward; the watch-quadrant designation reflects that it has been touched 9 times in the last 30 days, more frequently than either critical function. The risk here is not internal complexity but positional: as the registration entry point, any subtle change to its contract — argument shape, return value, side effects — could silently affect every tool downstream.
+In src/browser.ts, `ensureBrowserConnected` likely protects the boundary between tool handling and the browser session. Its cyclomatic complexity of 22 is high enough to make connection state hard to reason about, and its max nesting depth of 6 suggests multiple layers of conditional handling around browser startup, reconnection, or error recovery. A fan-out of 12 means the function is not as broadly coupled as `format`, but it still coordinates enough collaborators that connection behavior can drift when adjacent browser lifecycle code changes.
 
-**Recommendation:** Because the structural complexity is low, refactoring is not the priority; instead, add integration-level tests that assert the full registration contract so that the high commit frequency doesn't erode the interface over time.
+**Recommendation:** Add characterization tests for the disconnected, already-connected, reconnecting, and failure paths first; then flatten the nested conditionals by extracting named guards for connection state and recovery decisions.
 
-### `generateToolDocumentation` — scripts/generate-docs.ts
+### `insertExtraNodes` — src/TextSnapshot.ts
 
-In scripts/generate-docs.ts, `generateToolDocumentation` is a documentation-generation utility that likely introspects tool definitions and emits structured documentation artifacts. With CC 7 and a fan-out of 10, it is moderately coupled to the tool definition layer — meaning changes to tool signatures or metadata fields will likely require updates here too. It sits in the watch quadrant with 2 touches in the last 30 days, which is low activity relative to the fire-quadrant functions, but its fan-out of 10 means it is reading from a reasonably broad set of sources; if tool registration patterns shift rapidly (as `registerTool`'s 9-touch count suggests they are), documentation drift becomes a real risk.
+In src/TextSnapshot.ts, `insertExtraNodes` likely enriches a text snapshot with additional nodes before the snapshot is consumed downstream. Its cyclomatic complexity of 13 and nesting depth of 4 are moderate, but the fan-out of 31 is the warning sign: the function depends on a wide set of helpers or node operations, so small changes in snapshot representation can have broad effects. That combination points to a long_function and god_function shape even when the branch count is lower than the response-layer functions.
 
-**Recommendation:** Review whether `generateToolDocumentation` derives its inputs directly from the same types used by `registerTool`; if not, tightening that coupling through shared type definitions will keep documentation consistent as the tool API evolves.
+**Recommendation:** Split the node-selection, node-construction, and insertion-order rules into separate helpers with focused tests; reducing the fan-out of the outer function will make snapshot changes easier to review.
+
+### `generateReference` — scripts/generate-docs.ts
+
+In scripts/generate-docs.ts, `generateReference` appears to build generated documentation or reference output from source metadata. A cyclomatic complexity of 23 gives it enough independent paths to justify refactoring, while a nesting depth of 5 suggests some of those paths are embedded inside layered conditionals. Its fan-out of 19 also means documentation generation depends on a fairly broad set of formatting, filesystem, or metadata helpers.
+
+**Recommendation:** Separate reference data collection from output formatting, then extract the deeply nested branches into named functions for each reference section; this should reduce both CC and nesting depth while preserving the generated output contract.
 
 ## Patterns Found
 
@@ -88,7 +94,7 @@ _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, 
 
 - `format` in src/McpResponse.ts has a cyclomatic complexity of 58 and was touched 10 times in the last 30 days — write characterization tests immediately to catch regressions before the next commit lands.
 - `handle` in src/McpResponse.ts shows the god_function and exit_heavy patterns with 26 fan-out and 33 cyclomatic complexity; map its exit paths and extract routing logic before its 8-commit-per-month churn rate embeds more branching.
-- `registerTool` in src/index.ts has negligible structural complexity (CC 4) but 9 touches in 30 days — the priority is protecting its interface contract with integration tests, not refactoring its internals.
+- `ensureBrowserConnected` in src/browser.ts combines CC 22 with nesting depth 6 — flatten connection-state handling before reconnection logic becomes harder to verify.
 
 ## Reproduce This Analysis
 
