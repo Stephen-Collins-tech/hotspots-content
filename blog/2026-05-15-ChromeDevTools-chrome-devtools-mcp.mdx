@@ -1,0 +1,110 @@
+---
+title: "chrome-devtools-mcp's response layer carries the highest risk — 2 functions to fix first"
+titleSeo: "chrome-devtools-mcp code health: McpResponse format and handle lead refactoring priority"
+description: "Two functions in src/McpResponse.ts — format (CC 58, 10 commits in 30 days) and handle (CC 33, 8 commits) — concentrate nearly all critical structural risk in chrome-devtools-mcp's response layer."
+introContent: "Two functions in a single file are driving nearly all of chrome-devtools-mcp's live regression risk — and both were touched in the last two days."
+pubDate: 2026-05-15
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "ChromeDevTools/chrome-devtools-mcp"
+commit: "3efd8c019416ddc83316fd7c4c8803a7c7367837"
+language: "typescript"
+hotspots_version: "1.16.1"
+analyzed_at: "2026-05-15T06:38:27Z"
+clone_depth: 100
+topRisk: 17.91
+topFunction: "format"
+topFile: "src/McpResponse.ts"
+topPatterns: ["complex_branching", "god_function", "long_function", "exit_heavy", "deeply_nested"]
+patternCounts: {complex_branching: 5, exit_heavy: 4, god_function: 5, long_function: 5, deeply_nested: 2}
+qaSection:
+  - question: "What is a god function and why does it matter in chrome-devtools-mcp?"
+    answer: "A god function is a single function that takes on too many responsibilities — it calls a large number of other functions, handles numerous distinct cases, and grows long enough that no single engineer can hold its full behavior in working memory. The concrete problem is coupling: when one function is responsible for everything, a change to any one of its many callees can alter behavior in ways that are hard to predict or test in isolation. In chrome-devtools-mcp, the god_function pattern appears 5 times across the top hotspots, with `format` in src/McpResponse.ts as the clearest example — a fan-out of 47 means it directly calls 47 distinct functions, so a change anywhere in that dependency tree can surface as a regression in formatted responses. Reducing a god function requires identifying cohesive sub-responsibilities and extracting each into its own named function with a clear, testable contract."
+  - question: "How do I reduce cyclomatic complexity in TypeScript?"
+    answer: "Cyclomatic complexity counts the number of independent paths through a function — each `if`, `else`, `case`, `&&`, `||`, and early `return` adds one. The standard refactoring technique is extract-method: identify a cluster of related branches that serve a single sub-purpose, move them into a dedicated function with a descriptive name, and replace the inline logic with a single call. A CC above 15 warrants splitting; above 30 it warrants immediate attention because the test burden alone — one test case per path — becomes unmanageable. For `format` in src/McpResponse.ts, where CC is 58, a practical first step is to identify the top-level dispatch conditions (likely one per response type or tool category) and extract each arm into its own function, which can realistically cut the CC of the outer function by more than half in a single session."
+  - question: "Is chrome-devtools-mcp actively maintained?"
+    answer: "Yes — the commit activity data is unambiguous: `format` in src/McpResponse.ts was touched 10 times in the last 30 days and last changed 1 day ago, and `handle` in the same file was touched 8 times in the last 30 days and last changed 2 days ago. Across 480 functions, all 100 fire-quadrant functions combine high structural complexity with high recent activity, and there are zero debt-quadrant or dormant functions in the dataset. Active maintenance and accumulating structural complexity are not mutually exclusive — the data suggests a project moving quickly enough that complexity in the response layer is growing faster than it is being managed."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was produced by the Hotspots CLI (https://github.com/hotspots-dev/hotspots) against commit 3efd8c0 of ChromeDevTools/chrome-devtools-mcp. After running `git checkout 3efd8c0` in the repository root, execute `hotspots analyze . --mode snapshot --explain-patterns --force` to reproduce the exact results. The same command works on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies a function's structural complexity — derived from its cyclomatic complexity, nesting depth, and fan-out — by a score that reflects how recently and frequently that function has been changed in git history. The result is that a deeply complex function sitting untouched for two years scores lower than a moderately complex function that has been committed to ten times this month, because the actively changing function carries near-term regression risk while the dormant one does not. In chrome-devtools-mcp, `format` scores an activity risk of 17.91 precisely because its CC of 58 and fan-out of 47 are compounded by 10 commits in the last 30 days — every one of those commits is a chance for one of its 58 execution paths to behave differently than callers expect. This framing helps teams focus refactoring where it reduces the probability of bugs being introduced right now, not just where the code looks complicated in the abstract."
+---
+
+In ChromeDevTools/chrome-devtools-mcp, the response formatting layer is where structural complexity and active development collide hardest: `format` in src/McpResponse.ts carries a cyclomatic complexity of 58, was touched 10 times in the last 30 days, and ranks first by activity-weighted risk — making it a live regression risk, not a cleanup backlog item. Across 480 total functions, 35 are rated critical, and every one of the top-ranked critical functions sits in the "fire" quadrant, meaning high complexity and high recent activity are happening simultaneously. The entire codebase shows zero debt-quadrant functions and zero dormant functions — this is an actively developed project where structural risk is accumulating in real time.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `format` | src/McpResponse.ts | 17.9 | 58 | 4 | 47 |
+| `handle` | src/McpResponse.ts | 16.5 | 33 | 4 | 26 |
+| `ensureBrowserConnected` | src/browser.ts | 16.1 | 22 | 6 | 12 |
+| `insertExtraNodes` | src/TextSnapshot.ts | 14.7 | 13 | 4 | 31 |
+| `generateReference` | scripts/generate-docs.ts | 14.3 | 23 | 5 | 19 |
+
+## Hotspot Analysis
+
+### `format` — src/McpResponse.ts
+
+Based on its name and file path, `format` is almost certainly responsible for serializing or structuring MCP responses — likely the central function that decides how any tool result gets shaped before it leaves the server. With a cyclomatic complexity of 58, it contains 58 independent execution paths, every one of which is a required test case and a potential bug surface. A fan-out of 47 means it calls 47 distinct functions, giving it one of the broadest coupling footprints in the codebase; with 10 commits touching it in the last 30 days, this is a live regression risk — each of those 47 callees is a point where an in-flight change could introduce a silent failure in the output contract.
+
+**Recommendation:** Add a suite of characterization tests that cover the major output shapes before any further changes; then apply extract-method refactoring to decompose the 58-path logic into named sub-functions, each handling a distinct response category, which will also reduce the fan-out by localizing callee dependencies.
+
+### `handle` — src/McpResponse.ts
+
+Also in src/McpResponse.ts, `handle` likely acts as the dispatcher or entry point that receives incoming tool calls and routes them through the response pipeline — the function that triggers `format` and its siblings. Its cyclomatic complexity of 33 and fan-out of 26 are significant on their own, but what makes this a fire-quadrant function is that it has been touched 8 times in the last 30 days and was last changed just 2 days ago. The god_function and exit_heavy patterns together suggest it is both doing too much and relying on numerous early-return branches, each of which is a separate test obligation and a place where a fast-moving change could silently alter routing behavior.
+
+**Recommendation:** Map the exit paths first — with multiple early returns and a CC of 33, a control-flow diagram will reveal which branches are untested; then extract the routing logic and the response-construction logic into separate functions to break the god-function coupling before the next round of commits lands.
+
+### `ensureBrowserConnected` — src/browser.ts
+
+In src/browser.ts, `ensureBrowserConnected` likely protects the boundary between tool handling and the browser session. Its cyclomatic complexity of 22 is high enough to make connection state hard to reason about, and its max nesting depth of 6 suggests multiple layers of conditional handling around browser startup, reconnection, or error recovery. A fan-out of 12 means the function is not as broadly coupled as `format`, but it still coordinates enough collaborators that connection behavior can drift when adjacent browser lifecycle code changes.
+
+**Recommendation:** Add characterization tests for the disconnected, already-connected, reconnecting, and failure paths first; then flatten the nested conditionals by extracting named guards for connection state and recovery decisions.
+
+### `insertExtraNodes` — src/TextSnapshot.ts
+
+In src/TextSnapshot.ts, `insertExtraNodes` likely enriches a text snapshot with additional nodes before the snapshot is consumed downstream. Its cyclomatic complexity of 13 and nesting depth of 4 are moderate, but the fan-out of 31 is the warning sign: the function depends on a wide set of helpers or node operations, so small changes in snapshot representation can have broad effects. That combination points to a long_function and god_function shape even when the branch count is lower than the response-layer functions.
+
+**Recommendation:** Split the node-selection, node-construction, and insertion-order rules into separate helpers with focused tests; reducing the fan-out of the outer function will make snapshot changes easier to review.
+
+### `generateReference` — scripts/generate-docs.ts
+
+In scripts/generate-docs.ts, `generateReference` appears to build generated documentation or reference output from source metadata. A cyclomatic complexity of 23 gives it enough independent paths to justify refactoring, while a nesting depth of 5 suggests some of those paths are embedded inside layered conditionals. Its fan-out of 19 also means documentation generation depends on a fairly broad set of formatting, filesystem, or metadata helpers.
+
+**Recommendation:** Separate reference data collection from output formatting, then extract the deeply nested branches into named functions for each reference section; this should reduce both CC and nesting depth while preserving the generated output contract.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `exit_heavy` | 4 |
+| `deeply_nested` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Key Takeaways
+
+- `format` in src/McpResponse.ts has a cyclomatic complexity of 58 and was touched 10 times in the last 30 days — write characterization tests immediately to catch regressions before the next commit lands.
+- `handle` in src/McpResponse.ts shows the god_function and exit_heavy patterns with 26 fan-out and 33 cyclomatic complexity; map its exit paths and extract routing logic before its 8-commit-per-month churn rate embeds more branching.
+- `ensureBrowserConnected` in src/browser.ts combines CC 22 with nesting depth 6 — flatten connection-state handling before reconnection logic becomes harder to verify.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/ChromeDevTools/chrome-devtools-mcp
+cd chrome-devtools-mcp
+git checkout 3efd8c019416ddc83316fd7c4c8803a7c7367837
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
