@@ -1,11 +1,11 @@
 ---
-title: "cherry-studio's AI core and MCP layer carry the highest activity risk — 2 functions to address first"
+title: "cherry-studio's AI core and MCP layer carry the highest activity risk — 5 functions to address first"
 titleSeo: "cherry-studio code health: MCP service and reasoning utils lead refactoring priority"
 description: "cherry-studio's top activity-risk functions — initClient in MCPService.ts and getReasoningEffort in reasoning.ts — combine extreme structural complexity with live commit churn, flagging them as immediate regression risks."
 introContent: "Two functions deep in cherry-studio's MCP integration and AI reasoning layer are both structurally extreme and actively changing — a combination that makes regressions not a future concern, but a pres"
 pubDate: 2026-05-15
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "CherryHQ/cherry-studio"
 commit: "a574aa5e3fc92919cbbeb04f3e4a6a439a30c0aa"
 language: "typescript"
@@ -67,11 +67,23 @@ Sitting in the renderer-side AI core utilities, getReasoningEffort almost certai
 
 **Recommendation:** A CC of 132 warrants immediate decomposition: the most effective first step is to identify the top-level dispatch axis — likely provider type or effort tier — and extract each branch into its own named function, reducing the root function to a pure routing shell. Pair this with a table-driven or strategy-pattern approach so that adding a new provider or effort level does not require adding yet another conditional branch to an already unmaintainable function.
 
-### `truncateOutput` — src/renderer/src/pages/home/Messages/Tools/shared/truncateOutput.ts
+### `run` — src/main/services/CodeToolsService.ts
 
-Located in the shared utilities for the Messages/Tools UI layer, truncateOutput most likely clips or shortens tool output strings for display in the chat interface. Its cyclomatic complexity of 5, max nesting depth of 1, and fan-out of 3 are all low — this is a watch-quadrant function, meaning it is active (touched once in the last 30 days, last changed 6 days ago) but carries no significant structural risk. The metrics reveal a well-scoped utility with minimal branching and almost no coupling.
+`run` in CodeToolsService.ts is almost certainly the main execution dispatcher for cherry-studio's code tooling layer — responsible for invoking terminal commands, scripts, or sandboxed code execution on behalf of the AI. Its cyclomatic complexity of 66 with a max nesting depth of only 5 is a signature of broad sequential branching rather than deep nesting: many tool types, runtime environments, or execution modes each handled by their own branch. The fan-out of 52 is the highest in the top 5, meaning this single function reaches into 52 distinct downstream callees — a fan-out that makes it a true god function whose internal changes ripple across half the tools service layer. An activity risk of 18.7 confirms it is under active development at this level of complexity.
 
-**Recommendation:** No refactoring is warranted. Continue monitoring if display formatting requirements expand — if new truncation modes or content-type handling are added, CC will climb quickly in a utility this small and a follow-up extraction will be straightforward.
+**Recommendation:** The fan-out of 52 is the primary risk signal here: changes to `run` can disturb 52 downstream callees, and testing it in isolation requires stubbing most of the tools layer. Extract each tool type or execution mode into a dedicated handler and route through a dispatch table; this reduces fan-out at the root, eliminates the per-tool branching, and makes each handler independently testable.
+
+### `load_run_results` — resources/skills/skill-creator/scripts/aggregate_benchmark.py
+
+`load_run_results` lives in a Python benchmark aggregation script under `resources/skills/skill-creator/` — a path that suggests it is part of the tooling used to evaluate or calibrate skill-creator capabilities, likely loading and merging results from multiple benchmark runs. A CC of 51 with ND 6 and FO 28 indicates a function that handles many result formats or edge cases (CC 51) through moderately deep nesting (ND 6) while calling into 28 distinct downstream helpers. Data-loading functions in benchmark scripts commonly accumulate this shape when they need to handle partial results, missing files, version mismatches, and format variations — each case adding a branch.
+
+**Recommendation:** Separate the concerns of loading raw results from the concerns of validating and normalizing them. A loader that simply reads files and a normalizer that handles format variations and missing data are independently testable and much easier to extend. Targeting CC ≤ 15 per function and ND ≤ 4 would bring this into a maintainable range.
+
+### `backupToS3` — src/renderer/src/services/BackupService.ts
+
+`backupToS3` handles cloud backup of user data to S3 — a function that must coordinate authentication, serialization, chunked upload, error handling, and retry logic, all of which contribute branches. Its CC of 32 with ND 7 is notable: the nesting depth is relatively high for the complexity level, which suggests the branching is driven by nested error-handling or retry logic rather than a flat dispatch across many cases. A fan-out of 24 means it reaches into 24 downstream callees, touching auth, serialization, and upload utilities. An activity risk of 18.0 indicates this is not dormant infrastructure — it is being actively changed.
+
+**Recommendation:** The ND 7 signal points to nested try/catch or retry structures as the primary refactoring target. Extract the retry/error-handling wrapper into its own reusable function, and separate the serialization and upload phases so each can be tested without the others. This directly reduces nesting depth and isolates the most fragile logic — error handling and retries — from the core upload path.
 
 ## Patterns Found
 
