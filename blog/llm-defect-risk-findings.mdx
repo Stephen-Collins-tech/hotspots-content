@@ -1,0 +1,126 @@
+---
+title: "Can a Fine-Tuned LLM Learn Which Code Is Risky?"
+description: "I spent a few weeks running a controlled experiment: can a small language model, fine-tuned on a specific codebase's history, learn to rank code by defect risk better than a hand-tuned heuristic?"
+pubDate: 2026-05-16
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "I spent a few weeks running a controlled experiment: can a small language model, fine-tuned on a specific codebase's history, learn to rank code by defect risk better than a hand-tuned heuristic?"
+---
+
+I spent a few weeks running a controlled experiment: can a small language model, fine-tuned on a specific codebase's history, learn to rank code by defect risk better than a hand-tuned heuristic? The short answer is yes — but with important caveats about when it works and when it doesn't.
+
+Here's what I found.
+
+---
+
+## The Setup
+
+I have a deterministic baseline — an activity-weighted risk score that combines static complexity metrics (cyclomatic complexity, nesting depth, fan-out) with git activity signals like touch frequency and recency, using fixed weights. It's cheap, explainable, and reasonably effective. The question was: can a model do better?
+
+I fine-tuned [Qwen2.5-Coder-7B](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct) using LoRA on per-repo training data. The model receives a prompt describing a function — its file path, structural metrics, and source code — and outputs a 0–9 risk score. I trained per-repo (one adapter per codebase), evaluated on held-out functions, and measured Spearman ρ against a ground-truth label derived from the repo's own bug-fix history.
+
+I tested on four open-source repos: Django, scikit-learn, Vue.js core, and VS Code.
+
+---
+
+## The First Trap: Circularity
+
+Early results looked great. A full-prompt fine-tuned adapter on Django achieved ρ=+0.74. Then I looked more carefully at the prompt.
+
+The prompt included git activity fields — how many times the function had been touched, when it was last changed, how many authors had modified it. These fields are derived from the same history used to construct the ground-truth label. The model wasn't learning to read code — it was learning to relay git signals back as scores.
+
+I confirmed this with an ablation: zero out all git fields in the prompt, and the adapter's performance dropped from ρ=+0.74 to ρ=-0.04. The signal was entirely circular.
+
+The fix was to train and evaluate with all git-history fields zeroed. After ablation, a fresh adapter trained on code structure and source text only achieved ρ=+0.48 on Django — well above the baseline at ρ=+0.17. That result is defensible: the model learned something from code, not from history it had already seen in its label.
+
+---
+
+## The Baseline Gate
+
+Before celebrating, I ran a simple sanity check: train gradient-boosted tabular models on the same train/holdout splits using only path tokens, activity features, or structural metrics. The results were humbling.
+
+On VS Code, activity-only features achieved ρ=+0.88. On Django, path-only features reached ρ=+0.58. Any fine-tuned model needs to beat these cheap baselines to claim it's learning something the heuristics don't already know.
+
+This changed how I interpreted results. The LLM needed to be compared against both the baseline *and* the tabular baselines, on the same splits.
+
+---
+
+## Cross-Repo Generalization: A Clear Failure
+
+I tested whether the Django-trained adapter could score functions in other repos. It couldn't. On VS Code it achieved ρ=-0.007. On scikit-learn it collapsed to constant predictions. On Vue.js it gave strongly negative ρ.
+
+I then tried training on multiple repos simultaneously and evaluating on a held-out repo (leave-one-repo-out). That helped — going from ρ=-0.007 to ρ=+0.17 on VS Code — but still fell short of the baseline (+0.22). No configuration I tried produced a universal cross-repo model.
+
+The adapter learns repo-specific priors from file and function names plus code patterns. Those priors don't transfer. If you want this to work on a new codebase, you need to fine-tune on that codebase.
+
+---
+
+## When Does Per-Repo Fine-Tuning Work?
+
+Once I accepted the per-repo constraint, the next question was: does it work consistently across repos, or was Django just easy?
+
+I trained separate adapters for Django, scikit-learn, Vue.js, and VS Code, then swept checkpoints to find each repo's peak performance.
+
+| Repo | Best FT ρ | Baseline ρ |
+|---|---:|---:|
+| scikit-learn | **+0.603** | +0.180 |
+| django | **+0.494** | +0.165 |
+| vue.js core | **+0.369** | +0.233 |
+| vs code | +0.183 | +0.186 |
+
+Three repos showed strong, consistent signal above the baseline. One didn't.
+
+The pattern: VS Code is a massive, fast-moving repo (157K commits) where defect risk is dominated by *how much* a file changes, not *what* the code looks like. The activity tabular baseline achieves ρ=+0.88 there — leaving almost nothing for a structural model to add.
+
+Django, scikit-learn, and Vue.js are all more deliberate codebases with structured commit conventions and richer code-level variation in defect patterns. The LLM can find signal there that activity metrics alone miss.
+
+One other consistent observation: the signal emerged late in training, around iteration 300–500, after the model had cycled through the training data multiple times. Early checkpoints were often below the baseline; the peak arrived sharply then declined as the model began to overfit.
+
+---
+
+## The Ensemble
+
+The strongest result came from combining the LLM scores with activity features using rank-averaging. On Django and scikit-learn the ensemble outperformed both components. On Vue.js — where activity signal is exceptionally strong — it fell short of activity-only but still substantially beat the fine-tuned model alone:
+
+| Repo | FT only | Activity only | Ensemble | Blend |
+|---|---:|---:|---:|---|
+| scikit-learn | +0.603 | +0.749 | **+0.828** | 0.3 FT / 0.7 activity |
+| django | +0.494 | +0.586 | **+0.648** | 0.5 / 0.5 |
+| vue.js core | +0.369 | +0.835 | **+0.771** | 0.2 FT / 0.8 activity |
+
+The FT and activity signals are measuring different things. Activity captures "this file changes a lot" — a strong but blunt predictor. The LLM captures something about which specific parts of the code are structurally fragile, independent of how often they've been touched. Together they're better than either alone.
+
+The optimal blend leans toward activity for repos where activity is highly predictive (Vue.js, scikit-learn) and balances more evenly where the two signals are closer in strength (Django).
+
+---
+
+## What I Didn't Prove
+
+A few things to be clear about:
+
+**The LLM is not understanding code in any deep sense.** Ablation experiments on the Django adapter (ρ=+0.481 clean baseline) showed that file and function names carry most of the signal: masking source text while keeping the path drops performance to ρ=+0.385 (a moderate loss), while masking the path while keeping source drops to ρ=+0.268 (a larger loss). One important caveat: when an adapter is trained from scratch with paths masked, it recovers nearly the same performance (ρ=+0.489) — meaning the original adapter's path-dependence was a training artifact, not a fundamental limitation. Source text can carry the signal if the model is trained that way.
+
+**The ground-truth label has limits.** The label is derived from git history — it measures past defect involvement, not intrinsic code quality. A function could be defect-prone because it's genuinely fragile, or because it implements a specification that kept changing. The model learns whatever the label captures.
+
+**I only tested four repos.** Three structured repos and one high-churn outlier is not enough to draw strong conclusions about what predicts whether per-repo fine-tuning will work. Commit convention coverage, label variance, and commit rate per file all seem like plausible predictors — but I haven't validated any of them.
+
+---
+
+## What's Next
+
+The practical path forward from here:
+
+1. **Temporal validation** — the current eval uses all-time labels. A rigorous test computes labels only from post-cutoff commits, with activity features from pre-cutoff history, to confirm the signal holds with genuine temporal separation.
+2. **Characterize repo type before fine-tuning** — repos like VS Code, where activity dominates, produce no useful signal from an LLM adapter. Future work should identify which structural characteristics (commit convention coverage, label variance, file-level commit rate) predict whether per-repo fine-tuning is worth running.
+3. **Path-masked cross-repo generalization** — the path-masked retraining result suggests source text and structural metrics may generalize better across repos than path-conditioned adapters. That's worth testing.
+
+The clearest result here: fine-tuning a small model on a specific codebase's history produces a real, measurable signal — but it's a structural complement to activity-based features, not a replacement for them. The ensemble is the most defensible configuration.
+
+---
+
+*All experiments were run on Apple Silicon (MLX, 4-bit quantization). Spearman ρ reported on stratified holdout splits. Training used LoRA rank 8 with all git-history fields ablated from prompts to prevent circularity.*
