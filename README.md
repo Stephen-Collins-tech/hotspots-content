@@ -70,19 +70,42 @@ clone_depth: 50
 ---
 ```
 
-### Recommended Body Structure
+### Required Body Elements
 
-1. Short intro: what the project is and why it’s interesting.
-2. Top 5 hotspots table (function, file, risk).
-3. Brief commentary on 2–3 notable findings.
-4. Repro section (must match frontmatter):
+Every post must contain these four elements, but their order, framing, and surrounding prose should vary post to post:
+
+1. **Top 5 Hotspots table** — function, file, risk, CC, ND, FO columns. Always present.
+2. **Per-function analysis** — one section per table row, in descending risk order.
+3. **Repro block** — must match frontmatter SHA exactly:
    ```
    git clone https://github.com/<owner>/<repo>
    cd <repo>
    git checkout <sha>
-   hotspots analyze
+   hotspots analyze . --mode snapshot --explain-patterns --force
    ```
-5. Footer: link to editorial policy and full HTML report.
+4. **Footer** — editorial policy link, one line.
+
+### Structural Variety Guidelines (for AI agents generating posts)
+
+**Vary the intro frame** — pick the angle that fits the data, never default to the same opening:
+- *File-concentration angle*: when one file holds 3+ hotspots, open with that file as the protagonist.
+- *Pattern angle*: when a single antipattern (e.g. `god_function`) dominates across all hotspots, lead with the pattern rather than any individual function.
+- *Velocity angle*: when all top functions have very recent commit activity, open with the "actively breaking" framing.
+- *Contrast angle*: when a tiny repo has extreme CC values, open with that size-vs-complexity contrast.
+- *Spread angle*: when hotspots span many files with no dominant file, open with the architectural scatter.
+
+**Vary the analysis section structure** — choose the form that best matches the function’s characteristics:
+- Dense single paragraph with recommendation embedded at the end.
+- Two paragraphs: what the data shows, then what to do about it.
+- Short opening sentence (the bottom line), then supporting detail, then a bulleted recommendation with 2–3 concrete steps.
+- For hub functions with very high FO: open with a dependency-graph framing.
+- For entry points (main, cli, run): open with the "accumulates everything" framing.
+
+**Vary section density** — not every function needs equal treatment. If hotspots 3–5 are clearly secondary, say so concisely in one tight paragraph each and give hotspots 1–2 the depth they warrant.
+
+**Vary closing structure** — sometimes a Key Takeaways section, sometimes a short closing paragraph that ties findings together, sometimes nothing beyond the repro block if the analysis sections are self-contained.
+
+**Let the data dictate vocabulary** — if all five functions are in one file, use "this module" not "the codebase." If the CC spread is wide (e.g. 828 vs 62), note the gap. If functions share an antipattern, group the language around that pattern rather than repeating the same framing for each.
 
 ## Reproducibility and Artifacts
 
