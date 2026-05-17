@@ -153,7 +153,7 @@ Use the frontmatter values to reproduce locally:
 git clone https://github.com/<owner>/<repo>
 cd <repo>
 git checkout <sha>
-hotspots analyze
+hotspots analyze . --mode snapshot --explain-patterns --force
 ```
 
 Compare your local output to the linked `snapshot.json` and `index.html` on R2.
@@ -183,9 +183,9 @@ clone_depth: 50
 
 Intro paragraph.
 
-| Function | File | Risk |
-|---|---|---|
-| symbol | path | 0.0 |
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| symbol | path | 0.0 | 0 | 0 | 0 |
 
 Repro:
 
@@ -193,7 +193,7 @@ Repro:
 git clone https://github.com/<owner>/<repo>
 cd <repo>
 git checkout <sha>
-hotspots analyze
+hotspots analyze . --mode snapshot --explain-patterns --force
 ```
 
 _See editorial policy in the repository README. Full report: <report_html>_
@@ -215,7 +215,7 @@ _See editorial policy in the repository README. Full report: <report_html>_
 
 1. Parse frontmatter; ensure required keys are present and URLs are HTTPS.
 2. Confirm R2 URLs resolve with HTTP 200.
-3. Optionally clone the target repo at `commit` and run `hotspots analyze`.
+3. Optionally clone the target repo at `commit` and run `hotspots analyze . --mode snapshot --explain-patterns --force`.
 4. Compare top findings against `blog/data/*.summary.json`.
 
 ## FAQ
