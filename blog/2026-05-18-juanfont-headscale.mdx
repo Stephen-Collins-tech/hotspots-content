@@ -5,7 +5,7 @@ description: "headscale's hscontrol/policy/v2 package dominates activity-weighte
 introContent: "headscale's policy engine is where structural complexity meets live development pressure: the two highest-risk functions are both actively changing right now, making them live regression risks rather "
 pubDate: 2026-05-18
 tags: ["oss", "go", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "juanfont/headscale"
 commit: "af7e7a45604dd7fe5e0c64d5e2c907a3108c7c36"
 language: "go"
@@ -30,7 +30,7 @@ qaSection:
     answer: "Activity-weighted risk multiplies structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — by a recent commit frequency score, so that functions which are both hard to understand and actively changing rank the highest. A function with cyclomatic complexity of 80 that has not been touched in two years will score much lower than one with CC 16 touched twice in 14 days, because the dormant function poses lower near-term regression risk regardless of how tangled it looks. In headscale, this is why ViaRoutesForPeer's activity risk of 17.05 reflects not just its CC 13 and ND 7, but also the fact that it was modified twice in the last 30 days — the combination is what makes it urgent. This approach helps teams direct refactoring effort toward functions where complexity is most likely to interact with an imminent code change, rather than simply where the code looks the most complicated in the abstract."
 ---
 
-headscale's hscontrol/policy/v2 package is the center of gravity for structural risk: the top two hotspots, compileSSHPolicy and ViaRoutesForPeer, both sit in the fire quadrant — complex code that is being actively modified right now, not dormant debt waiting to be addressed. compileSSHPolicy carries an activity risk score of 17.36 with a recent activity score of 17.1, and ViaRoutesForPeer is close behind at 17.05 with 2 commits touching it in the last 14 days, making both live regression risks. Across 1,588 total functions, 174 are rated critical — and the policy layer accounts for the top two.
+headscale's hscontrol/policy/v2 package is the center of gravity for structural risk: the top two hotspots, compileSSHPolicy and ViaRoutesForPeer, both sit in the fire quadrant — complex code that is being actively modified right now, not dormant debt waiting to be addressed. compileSSHPolicy carries the highest activity risk in this snapshot at 17.36, and ViaRoutesForPeer follows at 17.1 with 2 commits in the last 30 days, making both live regression risks. Across 1,588 total functions, 174 are rated critical — and the policy layer accounts for the top two.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -48,7 +48,7 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 ### `compileSSHPolicy` — hscontrol/policy/v2/filter.go
 
-Based on its name and location in the policy/v2 filter layer, compileSSHPolicy likely translates high-level SSH access policy definitions into an evaluated, executable rule set — a function whose correctness is foundational to access control. The metrics tell a demanding story: cyclomatic complexity of 16 means 16 independent execution paths that each require test coverage, a maximum nesting depth of 7 indicates deeply interlocked conditional logic that is hard to reason about locally, and a fan-out of 40 means this function directly calls 40 distinct functions — making it a god function whose changes can ripple across a wide surface area. With 1 commit in the last 30 days and a recent activity score of 17.1, it is in the fire quadrant: structurally complex code that is actively changing, which is the definition of live regression risk.
+Based on its name and location in the policy/v2 filter layer, compileSSHPolicy likely translates high-level SSH access policy definitions into an evaluated, executable rule set — a function whose correctness is foundational to access control. The metrics tell a demanding story: cyclomatic complexity of 16 means 16 independent execution paths that each require test coverage, a maximum nesting depth of 7 indicates deeply interlocked conditional logic that is hard to reason about locally, and a fan-out of 40 means this function directly calls 40 distinct functions — making it a god function whose changes can ripple across a wide surface area. With 1 commit in the last 30 days, it is in the fire quadrant: structurally complex code that is actively changing, which is the definition of live regression risk.
 
 **Recommendation:** Before the next modification, add characterization tests that exercise each of the 16 cyclomatic paths — these will act as a safety net given the fan-out of 40. Then apply extract-method refactoring to decompose the function into smaller, independently testable units, targeting the deeply nested blocks (ND 7) as the first extraction candidates.
 
@@ -58,17 +58,23 @@ ViaRoutesForPeer, in the core policy evaluation file, most likely determines whi
 
 **Recommendation:** Given the fan-out of 24, map the blast radius before any further changes — identify which callers depend on the routing decisions this function returns. Consider splitting peer-route resolution logic from the rule-matching logic to reduce both fan-out and cyclomatic complexity, making each piece independently testable.
 
-### `ruleAllowsAnyDest` — hscontrol/policy/v2/test.go
+### `HandleNodeFromAuthPath` — hscontrol/state/state.go
 
-ruleAllowsAnyDest lives in the test support layer for the policy/v2 package and, from its name, likely checks whether a compiled policy rule permits traffic to any destination — a helper used to assert broad-allow conditions in tests. With a cyclomatic complexity of 3, nesting depth of 2, and fan-out of 2, its structural profile is simple; it sits in the watch quadrant. It was touched 1 time in the last 30 days and last changed just 2 days ago, meaning it is active — but the low complexity means this activity carries negligible structural risk.
+HandleNodeFromAuthPath lives in the core state management layer and orchestrates what happens when a node completes an authentication path — registering it, updating its state, and triggering downstream policy evaluation. Its metrics reflect that orchestration: a fan-out of 43 means this function directly calls 43 distinct functions, placing it in god_function territory, while a nesting depth of 4 indicates conditional branching that tightly couples auth outcomes to state transitions. A cyclomatic complexity of 7 is moderate on its own, but combined with broad fan-out it creates a function where modifications carry an outsized blast radius.
 
-**Recommendation:** No refactoring is needed here. Monitor this function as an indicator of test coverage evolution in the policy/v2 layer — if it grows in complexity alongside compileSSHPolicy or ViaRoutesForPeer, that is a signal the tests are absorbing complexity that should instead be reduced in the production functions.
+**Recommendation:** Audit the 43 callees and group them by concern — auth validation, state persistence, and policy notification are likely distinct responsibilities. Extracting each group into a named orchestration step would reduce direct fan-out and make each step independently testable.
 
-### `ruleMatchesSource` — hscontrol/policy/v2/test.go
+### `New` — integration/tsic/tsic.go
 
-Also in the policy/v2 test support layer, ruleMatchesSource likely evaluates whether a policy rule matches a given traffic source — a companion assertion helper to ruleAllowsAnyDest. Its metrics are identical: CC 3, ND 2, FO 2, 1 touch in 30 days, last changed 2 days ago. Like its neighbor, it is in the watch quadrant — active but structurally clean, and not a refactoring priority.
+New is a constructor function in the integration test infrastructure for the Tailscale client (tsic). That a test constructor appears in the top five reflects how much the setup logic has grown: a cyclomatic complexity of 8 and nesting depth of 5 indicate branching over test configuration options, while a fan-out of 25 shows it wires up a broad set of test dependencies. Complex test constructors slow down writing new integration tests and obscure what each test actually requires.
 
-**Recommendation:** No structural action required. The parallel evolution of ruleMatchesSource and ruleAllowsAnyDest alongside the fire-quadrant production functions is a healthy sign — ensure these test helpers stay in sync with any interface changes made during refactoring of ViaRoutesForPeer or compileSSHPolicy.
+**Recommendation:** Consider adopting a functional options or builder pattern for tsic.New to flatten the conditional branching. This would reduce both CC and ND, making it easier to compose only the configuration a given test needs without changing test coverage.
+
+### `Serve` — hscontrol/app.go
+
+Serve is the top-level server function in hscontrol/app.go, responsible for wiring up and launching the full control plane — registering routes, initialising services, and blocking until shutdown. Its fan-out of 119 is the largest in this snapshot by a significant margin, a direct reflection of how much Serve must coordinate: it is a god_function whose breadth of coupling is expected for a top-level bootstrap function, but one that makes any change to the startup sequence a high-blast-radius modification. With CC 7 and ND 4, the structural complexity is moderate; the risk here comes from coupling width rather than deep conditional logic.
+
+**Recommendation:** Serve's broad fan-out is partly inherent to top-level bootstrapping, but grouping related setup calls into named initialisation functions — such as initGRPC, initMetrics, or initStateWatcher — would reduce direct fan-out, improve readability, and make it possible to test each subsystem's startup logic in isolation.
 
 ## Patterns Found
 
@@ -87,8 +93,8 @@ _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, 
 ## Key Takeaways
 
 - compileSSHPolicy in hscontrol/policy/v2/filter.go has a fan-out of 40 and was touched within the last 30 days — map its callee graph before making any further changes to contain blast radius.
-- ViaRoutesForPeer has been touched twice in 14 days with a nesting depth of 7 and cyclomatic complexity of 13 — add path-coverage tests immediately to guard against regressions during active development.
-- All 174 critical-band functions and both top hotspots are in the fire quadrant, meaning headscale has zero functions in the debt quadrant — structural risk is concentrated in actively changing code, not dormant legacy logic, so refactoring pressure is time-sensitive rather than deferred.
+- ViaRoutesForPeer has been touched twice in the last 30 days and last changed just 14 days ago, with a nesting depth of 7 and cyclomatic complexity of 13 — add path-coverage tests to guard against regressions during active development.
+- All 174 highest-risk functions and both top hotspots are in the fire quadrant, meaning headscale has zero functions in the debt quadrant — structural risk is concentrated in actively changing code, not dormant legacy logic, so refactoring pressure is time-sensitive rather than deferred.
 
 ## Reproduce This Analysis
 
