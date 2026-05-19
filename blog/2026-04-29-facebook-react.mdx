@@ -1,6 +1,6 @@
 ---
 title: "React's compiler and hooks plugin carry the highest activity risk — 5 functions"
-titleSeo: "facebook/react code health: compiler and hooks plugin lead refactoring priority in 2024"
+titleSeo: "facebook/react code health: compiler and hooks plugin lead refactoring priority in 2026"
 description: "Five god-functions in BuildHIR.ts and ExhaustiveDeps.ts dominate React's structural risk, combining cyclomatic complexity up to 150 with active recent commit churn across both the new compiler and the exhaustive-deps lint rule."
 introContent: "React's new compiler and its exhaustive-deps lint rule are where structural complexity meets live development pressure — five functions account for the repo's highest combined complexity and recent ac"
 pubDate: 2026-04-29
@@ -30,6 +30,8 @@ qaSection:
 
 Of React's 3,529 analyzed functions, 402 are rated critical — and the five highest-risk hotspots are all concentrated in two actively developed subsystems: the React Compiler's HIR builder (`BuildHIR.ts`) and the `eslint-plugin-react-hooks` exhaustive-deps rule (`ExhaustiveDeps.ts`). The top-ranked function, `lowerStatement`, sits in the "fire" quadrant with a cyclomatic complexity of 150 and a recent activity score of 20.2, meaning it is both structurally extreme and actively changing right now — a live regression risk, not a backlog cleanup item. Every one of the top five functions shares the same pattern fingerprint: god-function, complex branching, deep nesting, exit-heavy, and long — a consistent structural signature across two of React's most actively evolved components.
 
+BuildHIR.ts is where React's new compiler does its heaviest lifting: three of the top five hotspots in this analysis live in that single file, each responsible for translating a different syntactic category into the compiler's high-level IR. The other two sit in ExhaustiveDeps.ts, the exhaustive-deps lint rule's core analysis logic. Both files are under active development simultaneously — making this a story of two packages accumulating structural debt in real time, not dormant code waiting to be cleaned up.
+
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
 ## Top 5 Hotspots
@@ -50,33 +52,31 @@ react is a large repository. To stay within memory constraints, this analysis us
 
 ### `lowerStatement` — compiler/packages/babel-plugin-react-compiler/src/HIR/BuildHIR.ts
 
-Based on its name and location in the HIR (High-level Intermediate Representation) builder, `lowerStatement` almost certainly handles the translation of JavaScript/TypeScript statements into the compiler's internal IR — a central pass that must branch on every statement type the language supports. A cyclomatic complexity of 150 means 150 independent execution paths, each a required test case and a potential bug surface; a max nesting depth of 8 pushes well past the point where local reasoning is reliable. Its fan-out of 63 distinct callees means a change to this function can propagate through a wide swath of the compiler pipeline. Sitting in the "fire" quadrant with a recent activity score of 20.2 and an activity risk of 25.4 — the highest in the repo — this is a live regression risk: complex logic is being actively modified right now.
+CC 150. That number means 150 independent execution paths — one for every JavaScript statement type the compiler's IR builder must handle. With nesting depth 8 and fan-out 63, `lowerStatement` has become the central routing table for BuildHIR.ts: every statement form added to JavaScript's surface syntax lands here, adding branches that compound the existing count. Its activity risk of 25.4 is the highest in the repo, and it is being actively modified — complex code that is changing now, not later.
 
-**Recommendation:** Before any further feature work touches this function, add a comprehensive characterization test suite covering the major statement-type branches; then apply extract-method refactoring to isolate each statement category (e.g., loops, conditionals, try/catch, declarations) into dedicated lower* helpers, reducing the monolithic CC-150 surface into individually testable units.
+**Recommendation:** Write characterization tests scoped to individual statement types before any further feature work touches this function — the absence of a targeted test net is the most acute risk. Then apply extract-method refactoring to isolate each statement category (loops, conditionals, try/catch, declarations) into dedicated `lower*` helpers, reducing the CC-150 surface into individually testable units.
 
 ### `lowerExpression` — compiler/packages/babel-plugin-react-compiler/src/HIR/BuildHIR.ts
 
-`lowerExpression` likely handles the parallel translation task for expressions within the same HIR compilation pass. With a cyclomatic complexity of 141 and a fan-out of 76 — the highest fan-out among all five hotspots — it is broadly coupled to more downstream components than even `lowerStatement`. Its nesting depth of 6, combined with the exit-heavy pattern, means the function has many early-return paths that are difficult to cover uniformly with tests. Its recent activity score of 18.6 and "fire" quadrant placement confirm it is being actively modified alongside `lowerStatement`, compounding the regression risk: two CC-100+ functions in the same file are changing in parallel.
+Where `lowerStatement` is broad, `lowerExpression` is deeply coupled: its fan-out of 76 — the highest in this dataset — means a change here propagates through more downstream components than any other hotspot. At CC 141 and nesting depth 6, it handles the full expression surface of the language with the same accumulation pattern as its neighbor. The two functions are being modified in parallel, which compounds the risk: when statement-lowering and expression-lowering changes land in the same release, the blast radius overlaps across 63 and 76 callees respectively.
 
-**Recommendation:** Audit the 76 callees via fan-out analysis to map the blast radius, then prioritize extracting expression-category sub-functions (e.g., member expressions, call expressions, literals) as independent units — this directly reduces both the CC and the coupling surface before the next compiler feature lands.
+Before refactoring, map the 76 callees via fan-out analysis to identify which belong to the same conceptual cluster. Then extract expression-category sub-functions (member expressions, call expressions, literals) as independent units — this reduces both CC and coupling before the next compiler feature lands.
 
 ### `lowerAssignment` — compiler/packages/babel-plugin-react-compiler/src/HIR/BuildHIR.ts
 
-`lowerAssignment` handles the translation of assignment expressions into the compiler's HIR — a narrower task than `lowerStatement` but still responsible for branching across every assignment form JavaScript supports (simple assignment, destructuring, compound assignment, optional chaining targets). A cyclomatic complexity of 72 and a nesting depth of 6 indicate significant branching, and its fan-out of 42 means changes propagate to 42 downstream components in the compiler pipeline. It sits alongside `lowerStatement` and `lowerExpression` in the "fire" quadrant, confirming it is actively modified as the compiler evolves.
-
-**Recommendation:** Since `lowerAssignment` shares a file with the two higher-ranked hotspots, coordinate any refactoring effort across all three — changes to assignment lowering will likely surface shared utilities that can also simplify the broader `lowerStatement` and `lowerExpression` surfaces. Start by extracting destructuring and compound-assignment branches as independent helpers with clear input contracts.
+The third BuildHIR.ts function handles assignment expressions specifically: simple assignment, destructuring, compound assignment, optional chaining targets. CC 72 and fan-out 42 are lower than its neighbors but qualify as a god function by any reasonable threshold, and the fire-quadrant placement means it is changing alongside them. The priority here is coordination rather than isolated refactoring — start by extracting destructuring and compound-assignment branches, and use that work to surface shared utilities that may also simplify `lowerStatement` and `lowerExpression` in the same pass.
 
 ### `visitFunctionWithDependencies` — packages/eslint-plugin-react-hooks/src/rules/ExhaustiveDeps.ts
 
-From its name and location in the exhaustive-deps lint rule, `visitFunctionWithDependencies` likely orchestrates the core analysis that walks a React hook's callback, resolves its dependency scope, and validates the dependency array — the most logic-dense part of the rule. A cyclomatic complexity of 131 combined with a max nesting depth of 10 — the deepest in the dataset — makes this function particularly hard to reason about locally; ND 10 means the innermost logic is ten control-structure levels removed from the function signature. With a fan-out of 74 and a recent activity score of 20.2 in the "fire" quadrant, structural complexity and active development pressure are coinciding right now, making untested edge-case regressions a concrete near-term risk.
+This function orchestrates the exhaustive-deps rule's core analysis: it walks a hook's callback, resolves its dependency scope, and validates the dependency array. CC 131 is severe, but the defining metric here is nesting depth of 10 — the deepest in this dataset. Ten control-structure levels means the innermost logic is ten conditional frames removed from the function signature, making local reasoning unreliable and test coverage hard to reason about without full execution traces.
 
-**Recommendation:** The nesting depth of 10 is the most urgent signal here: identify the innermost nested blocks and extract them into named helper functions with clear contracts, which will also make the dependency-resolution logic independently unit-testable without exercising the full visitor path.
+**Recommendation:** Nesting depth is the most actionable signal. Identify the innermost nested blocks and extract them into named helper functions with clear input contracts — this makes the dependency-resolution logic independently unit-testable without exercising the full visitor path. Each extracted helper will inherit a narrower scope of callee dependencies, reducing both ND and effective coupling per unit.
 
 ### `create` — packages/eslint-plugin-react-hooks/src/rules/ExhaustiveDeps.ts
 
-`create` is the rule factory for the exhaustive-deps lint rule — the entry point that Babel/ESLint calls to instantiate the rule's visitor object. With a cyclomatic complexity of 125, a nesting depth of 10, and a fan-out of 89 — the highest callout count of any function in this dataset — it is both a structural hotspot and a coupling hub for the entire rule. Nearly every dependency-tracking path eventually connects through this function. Despite its role as an initializer, its complexity suggests it has accumulated significant inline logic that would be better expressed as named sub-visitors or helper functions. Its "fire" quadrant placement confirms active recent modification.
+`create` is the rule factory — the function ESLint calls to instantiate the exhaustive-deps rule's visitor object. At CC 125 and fan-out 89, the highest callout count in this dataset, it has become the coordination hub for the entire rule. Unlike most entry points that delegate immediately, `create` has absorbed significant behavioral logic alongside its initialization role, making it both a structural hotspot and a coupling bottleneck: nearly every dependency-tracking path in the rule connects through this function.
 
-**Recommendation:** The fan-out of 89 is the primary concern: audit which of the 89 callees are cohesive sub-responsibilities (e.g., scope analysis, dependency tracking, write detection) and extract each into a dedicated visitor or helper. This reduces both the CC and the coupling surface, and makes individual rule behaviors independently testable without instantiating the full rule factory.
+Audit which of the 89 callees form cohesive sub-responsibilities — scope analysis, dependency tracking, write detection — and extract each into a dedicated visitor or helper. This reduces CC and coupling simultaneously and makes individual rule behaviors testable without instantiating the full rule factory.
 
 ## Patterns Found
 
@@ -92,12 +92,6 @@ Antipatterns detected across the top functions in this snapshot:
 | `cyclic_hub` | 1 |
 
 _These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
-
-## Key Takeaways
-
-- `lowerStatement` in BuildHIR.ts has a cyclomatic complexity of 150 and a recent activity score of 20.2 — the highest activity risk in the repo. Characterization tests scoped to individual statement types should be written before any further changes land.
-- `lowerExpression` has a fan-out of 76, the broadest coupling of any hotspot in this dataset. Mapping its callees before refactoring is a prerequisite: an unreviewed change here can produce ripple effects across 76 downstream functions in the compiler pipeline.
-- `visitFunctionWithDependencies` in ExhaustiveDeps.ts reaches a nesting depth of 10 — a strong signal that the function's innermost logic should be extracted into named helpers. At CC 131 with active recent changes, this is the highest-risk function outside the compiler package and warrants its own refactoring sprint.
 
 ## Reproduce This Analysis
 
