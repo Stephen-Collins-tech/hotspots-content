@@ -1,0 +1,120 @@
+---
+title: "Hotspots v1.17.0: Model Risk Map and Monorepo Subsystems"
+description: "v1.17.0 adds a model risk map mode that ranks your riskiest data models and a subsystem field that makes risk percentiles meaningful in monorepos."
+pubDate: 2026-05-20
+author: "Stephen Collins"
+tags: ["editorial", "hotspots", "complexity", "monorepo", "release"]
+ogImage: "/og.png"
+summary: "v1.17.0 ships two features: a model risk map that surfaces which data models concentrate the most risky functions, and a subsystem field that enables per-package risk percentiles in monorepos."
+introContent: "Hotspots already tells you which functions are risky. v1.17.0 tells you which models those functions cluster around — and makes risk scores meaningful inside monorepo package boundaries."
+---
+
+Hotspots v1.17.0 ships two features: a model risk map and subsystem tagging.
+
+## Model Risk Map — `--mode models`
+
+Risky functions don't exist in isolation. They cluster around the data models that define your system's core behavior. The model risk map surfaces that relationship directly.
+
+```bash
+hotspots analyze . --mode models
+```
+
+This extracts struct, class, interface, and record declarations across all supported languages, then associates functions with each model by two mechanisms:
+
+- **Same-file:** functions defined in the same file as the model
+- **Direct import:** functions in files that import the model and reference its name in source tokens
+
+Models are ranked by the sum of their top-5 associated function risk scores, weighted by band:
+
+| Band | Weight |
+|------|--------|
+| Critical | 1.5× |
+| High | 1.25× |
+| Moderate | 1.0× |
+| Low | 0.5× |
+
+Output looks like this:
+
+```
+#1  Snapshot     hotspots-core/src/snapshot.rs    critical×4 high×15
+    emit_snapshot_output          LRS 14.08  [fire]
+    build_snapshot_via_db         LRS 11.60  [fire]
+    build_enriched_snapshot       LRS  9.54  [fire]
+    Snapshot::populate_callgraph  LRS  9.24  [fire]
+    Snapshot::populate_per_fu...  LRS  8.88  [fire]
+
+#2  Delta        hotspots-core/src/delta.rs       critical×2 high×3
+    emit_delta_output             LRS 10.91  [fire]
+    write_co_change_delta_sec...  LRS 10.52  [debt]
+    compute_pr_delta              LRS  8.64  [fire]
+```
+
+### HTML report integration
+
+Pass `--include-models` to any snapshot run to embed the model risk map as an interactive force-directed graph in your HTML report:
+
+```bash
+hotspots analyze . --mode snapshot --format html --include-models
+```
+
+Nodes are sized and color-coded by weighted risk concentration:
+
+- **Deep red / large:** high-risk functions are concentrated around this model — look here first
+- **Green / small:** low aggregate risk, safe to deprioritize
+
+Edges connect models that share associated functions. Drag nodes to explore relationships.
+
+### JSON output
+
+```bash
+hotspots analyze . --mode models --format json
+```
+
+The JSON schema includes `items` (ranked model entries with associated functions) and `links` (shared-function edges between models).
+
+---
+
+## Subsystem tagging for monorepos
+
+In a monorepo, a global LRS percentile is misleading. A score of 8.0 might be critical in a small utility package but unremarkable in a large framework package. The comparison only makes sense within package boundaries.
+
+v1.17.0 adds a `subsystem` field to every `FunctionSnapshot`. It contains the relative path to the nearest manifest-containing ancestor directory — one of `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `setup.py`, `pom.xml`, `build.gradle`, `Gemfile`, or `mix.exs`.
+
+```json
+{
+  "function": "compileTemplate",
+  "file": "packages/compiler-core/src/compile.ts",
+  "subsystem": "packages/compiler-core",
+  "lrs": 9.4
+}
+```
+
+Special cases:
+
+- `""` — the file lives directly in the repo root (manifest exists there)
+- `null` / field absent — no manifest ancestor found
+
+The subsystem walk runs once per analysis, uses only `std::fs::read_dir` (no additional dependencies), and skips hidden and vendor directories (`node_modules`, `.git`, `target`, `dist`, `build`, `__pycache__`, `.venv`, `venv`).
+
+Validated on:
+- **vuejs/core:** 1,431 of 1,496 functions tagged across 22 subsystems (`packages/runtime-core`, `packages/compiler-core`, etc.)
+- **next.js:** 5,926 of 14,150 files tagged across 428 subsystems (including `turbopack`)
+
+Downstream pipelines can now filter by `subsystem` before computing percentiles, producing per-package risk rankings rather than a single global distribution.
+
+---
+
+## Upgrading
+
+```bash
+# Homebrew
+brew upgrade hotspots
+
+# Cargo
+cargo install hotspots-cli
+
+# Install script
+curl -fsSL https://raw.githubusercontent.com/Stephen-Collins-tech/hotspots/main/install.sh | sh
+```
+
+Full changelog and source: [github.com/Stephen-Collins-tech/hotspots](https://github.com/Stephen-Collins-tech/hotspots)
