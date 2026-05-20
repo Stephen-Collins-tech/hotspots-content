@@ -1,0 +1,78 @@
+---
+title: "Hotspots v1.18.0: Compact Storage"
+description: "v1.18.0 ships real compaction for snapshot history — level 1 converts intermediates to delta encoding (87% storage reduction on the hotspots repo itself), level 2 drops snapshots where no risk band changed."
+pubDate: 2026-05-20
+author: "Stephen Collins"
+tags: ["editorial", "hotspots", "complexity", "release"]
+ogImage: "/og.png"
+summary: "v1.18.0 makes `hotspots compact` real. Level 1 delta-encodes intermediate snapshots; level 2 drops snapshots with no risk-band changes. On the hotspots repo: 20 MB → 2.5 MB. A --dry-run flag shows projected savings before touching anything."
+introContent: "Snapshot history is valuable. Unbounded snapshot growth is not. v1.18.0 ships two compaction levels that shrink your .hotspots directory without losing the history that matters."
+---
+
+Hotspots accumulates one snapshot per commit. Over time `.hotspots/snapshots/` grows without bound — `prune` removes snapshots for commits that fell off your branch, but it doesn't help with long-lived main branches. v1.18.0 fixes that with two compaction levels and a `--dry-run` mode.
+
+## `hotspots compact --level 1`
+
+Level 1 converts intermediate snapshots to delta encoding. It keeps the oldest snapshot and the N most-recent snapshots as full representations; everything in between becomes a diff from its chronological predecessor.
+
+```bash
+hotspots compact --level 1
+hotspots compact --level 1 --dry-run   # preview savings without touching files
+```
+
+Snapshots written before this version are loaded transparently — the delta reconstruction happens on read, so `diff` and `trends` work unchanged against compacted history.
+
+**Results on the hotspots repo itself (45 snapshots):**
+
+| Stage | Storage | Files |
+|---|---|---|
+| Before | 20 MB | 45 (0 delta) |
+| After level 1 | 2.5 MB | 45 (43 delta, 2 full) |
+
+87% reduction. Delta encoding is effective because most commits change a small fraction of functions — full snapshots duplicate the unchanged majority every time.
+
+## `hotspots compact --level 2`
+
+Level 2 goes further: it drops snapshots entirely where no function's risk band changed since the last kept snapshot. Only the oldest and newest snapshots are always retained; everything in between is kept only if at least one function moved between Low, Moderate, High, or Critical.
+
+```bash
+hotspots compact --level 2
+hotspots compact --level 2 --dry-run
+```
+
+When a delta snapshot's base is dropped by level 2, it's automatically promoted to a full snapshot so remaining chains stay intact.
+
+The right-sizing caveat: level 2 is most effective on stable, mature codebases where risk bands rarely move. On an actively-developed repo like hotspots itself, bands change on nearly every commit, so level 2 yields modest additional savings after level 1. On a quiet maintenance repo it can drop 80%+ of remaining snapshots.
+
+## `--dry-run` before you commit
+
+Both levels support `--dry-run`, which measures projected savings without modifying any file:
+
+```bash
+$ hotspots compact --level 1 --dry-run
+Dry-run: would convert 43 snapshot(s) to delta encoding
+Estimated storage reduction: 19.0 MB
+
+$ hotspots compact --level 2 --dry-run
+Dry-run: would drop 4 snapshot(s) with no band changes
+Estimated storage reduction: 1.8 MB
+```
+
+## Backwards compatibility
+
+Snapshots written before v1.18.0 may be missing fields added in later releases — the compact implementation loads and reconstructs these snapshots, so any missing optional field needed a serde default to avoid a deserialization failure. This release adds `#[serde(default)]` to `CallGraphMetrics::is_entrypoint`, which was the only non-optional field without one. Older snapshot stores load cleanly.
+
+## Upgrading
+
+```bash
+# Homebrew
+brew upgrade hotspots
+
+# Cargo
+cargo install hotspots-cli
+
+# Install script
+curl -fsSL https://raw.githubusercontent.com/Stephen-Collins-tech/hotspots/main/install.sh | sh
+```
+
+Full changelog and source: [github.com/Stephen-Collins-tech/hotspots](https://github.com/Stephen-Collins-tech/hotspots)
