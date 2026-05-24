@@ -1,9 +1,11 @@
 ---
-title: "Hotspots on calcom/cal.com: the 5 functions with the highest activity-weighted risk"
+title: "cal.com's booking layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "calcom/cal.com Code Health: Top 5 High-Risk Functions for Refactoring"
 description: "A Hotspots analysis of calcom/cal.com at commit 180ede2, surfacing the top functions by activity-weighted risk score."
+introContent: "Three of cal.com's top five hotspots are named `handler` — all in the booking layer. One has a cyclomatic complexity of 243."
 pubDate: 2026-05-24
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "calcom/cal.com"
 commit: "180ede28f0bddf2738933a6e60a8e80f6116d7da"
 language: "typescript"
@@ -16,10 +18,22 @@ topFunction: "handler"
 topFile: "packages/features/bookings/lib/service/RegularBookingService.ts"
 topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
 patternCounts: {complex_branching: 5, deeply_nested: 4, exit_heavy: 5, god_function: 5, long_function: 5, hub_function: 1}
+qaSection:
+  - question: "What is the highest-risk function in calcom/cal.com?"
+    answer: "The `handler` function in RegularBookingService.ts, with a cyclomatic complexity of 243, nesting depth of 8, and fan-out of 175 — the structural centre of the booking creation flow."
+  - question: "Why does cal.com have so many high-risk handlers?"
+    answer: "Booking creation, cancellation, and webhook handling each accumulate conditional logic over time as new integrations, edge cases, and business rules get added directly to existing handlers rather than extracted."
+  - question: "What antipatterns appear most in cal.com's hotspots?"
+    answer: "All five top functions show complex_branching, exit_heavy, god_function, and long_function. Four of five are also deeply_nested. These patterns cluster in the booking and scheduling layer."
+  - question: "How should I prioritise refactoring in cal.com?"
+    answer: "Start with RegularBookingService.handler — its CC of 243 and FO of 175 make it both the hardest to reason about and the most likely to be touched by any booking-related change. Extract cohesive sub-flows into focused services."
+  - question: "What does activity-weighted risk mean in this analysis?"
+    answer: "Activity-weighted risk multiplies structural complexity (cyclomatic complexity, nesting depth) by recent commit frequency. A complex function that is being actively changed ranks higher than one that is equally complex but dormant."
 ---
 
-\{/* TODO: one paragraph — what this project is and why it's interesting */\}
-Intro paragraph here.
+Three of the five highest-risk functions in cal.com are named `handler`. They live in booking creation, webhook processing, and cancellation — the core of what the platform does. That naming pattern is worth pausing on: when the primary logic unit for a major feature is a generic `handler`, it often means the function has been accumulating responsibility rather than having it deliberately assigned.
+
+The standout is `RegularBookingService.handler`, with a cyclomatic complexity of 243. The next entry sits at CC 46. That gap — nearly 5× — is the first thing to understand about this codebase's risk profile.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -37,18 +51,27 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 cal.com is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
 
-### `(fill in)` — (fill in)
+### `handler` — packages/features/bookings/lib/service/RegularBookingService.ts
 
-\{/* TODO: insight */\}
+CC 243 is not just high — it means there are 243 independent execution paths through this function. Paired with a nesting depth of 8 and fan-out of 175, this is the structural centre of gravity for booking creation: it calls into 175 distinct functions, making it a hub that pulls in nearly every subsystem the platform touches. Every new booking type, integration, or edge case that has landed here instead of in a dedicated service has compounded the complexity. The god_function and long_function patterns confirm what the metrics show — this is a function that has taken on orchestration, validation, persistence, and notification concerns all at once. Splitting it along those responsibility boundaries (a dedicated `validateBookingRequest`, a `persistBooking`, a `notifyParticipants`) would let each piece be tested and changed independently, and would bring the per-unit CC down to something reviewers can hold in their heads.
 
-**Recommendation:** \{/* TODO: action */\}
+### `_getBusyTimesFromLimitsForUsers` — packages/trpc/server/routers/viewer/slots/util.ts
 
-## Key Takeaways
+This function sits in the slot-availability calculation path, where it needs to reconcile booking limits, user schedules, and time zone rules across potentially many users at once. CC 46 and ND 7 reflect how many combinations of limit types and scheduling constraints have been folded into a single traversal. The deeply_nested pattern here suggests that limit-type branching is nested inside user iteration, rather than the limit logic being separated into its own evaluated structure. Extracting a `getLimitsForUser` helper that returns a normalised structure — and then applying it uniformly — would flatten the nesting and make the combinations easier to test in isolation.
 
-- \{/* TODO: takeaway 1 */\}
-- \{/* TODO: takeaway 2 */\}
-- \{/* TODO: takeaway 3 */\}
+### `handler` — packages/app-store/vital/api/webhook.ts
 
+With CC 28 and ND 7, this webhook handler punches above its complexity weight for its size. Nesting depth of 7 in a webhook handler typically indicates that event-type branching is deeply nested rather than dispatched — each event type adds another layer rather than routing to a dedicated processor. The exit_heavy pattern reinforces this: early returns are being used to manage the branching rather than a clean dispatch table. Refactoring toward an event-type registry or a simple `switch` with extracted handlers per event type would reduce both the nesting and the number of exit points.
+
+### `Signup` — apps/web/modules/signup-view.tsx
+
+The metrics here — CC 43, ND 5, FO 57 — point to a React component that has absorbed too much: form state, validation logic, API calls, error handling, and conditional rendering for multiple signup flows (SSO, email, invite token, etc.). Fan-out of 57 means it is coordinating with a large slice of the application surface.
+
+A signup view with this profile is typically the result of incremental feature additions — each new auth method or onboarding variant adding a branch rather than a dedicated sub-component. Splitting by concern (a `useSignupForm` hook for state and validation, dedicated components per signup variant) would shrink the function and make each path independently testable without a full render cycle.
+
+### `handler` — packages/features/bookings/lib/handleCancelBooking.ts
+
+CC 72 with FO 46 and ND 4 makes this the structurally second-most-complex booking handler in the top five, despite its lower nesting than the others. The complex_branching and exit_heavy patterns suggest it handles many cancellation scenarios in sequence — host-initiated vs. attendee-initiated, with or without refunds, recurring vs. single events — using guard clauses that grow longer with each new case. The relatively shallow nesting (ND 4) is a positive sign: the function is wide rather than deep, which makes extraction more tractable. Grouping cancellation scenarios into explicit case handlers (`handleAttendeeCancel`, `handleRecurringCancel`) would reduce CC meaningfully without requiring a deep restructure.
 
 ## Patterns Found
 
