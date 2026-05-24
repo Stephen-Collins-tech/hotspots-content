@@ -5,7 +5,7 @@ description: "Two functions in chakra-ui's codemod package — collectChakraLoca
 introContent: "Chakra-ui's codemod layer is where structural complexity and live commit activity collide: two functions in that package hold critical-band risk scores and were each touched within the past month, making them live regression risks rather than backlog items. If you're shipping codemod tooling for a major migration, these are the two functions that deserve a closer look before the next release."
 pubDate: 2026-05-24
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "chakra-ui/chakra-ui"
 commit: "155fa1388825debedcf2017b2a51b85d179fc701"
 language: "typescript"
@@ -51,7 +51,7 @@ chakra-ui is a large repository. To stay within memory constraints, this analysi
 
 ## Codemod / Tooling Files in Results
 
-Two of the top five functions — `collectChakraLocalNames` and `transformer` — live in `packages/codemod`, which is a code-transformation tooling package rather than the runtime React component library. `createParserFromPath` is also in this package. Codemod tooling is intentionally complex because it handles AST traversal and migration transforms, and its risk scores reflect that domain complexity rather than product code maintainability. If you want to focus hotspots analysis on the runtime library only, add the following exclude pattern to your `.hotspotsrc.json`: `{ "exclude": ["packages/codemod/"] }`.
+All five of the top-ranked functions live in `packages/codemod`, a code-transformation tooling package rather than the runtime React component library. Codemod tooling is intentionally complex because it handles AST traversal and migration transforms, and its risk scores reflect that domain complexity rather than product code maintainability. If you want to focus hotspots analysis on the runtime library only, add the following exclude pattern to your `.hotspotsrc.json`: `{ "exclude": ["packages/codemod/"] }`.
 
 The risk profile for chakra-ui at this snapshot is concentrated rather than spread out. Of the 96 critical-band functions, the two highest scorers share a home: the `packages/codemod` package. Both carry the full suite of structural antipatterns — complex branching, deep nesting, multiple exit paths, god-function coupling, and excessive length — and both were touched within the last 29 days. That combination is what pushes them into the "fire" quadrant and makes them worth addressing before the codemod tooling ships to consumers.
 
@@ -79,15 +79,25 @@ Both `collectChakraLocalNames` and `transformer` share the same structural antip
 
 ---
 
-### `createParserFromPath` — `packages/codemod/src/utils/parser.ts`
+### `transformer` — `packages/codemod/src/transforms/theme/theme-tokens.ts`
 
-This function sits in the "watch" quadrant: low structural complexity (CC 4, ND 1, FO 2) but touched in the same recent commit window as the two critical functions above. It carries a moderate activity-weighted risk score of 8.97 — elevated primarily by its activity relative to its simple structure. No antipatterns flag here, and no historical defect signals are present. It warrants monitoring as codemod development continues, but it is not a refactoring priority at this complexity level.
+The third-ranked function shares an activity-weighted score of 17.5 with the button transformer and is structurally distinct in one key way: a fan-out of 77 — more than three times the next highest in the top five. Where `transformer` in button.ts is a hub by virtue of coordination complexity, this function calls into 77 distinct callees, making it the broadest dependency surface in the critical band. Its cyclomatic complexity of 44 and max nesting depth of 5 confirm the full antipattern suite: complex branching, deep nesting, exit-heavy control flow, god-function coupling, and excessive length.
+
+**Recommendation:** Prioritize extracting the fan-out before addressing the branching. At FO 77, the first step is identifying which callees belong to coherent theme-token concerns (color, typography, spacing, etc.) and grouping them behind dedicated sub-transformer functions. Reducing the coordination surface will make the remaining branching complexity tractable.
 
 ---
 
-### `mergeCss` — `packages/react/src/styled-system/css.ts`
+### `transformer` — `packages/codemod/src/transforms/components/pin-input.ts`
 
-`mergeCss` is the only top-five function outside the codemod package, sitting in the core styled-system layer. Its structural profile is low (CC 3, ND 1), but a fan-out of 6 and a recent commit touch give it a moderate activity-weighted risk score of 8.87. As a CSS-merging utility in the styled-system, it likely sits on a hot path called by many components — but its current complexity does not warrant refactoring. It belongs in the "watch" quadrant for the same reason as `createParserFromPath`: active but not structurally concerning. Keep it under observation if the styled-system layer sees a development push.
+Fourth by risk score at 17.2, the pin-input transformer has CC 28, ND 6, and FO 36. Its nesting depth matches the button transformer's ND 6 — the deepest in the top five — and its fan-out of 36 places it as the second broadest callee surface. Like the other codemod transformers, it carries the full structural antipattern fingerprint and was active within the same recent commit window. Its lower CC (28 vs. 48 in button.ts) reflects a narrower migration surface, but ND 6 still means six levels of nested context to hold while reasoning about any branch.
+
+**Recommendation:** Apply the same decompose-by-concern approach as the button transformer: identify each distinct prop migration (renaming, event handler changes, slot restructuring) and extract it into a named sub-transformer. Each extracted unit should have ND ≤ 3 as a post-refactor target.
+
+---
+
+### `transformer` — `packages/codemod/src/transforms/components/number-input.ts`
+
+The fifth function rounds out a pattern that is consistent across all four codemod transformers: CC 27, ND 5, FO 25, activity-weighted risk 16.0. Its structural profile is the most moderate in the top five, but it still carries the full antipattern set. Given the repetition of function name and file structure across the codemod package, these four transformers are strong candidates for a shared refactoring pass — a common sub-transformer interface would allow each to delegate to focused concern handlers while keeping the coordination logic thin and independently testable.
 
 ---
 
@@ -95,7 +105,7 @@ This function sits in the "watch" quadrant: low structural complexity (CC 4, ND 
 
 - **Decompose `collectChakraLocalNames` first.** With an activity-weighted risk score of 20.63, CC 38, ND 6, and a commit touch 29 days ago, it is the single highest-priority refactoring target in the repo. Extract per-import-pattern handlers, each with independent tests, to bring CC below 15 per unit.
 - **Audit `transformer` before the next codemod release.** CC 48 and FO 22 in a single Button transform function means 48 paths through a 22-callee hub — the next prop addition or variant change runs a high regression risk. Decompose by migration concern before expanding coverage.
-- **The codemod package is the active risk zone, not the core React layer.** `mergeCss` and `createParserFromPath` are moderate-watch items, not refactoring priorities. Structural debt in the repo is concentrated in tooling, not in the component primitives consumers depend on.
+- **The codemod package is the active risk zone, not the core React layer.** All five hotspots are transformer functions in `packages/codemod`. Structural debt is concentrated in tooling, not in the component primitives consumers depend on. A shared decompose-by-concern refactoring pass across the four `transformer` functions would address the pattern systematically.
 
 ## Patterns Found
 
