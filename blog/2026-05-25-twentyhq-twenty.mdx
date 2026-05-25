@@ -1,11 +1,11 @@
 ---
-title: "twentyhq/twenty's sandbox and rendering layer carry the highest activity risk — 2 functions to address first"
+title: "twentyhq/twenty sandbox and rendering hotspots — 5 functions to address first"
 titleSeo: "twentyhq/twenty code health: xlsx recalc and halftone renderer lead refactoring priority"
 description: "In twentyhq/twenty, a Python xlsx recalculation function and a React halftone canvas renderer both score critical activity-weighted risk, flagged as god functions with extreme branching complexity actively changing within the last three days."
 introContent: "Two critical-band functions — a spreadsheet recalculation engine buried inside a sandbox script and a halftone canvas renderer with 140 distinct callees — are both structurally complex and were touched just three days ago, making them live regression risks rather than backlog cleanup items. With 647 critical functions across 16,560 total, Twenty's codebase is actively scaling, and these two hotspots sit at the intersection of structural complexity and ongoing churn."
 pubDate: 2026-05-25
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "twentyhq/twenty"
 commit: "be39702fd2fbbd303af5d85ddc8624228ae4cf9c"
 language: "typescript"
@@ -67,19 +67,29 @@ Like `recalc`, it was touched once in the last 30 days — three days ago — an
 
 **Recommendation:** Introduce a facade or decompose `HalftoneCanvas` into focused sub-components or custom hooks — for example, separating canvas initialization, the render loop, and event handling into distinct units. Reducing fan-out from 140 to something closer to 20–30 per sub-unit would make individual behaviors testable without instantiating the entire rendering pipeline.
 
-### `assertIsDefinedOrThrow` — `packages/twenty-shared/src/utils/validation/assertIsDefinedOrThrow.ts`
+### `HalftoneStudio` — `packages/twenty-website/src/app/[locale]/halftone/_components/HalftoneStudio.tsx`
 
-This utility sits in the "watch" quadrant with a moderate activity-weighted risk score of 9.4 — structurally simple (CC 4, nesting depth 1, fan-out 1) but recently active with one touch in the last 30 days. Its name and location in a shared validation utilities package suggest it is a widely-called assertion helper used throughout the codebase to guard against undefined values. The structural metrics are fine; what warrants attention is *breadth of use*. If the behavior or signature of this function changes, every callsite in the shared package is affected. No action is needed for complexity, but any future changes here should be reviewed with callsite impact in mind.
+`HalftoneStudio` is the companion hotspot to `HalftoneCanvas`: lower on raw branching than the renderer, but still broad enough to make UI changes expensive. Its activity-weighted risk score of 17.4 comes from CC 24, nesting depth 5, and fan-out 81, which points to a component coordinating many behaviours rather than only presenting state. Because it lives in the app-level halftone route, it likely owns configuration, preview state, and wiring into the canvas component.
 
-### `applyRowLevelPermissionPredicates` — `packages/twenty-server/src/engine/twenty-orm/repository/workspace-select-query-builder.ts`
+The right move is to split orchestration from presentation. Extract custom hooks for studio state and controls, then leave the component to compose smaller pieces. That would reduce the god-function and long-function pressure while giving tests stable seams around the most change-prone UI decisions.
 
-Also in the "watch" quadrant, `applyRowLevelPermissionPredicates` carries an activity-weighted risk score of 7.6 with CC 5, nesting depth 1, and fan-out 2 — structurally lean for what its name implies. The function appears to inject row-level security predicates into workspace query construction, a security-critical code path where correctness matters more than complexity score. It was touched three days ago, suggesting active development of the permissions layer. The low structural complexity is reassuring; the recommendation here is not refactoring but rigorous review discipline — permission predicate logic should have explicit test coverage for edge cases like empty predicate sets, conflicting rules, and cross-workspace queries, regardless of how simple the current implementation looks.
+### `validate_all_relationship_ids` — `packages/twenty-server/src/engine/core-modules/code-interpreter/sandbox-scripts/docx/validation/base.py`
+
+The DOCX validator shows the same sandbox-script pattern as `recalc`, but in validation rather than spreadsheet recalculation. CC 40 and nesting depth 7 are enough to make invalid-document edge cases hard to audit, and the risk score of 17.4 keeps it close behind the halftone UI functions. Fan-out is a more contained 21, so the main issue is not call breadth; it is deeply nested decision logic.
+
+Start by flattening guard clauses and extracting validators for each relationship category. A validation pipeline with named checks would make the exit-heavy paths explicit and would let tests target one document relationship rule at a time instead of exercising the whole validator.
+
+### `apply_replacements` — `packages/twenty-server/src/engine/core-modules/code-interpreter/sandbox-scripts/pptx/replace.py`
+
+`apply_replacements` has the highest CC in the top five at 54, but its lower nesting depth of 4 keeps it just below the other sandbox functions with a 17.3 risk score. That shape suggests many replacement cases or type-specific branches arranged relatively flatly. The fan-out of 32 also indicates a function doing substantial orchestration across the PPTX replacement pipeline.
+
+Prioritise a dispatch-table or strategy-style split by replacement type. That would turn the broad branch set into named handlers, reduce the parent function's CC, and make regressions easier to isolate when presentation replacement behaviour changes.
 
 ## Key Takeaways
 
 - **`recalc` needs decomposition now.** CC 51 with nesting depth 7 in an actively-changing sandbox script is the highest-priority refactoring target in this analysis. Extract discrete recalculation stages into named functions before the next development push adds more branching.
 - **`HalftoneCanvas`'s fan-out of 140 is the broadest coupling in the dataset.** Even incremental decomposition — extracting the render loop or initialization logic into a custom hook — would meaningfully reduce the blast radius of future changes.
-- **The permissions layer (`applyRowLevelPermissionPredicates`) deserves test coverage investment, not complexity reduction.** It is structurally simple but security-critical and actively changing — the right intervention is a comprehensive test suite, not a refactor.
+- **The sandbox scripts repeat the same shape across formats.** `validate_all_relationship_ids` and `apply_replacements` should be split into named validators or replacement handlers so edge cases can be tested independently.
 
 ## Patterns Found
 
