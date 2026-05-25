@@ -6,6 +6,10 @@ This file is read by Claude agents generating or reviewing analysis posts. See R
 
 Every post must contain the four required elements (hotspots table, per-function analysis sections, repro block, footer). Everything else — intro framing, section structure, prose density, closing form — must vary as much as the data allows. Never produce two posts that open, flow, or close the same way.
 
+## Use first-person singular voice
+
+Posts should read as authored by one analyst, not a team. Use `I`, `I've`, `I ran`, `I found`, and `my corpus/sample/policy` instead of `we`, `we've`, `we ran`, `we found`, or `our`. During review, flag first-person plural language unless it is part of a quoted source or a repository name.
+
 ### Intro: choose the angle that fits the data
 
 | Data pattern | Angle to use |
