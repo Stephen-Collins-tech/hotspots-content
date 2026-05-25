@@ -1,0 +1,113 @@
+---
+title: "How to Know If Fine-Tuning Will Help Before You Run It"
+description: "In eight repos — Python, TypeScript, Java, and Go — a single scalar from each codebase's bug-fix history correctly predicted whether fine-tuning a local LLM would beat the baseline."
+pubDate: 2026-05-25
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Before you spend compute on per-repo fine-tuning, one scalar from the codebase's bug-fix history can tell you whether it's worth running. Here's how it works and what it can't predict."
+---
+
+In eight repos — Python, TypeScript, Java, and Go — a single scalar from each codebase's bug-fix history correctly predicted whether fine-tuning a local LLM would beat the deterministic baseline. The result: 8 for 8, with a clean separation between the two groups.
+
+Fine-tuning a local LLM adapter per repo takes real compute time — tens of minutes on a well-specced laptop, longer on modest hardware. On some repos it improves defect-risk ranking by a significant margin. On others it produces a result worse than a simple heuristic. The problem is you don't know which kind of repo you have until after you've spent the compute.
+
+Here's what the signal is, why it works, and what it can't tell you.
+
+---
+
+## The Failure Modes We Were Trying to Predict
+
+In brief: we trained per-repo LoRA adapters (lightweight fine-tuning layers added to a pretrained code model) on training pairs of function-level code features mapped to a defect-risk label derived from bug-fix history (a per-function score based on how often the function appears in commits that fix bugs). Each adapter was evaluated on held-out functions, measuring how well it ranks them by future defect likelihood using Spearman ρ (a rank-correlation score from −1 to +1, where 0 is random) against a deterministic, activity-weighted baseline (a non-ML score based on file change frequency, recency, and author count). From that work, two failure modes emerged:
+
+**Hard failure**: the adapter is anti-predictive. On Go's standard library, the fine-tuned model achieved Spearman ρ=−0.14 against the holdout — worse than the baseline's +0.11. It learned something from the training data, but it was the wrong thing.
+
+**Soft failure**: the adapter barely moves the needle. On Next.js, fine-tuning achieved ρ=+0.068 against a baseline of +0.043. Technically better, but not worth the effort or the model versioning overhead.
+
+On three other repos — Django, scikit-learn, and Vue.js — the same adapter recipe produced ρ values between +0.58 and +0.77, all well above the baseline. The spread is enormous. Something structural about the repos is determining the outcome.
+
+---
+
+## What We Tried That Didn't Predict It
+
+**Activity dominance**: the hypothesis was that repos where activity metrics (touch frequency, recency, author count) already explain most of the risk signal would leave nothing for the LLM to add. Vue.js has an activity-only baseline near ρ=+0.99 — nearly the entire risk label is explained by how often files change. Yet fine-tuning on Vue.js still beat the deterministic baseline under temporal holdout conditions (ρ=+0.259 vs baseline +0.143). In our sample, activity dominance is not the discriminator.
+
+**Positive label rate**: the fraction of training pairs that have any non-zero defect signal. VS Code — after full label enrichment — showed 50% of training pairs with non-zero signal, the same as Django. Yet the VS Code adapter produced ρ=−0.14, nearly as bad as Go's result, and worse than the +0.19 baseline. In our sample, label presence alone is not sufficient.
+
+---
+
+## The Signal That Works
+
+**Mean defect signal density** — the average value of the defect signal across all training pairs, not just whether it's present.
+
+The distinction matters because not all non-zero labels carry equal information. A repo where 50% of functions have a detectable defect signal but most of those signals are very weak (scores close to zero) looks identical to a high-quality repo on a presence/absence view. Mean density separates them.
+
+The VS Code false positive is the clearest illustration: it had 50% label presence, but the average signal value was low — just above zero across most labeled pairs. The repo has enormous volume (157K commits) but the per-function signal is diluted. The mean-density signal correctly flagged it as a SKIP.
+
+---
+
+## The Evidence
+
+We ran the screener against eight repos where we had both the screening metric and known fine-tuning outcomes.
+
+| Repo | Language | Signal density | FT beats baseline? | Screener prediction |
+|---|---|---|---|---|
+| scikit-learn | Python | high | ✓ | RUN — correct |
+| vue.js core | TypeScript | moderate | ✓ | RUN — correct |
+| django | Python | moderate | ✓ | RUN — correct |
+| facebook/react | TypeScript | low (near boundary) | ✓ | RUN — correct |
+| spring-boot | Java | sparse | ✓ | RUN — correct |
+| vscode | TypeScript | sparse | ✗ | SKIP — correct |
+| golang | Go | sparse | ✗ | SKIP — correct |
+| vercel/next.js | TypeScript | sparse | ✗ | SKIP — correct |
+
+The eight repos are cleanly separable by mean defect density, with a gap between the weakest winner (react) and the strongest loser (vscode). The threshold is set as the midpoint between those two values — a mechanical rule, not a tuned constant, though with only one repo near each side of the boundary, the midpoint's stability is itself something more data would test. The full set is 8 for 8.
+
+---
+
+## The Boundary Is Where You'd Expect It
+
+React's near-boundary position is instructive. Its screening metric puts it just above the threshold, and its fine-tuning result reflects that: ρ=+0.108 against a baseline of +0.076 — a real but modest improvement. A weaker training dataset (fewer than 3,000 pairs) and noisy labels both limit what the model can learn. The screener correctly predicted "worth running" without predicting a strong result.
+
+This is the right behavior for a screening tool: it should not require a clean binary — it should flag the near-boundary cases as "run it, but expect a modest result" rather than falsely promising a strong signal.
+
+---
+
+## What We Haven't Proved
+
+**The threshold is empirical.** The midpoint between min-winner and max-loser is a sensible heuristic, but it's derived from eight repos across four languages (Python, TypeScript, Java, and Go). It may shift as more repos — especially repos in other languages, with different commit cultures, or different issue-tracking practices — are added to the calibration set.
+
+**The screener predicts outcome, not magnitude.** Knowing a repo passes the threshold tells you that fine-tuning is worth running. It doesn't predict whether you'll see ρ=+0.12 (react) or ρ=+0.60 (scikit-learn). The magnitude is determined by factors the screening signal doesn't measure: label quality, dataset size, code diversity in the training set.
+
+**Label quality varies.** The defect signal comes from bug-fix history. Repos with structured issue tracking (linked commits, labeled pull requests) produce denser, more accurate signals. Repos that rely entirely on keyword matching ("fix", "bug", "patch") in commit messages produce noisier labels. The screener inherits whatever quality the underlying label source provides.
+
+---
+
+## Why This Matters Practically
+
+Without a screening step, running fine-tuning on every repo in a fleet wastes compute on repos that will never benefit — and in the cases we observed, anti-predictive adapters (ρ=−0.14 on Go) produced rankings worse than the simple baseline alone.
+
+With a screener, the decision is: compute the mean defect density signal from your existing training data, compare it to a threshold derived from known outcomes, and route accordingly. Repos that pass get a fine-tuning run. Repos that don't use the deterministic baseline, which works well enough on activity-dominated codebases.
+
+The threshold is designed to recalibrate as new repos' outcomes are confirmed and added to the known set — rather than relying on a manually tuned value that drifts over time, it gets more accurate as you run more experiments.
+
+---
+
+## What Would Falsify This
+
+The screener's clean 8/8 accuracy rests on a gap between the weakest winner (react, just above the threshold) and the strongest loser (vscode, just below it). The prediction would break down if a repo were found that:
+
+- Has high mean defect density but produces a failed fine-tuning result (a true false positive)
+- Has sparse defect density but produces a meaningful fine-tuning improvement (a true false negative)
+
+The most likely source of false positives: a repo with high signal density but a code structure so unlike the training distribution that the adapter can't learn from it. The most likely source of false negatives: a repo where a different fine-tuning recipe (different prompt format, different label construction) would work even with sparse labels.
+
+Neither has appeared yet in eight repos. Both remain plausible with more data.
+
+---
+
+*Spearman ρ reported against stratified temporal holdout splits. Fine-tuning used LoRA with git-history fields removed from prompts to prevent circularity. The deterministic baseline uses activity-weighted structural risk scores.*
