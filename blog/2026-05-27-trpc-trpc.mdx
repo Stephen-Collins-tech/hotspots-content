@@ -1,0 +1,128 @@
+---
+title: "trpc/trpc's HTTP core carries the highest structural debt — 4 functions to address first"
+titleSeo: "trpc/trpc technical debt: resolveResponse and hooksToOptions lead refactoring priority"
+description: "Hotspots analysis of trpc/trpc at c7360d4 finds that resolveResponse and the hooksToOptions transform dominate the critical band with god-function coupling and nesting depths that make them high blast-radius targets whenever next changed."
+introContent: "The most structurally risky code in trpc/trpc isn't in active churn right now — it's sitting untouched for nearly two months while accumulating the kind of fan-out and branching complexity that makes the next change to it a genuine regression risk. Of 1,438 functions analyzed, 50 landed in the critical band, and the top two haven't been touched in 59 days."
+pubDate: 2026-05-27
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "trpc/trpc"
+commit: "c7360d4eb3c89c336468809a293e5cda4b302d4b"
+language: "typescript"
+hotspots_version: "1.20.2"
+analyzed_at: "2026-05-27T06:59:09Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 16.89
+topFunction: "resolveResponse"
+topFile: "packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts"
+topPatterns: ["god_function", "long_function", "exit_heavy", "complex_branching", "deeply_nested"]
+patternCounts: {complex_branching: 3, deeply_nested: 3, exit_heavy: 4, god_function: 6, long_function: 6}
+qaSection:
+  - question: "What is a god function and why does it matter in trpc?"
+    answer: "A god function is a single function that calls into an unusually large number of distinct other functions, making it the structural hub of a subsystem — responsible for too many concerns at once. In concrete terms, fan-out is the count of distinct functions a given function directly calls; a fan-out above roughly 15 is a strong signal that a function has grown beyond a single responsibility. The problem is twofold: changes to the god function can ripple into any of its callees in unexpected ways, and changes to any of those callees can break assumptions the god function makes, creating a wide blast radius. In this trpc analysis, `resolveResponse` calls into 47 distinct functions and `transform` calls into 41, making both of them structural hubs whose modification risk far exceeds what their file names might suggest."
+  - question: "How do I reduce fan-out and cyclomatic complexity in TypeScript?"
+    answer: "The most direct technique is extract-method refactoring: identify cohesive groups of callees and the logic that coordinates them, then pull each group into a named function with a clear single responsibility. For cyclomatic complexity specifically, decompose-conditional refactoring — replacing nested if/else chains with early returns, strategy objects, or lookup tables — reduces the number of independent paths without changing behaviour. A CC above 15 is a reasonable threshold to flag for splitting; above 30 (where `resolveResponse` sits at 29, nearly there) it warrants immediate attention because the test matrix to cover all paths becomes impractical. A concrete first step for `resolveResponse` would be to extract the error-path branches into a dedicated `buildErrorResponse` function — that alone would reduce both the CC and the fan-out of the parent function in one pass."
+  - question: "Is trpc actively maintained?"
+    answer: "The commit history and quadrant data suggest the project is maintained, but the current snapshot shows a quiet period for the highest-complexity code. Zero functions appear in the fire quadrant, meaning nothing structurally complex is actively changing right now. The two critical-band functions — `resolveResponse` and `transform` in `hooksToOptions.ts` — have each been untouched for 59 days. Active development is visible in the TanStack React Query integration layer, where `createTRPCOptionsProxy` and `trpcMutationOptions` were both touched within the last day. Active development and structural debt are not mutually exclusive: the core HTTP layer appears to have stabilized for now, but it carries complexity that will demand attention when development resumes there."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at https://github.com/drewgillson/hotspots. This analysis was run against trpc/trpc at commit `c7360d4`. To reproduce it exactly, run `git checkout c7360d4` inside a local clone of the repo, then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without any configuration file — just run it from the repo root."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with how frequently it has been changed recently. The intuition is that a structurally complex function that nobody has touched in two years poses lower near-term regression risk than a moderately complex function that gets committed to every week, because the dormant one is unlikely to introduce a new bug today. Conversely, a function that is both hard to reason about AND actively changing is a live regression risk: every commit to it is made against a high-complexity background where unintended side effects are easy to miss. In this trpc snapshot, the top two functions score high on structural complexity but have zero recent touches, placing them in the debt quadrant — high blast radius when next changed, but not an immediate live risk."
+---
+
+At commit c7360d4, Hotspots scored 1,438 functions across trpc/trpc and flagged 50 as critical. The top-ranked function, `resolveResponse`, sits in the debt quadrant — not actively changing right now, but carrying a cyclomatic complexity of 29, a fan-out of 47, and a 59-day untouched streak that means the next developer to open that file will be taking on serious structural risk cold. I would start there before anywhere else in the repo. The quadrant picture is telling: zero functions are in the fire quadrant, meaning nothing is both complex and actively changing at this moment, but 198 functions carry structural debt that will convert into live risk the moment development resumes on those paths.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `resolveResponse` | packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts | 16.9 | 29 | 5 | 47 |
+| `transform` | packages/upgrade/src/transforms/hooksToOptions.ts | 16.8 | 23 | 6 | 41 |
+| `pluginLlmsTxt` | www/docusaurus.config.ts | 15.4 | 28 | 6 | 28 |
+| `createRootHooks` | packages/react-query/src/shared/hooks/createHooksInternal.tsx | 14.7 | 20 | 3 | 52 |
+| `convertUnionType` | packages/openapi/src/generate.ts | 14.5 | 16 | 1 | 16 |
+
+## Large Repo Analysis
+
+trpc is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Codemod / Tooling Files in Results
+
+The `transform` function in `packages/upgrade/src/transforms/hooksToOptions.ts` is part of trpc's own codemod/upgrade tooling rather than a vendored third-party file, so it belongs in the analysis. However, if your team does not ship or maintain the upgrade package and treats it as a one-off migration tool, you may want to exclude it from ongoing monitoring. Add `{ "exclude": ["packages/upgrade/"] }` to your `.hotspotsrc.json` to remove the upgrade tooling from future snapshots.
+
+## Top Hotspots at a Glance
+
+| Rank | Function | File | Risk Score | Band | Quadrant |
+|------|----------|------|-----------|------|----------|
+| 1 | `resolveResponse` | `packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts` | 16.89 | critical | debt |
+| 2 | `transform` | `packages/upgrade/src/transforms/hooksToOptions.ts` | 16.82 | critical | debt |
+| 3 | `createTRPCOptionsProxy` | `packages/tanstack-react-query/src/internals/createOptionsProxy.ts` | 7.12 | moderate | watch |
+| 4 | `trpcMutationOptions` | `packages/tanstack-react-query/src/internals/mutationOptions.ts` | 5.83 | moderate | watch |
+
+---
+
+### `resolveResponse` — resolveResponse.ts
+
+The file path alone is a strong hint: this function lives inside a directory named `unstable-core-do-not-import`, which the tRPC maintainers use to signal internal, not-yet-settled surface area. That naming context makes the structural numbers more concerning, not less.
+
+With a cyclomatic complexity of 29, `resolveResponse` has at minimum 29 independent execution paths — each one a required test case and a potential site for a regression. The max nesting depth of 5 means the branching isn't just wide, it's layered; reasoning about the deepest paths requires tracking five levels of conditional context simultaneously. The fan-out of 47 is the sharpest signal here: this function calls into 47 distinct other functions, making it the structural centre of gravity for the HTTP response layer. A change to the function's orchestration logic — or to any of those 47 callees — can ripple in ways that are hard to anticipate without deep familiarity with all the paths. The `god_function`, `long_function`, `complex_branching`, `deeply_nested`, and `exit_heavy` patterns all fire together, which is rare and worth taking seriously. Multiple exit paths compound the test-coverage burden: each early return is a path that needs explicit coverage or it becomes invisible to the test suite.
+
+The file-level external signals add some useful context without proving any specific defect: the bug fix commit ratio on this file is 0.5, meaning half of its recorded commits have been fix-oriented, and the PR review comment density of 17.0 is notably high — reviewers have historically had a lot to say about this file. Neither signal proves the current function is broken, but together they suggest this code has attracted scrutiny before. `resolveResponse` hasn't been touched in 59 days. That dormancy is not a reason to deprioritize it — it's a reason to refactor it *before* the next feature or bug fix lands here, while there's no concurrent change pressure. I would treat this as the first refactoring target in the repo: break out the response-type dispatch logic, the error-path handling, and the streaming vs. non-streaming branches into separately testable units, targeting a fan-out below 20 and a CC below 15.
+
+---
+
+### `transform` — hooksToOptions.ts
+
+The `transform` function in `packages/upgrade/src/transforms/hooksToOptions.ts` is a codemod transform — almost certainly a jscodeshift or similar AST transform that rewrites hook-based tRPC usage into the options-based API introduced in a recent major version. That context explains why the structural complexity is so high: codemod transforms tend to accumulate branches for every syntax variant, edge case, and legacy pattern they need to handle.
+
+At CC 23 and a max nesting depth of 6, this function has six layers of nested control flow at its deepest point — ND 6 is a strong refactoring signal on its own. The fan-out of 41 means it's coordinating with 41 distinct callees to cover the full transform surface. Like `resolveResponse`, it shows the full god-function and long-function pattern combination, and its exit-heavy and complex-branching patterns mean the test matrix for full coverage is large. The external signals here are notably sparse: one total commit, one author in the last 90 days, zero bug-linked commits, zero PR review comments, and a bug fix ratio of 0.0. This function has had almost no scrutiny and has sat untouched for 59 days. That's either because it works perfectly or because nobody has needed to touch it since it was written — and those two explanations have very different implications for what happens when a new migration edge case surfaces. I would extract each syntax-variant handler into its own named transform function. That alone would flatten the nesting, lower the CC substantially, and make it possible to unit-test individual migration cases without running the full transform.
+
+---
+
+### `createTRPCOptionsProxy` — createOptionsProxy.ts
+
+`createTRPCOptionsProxy` sits in the TanStack React Query integration package and, based on its name and path, is responsible for constructing the proxy object that maps tRPC router procedures to TanStack Query option shapes. It's in the watch quadrant — touched once in the last 30 days, with days_since_changed at 0, meaning it was modified as recently as today. Its CC of 3 means the branching complexity is low, but the fan-out of 14 and the god-function and long-function patterns suggest it is doing more coordination work than its apparent simplicity implies. The bug fix commit ratio of 0.5 on this file is worth noting as historical context. I wouldn't prioritize a refactor here immediately, but I'd keep an eye on fan-out growth as this integration matures — proxy factories tend to accumulate special-case callees over time.
+
+---
+
+### `trpcMutationOptions` — mutationOptions.ts
+
+`trpcMutationOptions` is also in the TanStack React Query integration layer and was modified in the last day. With CC 3, max nesting depth of 0, and a fan-out of 9, the structural complexity is genuinely low — this is not a refactoring priority. The watch quadrant placement reflects recent activity rather than structural concern. The 50/50 bug fix commit ratio on the file is the same as its neighbor `createOptionsProxy`, which may simply reflect that the tanstack-react-query package has been in active iteration. Nothing in the metrics here demands attention beyond normal code review.
+
+---
+
+## Key Takeaways
+
+- **Start with `resolveResponse`** before the next feature touches the HTTP layer. A CC of 29, fan-out of 47, and 59 days of dormancy means the next change here will be made without the benefit of recent context — and that's the highest-risk combination in the repo right now. Decompose the response-dispatch and error-path logic into separate units first.
+- **Schedule `transform` in `hooksToOptions.ts` for a solo refactoring session.** It has had one author, zero review comments, and zero bug-linked commits — low visibility on a CC 23 / ND 6 function is a documentation and onboarding liability, and the next migration edge case will be painful to add without restructuring the variant-dispatch logic first.
+- **Watch the TanStack Query integration layer, not the core.** `createTRPCOptionsProxy` and `trpcMutationOptions` are the only actively-touched functions in the top four, and both have modest structural complexity. The risk to monitor there is fan-out creep as the integration evolves, not an immediate refactor.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 6 |
+| `long_function` | 6 |
+| `exit_heavy` | 4 |
+| `complex_branching` | 3 |
+| `deeply_nested` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/trpc/trpc
+cd trpc
+git checkout c7360d4eb3c89c336468809a293e5cda4b302d4b
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
