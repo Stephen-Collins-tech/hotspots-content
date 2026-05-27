@@ -1,11 +1,11 @@
 ---
-title: "trpc/trpc's HTTP core carries the highest structural debt — 4 functions to address first"
+title: "trpc/trpc's HTTP core carries the highest structural debt — 5 functions to address first"
 titleSeo: "trpc/trpc technical debt: resolveResponse and hooksToOptions lead refactoring priority"
 description: "Hotspots analysis of trpc/trpc at c7360d4 finds that resolveResponse and the hooksToOptions transform dominate the critical band with god-function coupling and nesting depths that make them high blast-radius targets whenever next changed."
 introContent: "The most structurally risky code in trpc/trpc isn't in active churn right now — it's sitting untouched for nearly two months while accumulating the kind of fan-out and branching complexity that makes the next change to it a genuine regression risk. Of 1,438 functions analyzed, 50 landed in the critical band, and the top two haven't been touched in 59 days."
 pubDate: 2026-05-27
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "trpc/trpc"
 commit: "c7360d4eb3c89c336468809a293e5cda4b302d4b"
 language: "typescript"
@@ -53,17 +53,6 @@ trpc is a large repository. To stay within memory constraints, this analysis use
 
 The `transform` function in `packages/upgrade/src/transforms/hooksToOptions.ts` is part of trpc's own codemod/upgrade tooling rather than a vendored third-party file, so it belongs in the analysis. However, if your team does not ship or maintain the upgrade package and treats it as a one-off migration tool, you may want to exclude it from ongoing monitoring. Add `{ "exclude": ["packages/upgrade/"] }` to your `.hotspotsrc.json` to remove the upgrade tooling from future snapshots.
 
-## Top Hotspots at a Glance
-
-| Rank | Function | File | Risk Score | Band | Quadrant |
-|------|----------|------|-----------|------|----------|
-| 1 | `resolveResponse` | `packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts` | 16.89 | critical | debt |
-| 2 | `transform` | `packages/upgrade/src/transforms/hooksToOptions.ts` | 16.82 | critical | debt |
-| 3 | `createTRPCOptionsProxy` | `packages/tanstack-react-query/src/internals/createOptionsProxy.ts` | 7.12 | moderate | watch |
-| 4 | `trpcMutationOptions` | `packages/tanstack-react-query/src/internals/mutationOptions.ts` | 5.83 | moderate | watch |
-
----
-
 ### `resolveResponse` — resolveResponse.ts
 
 The file path alone is a strong hint: this function lives inside a directory named `unstable-core-do-not-import`, which the tRPC maintainers use to signal internal, not-yet-settled surface area. That naming context makes the structural numbers more concerning, not less.
@@ -82,23 +71,29 @@ At CC 23 and a max nesting depth of 6, this function has six layers of nested co
 
 ---
 
-### `createTRPCOptionsProxy` — createOptionsProxy.ts
+### `pluginLlmsTxt` — docusaurus.config.ts
 
-`createTRPCOptionsProxy` sits in the TanStack React Query integration package and, based on its name and path, is responsible for constructing the proxy object that maps tRPC router procedures to TanStack Query option shapes. It's in the watch quadrant — touched once in the last 30 days, with days_since_changed at 0, meaning it was modified as recently as today. Its CC of 3 means the branching complexity is low, but the fan-out of 14 and the god-function and long-function patterns suggest it is doing more coordination work than its apparent simplicity implies. The bug fix commit ratio of 0.5 on this file is worth noting as historical context. I wouldn't prioritize a refactor here immediately, but I'd keep an eye on fan-out growth as this integration matures — proxy factories tend to accumulate special-case callees over time.
+A Docusaurus config plugin function generating an `llms.txt` file from docs content shouldn't need a CC of 28 and a nesting depth of 6 — but `pluginLlmsTxt` in `www/docusaurus.config.ts` has both. The fan-out of 28 indicates it's coordinating heavily with the Docusaurus plugin API rather than delegating to dedicated helpers. The pattern profile (god-function, complex-branching, deeply-nested) suggests it accumulated complexity as the docs structure and llms.txt spec evolved, absorbing edge cases inline rather than decomposing them. Since this lives in docs tooling rather than the core library, the blast radius of a bug here is limited to the documentation site — but at CC 28 and ND 6, it's harder to modify safely than functions in production packages. Extracting the content-transformation and file-writing logic into separate helpers would bring the CC and nesting down significantly.
 
 ---
 
-### `trpcMutationOptions` — mutationOptions.ts
+### `createRootHooks` — createHooksInternal.tsx
 
-`trpcMutationOptions` is also in the TanStack React Query integration layer and was modified in the last day. With CC 3, max nesting depth of 0, and a fan-out of 9, the structural complexity is genuinely low — this is not a refactoring priority. The watch quadrant placement reflects recent activity rather than structural concern. The 50/50 bug fix commit ratio on the file is the same as its neighbor `createOptionsProxy`, which may simply reflect that the tanstack-react-query package has been in active iteration. Nothing in the metrics here demands attention beyond normal code review.
+`createRootHooks` in `packages/react-query/src/shared/hooks/createHooksInternal.tsx` has the highest fan-out of any function in this snapshot: 52 distinct callees. That's more than `resolveResponse`. The CC of 20 and nesting depth of 3 — flat by comparison — suggest the function is wide rather than deep: it's coordinating across many hooks and helpers without deeply nesting the control flow. Hook factories with high fan-out tend to act as registration points, and that structure is fine until one of those 52 callees changes its interface. A function this wide is difficult to reason about in isolation. I'd look at whether the hooks can be grouped into cohesive families (query, mutation, subscription) and the factory split to match, reducing the call surface each piece is responsible for.
+
+---
+
+### `convertUnionType` — generate.ts
+
+`convertUnionType` in `packages/openapi/src/generate.ts` rounds out the list with CC 16, a notably low ND of 1, and a fan-out of 16. The near-flat nesting depth is unusual for a CC-16 function — most of the branching is wide rather than stacked, likely reflecting the range of union type variants that TypeScript and Zod can produce: literal unions, discriminated unions, nullable types, enum-backed unions. OpenAPI's `oneOf`/`anyOf` representation for these cases doesn't map cleanly to TypeScript's type system, and each case tends to add a branch. At CC 16 this is manageable, but union type coverage expands as schemas grow more complex, and this function is the natural accumulation point. A lookup-table or type-dispatch approach would contain the growth more cleanly than continued branching.
 
 ---
 
 ## Key Takeaways
 
-- **Start with `resolveResponse`** before the next feature touches the HTTP layer. A CC of 29, fan-out of 47, and 59 days of dormancy means the next change here will be made without the benefit of recent context — and that's the highest-risk combination in the repo right now. Decompose the response-dispatch and error-path logic into separate units first.
-- **Schedule `transform` in `hooksToOptions.ts` for a solo refactoring session.** It has had one author, zero review comments, and zero bug-linked commits — low visibility on a CC 23 / ND 6 function is a documentation and onboarding liability, and the next migration edge case will be painful to add without restructuring the variant-dispatch logic first.
-- **Watch the TanStack Query integration layer, not the core.** `createTRPCOptionsProxy` and `trpcMutationOptions` are the only actively-touched functions in the top four, and both have modest structural complexity. The risk to monitor there is fan-out creep as the integration evolves, not an immediate refactor.
+- **Start with `resolveResponse`** before the next feature touches the HTTP layer. CC 29, fan-out of 47, and 59 days of dormancy is the highest-risk combination in the repo right now. Decompose the response-dispatch, error-path, and streaming-branch logic into separately testable units first.
+- **Schedule `transform` in `hooksToOptions.ts` for a solo refactoring session.** One author, zero review comments, zero bug-linked commits — low visibility on a CC 23 / ND 6 codemod function is an onboarding liability. Extract each syntax-variant handler into its own named transform.
+- **`createRootHooks` has the highest fan-out in the snapshot (52) despite modest CC.** It won't feel risky until a callee changes its interface and the broad surface breaks. Splitting by hook family would contain that risk before it accumulates further.
 
 ## Patterns Found
 
