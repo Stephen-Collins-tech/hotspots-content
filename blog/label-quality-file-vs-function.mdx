@@ -1,0 +1,121 @@
+---
+title: "When Your Labels Lie: File-Level Bug Attribution Inflates Defect Rates"
+description: "Most defect prediction pipelines share a quiet assumption: if a file was touched in a bug-fix commit, every function in that file was "buggy" — and that assumption silently inflates defect labels in w…"
+pubDate: 2026-05-31
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Most defect prediction pipelines share a quiet assumption: if a file was touched in a bug-fix commit, every function in that file was "buggy" — and that assumption silently inflates defect labels in w…"
+---
+
+Most defect prediction pipelines share a quiet assumption: if a file was touched in a bug-fix commit, every function in that file was "buggy" — and that assumption silently inflates defect labels in ways that undermine fine-tuning before it starts. It's convenient, it requires no blame parsing, and it's wrong in a way that compounds as repos mature.
+
+Here's what the inflation looks like in practice, and what fixing it does to a fine-tuned ranker.
+
+---
+
+## The Setup
+
+I fine-tune a per-repo LoRA adapter (Qwen2.5-Coder-7B, 16 LoRA layers) to rank functions by defect risk. To prevent the model from learning git activity signals instead of code structure, all git-history fields are zeroed in the prompt — the model sees only source code and structural metrics. Training pairs are function-level snapshots labelled 0 or 1 based on whether that function appears in a bug-fix commit. The labelling strategy is the variable under test.
+
+**File-level labelling (current default):** scan `git log` for commits whose messages match fix-intent keywords (fix, bug, patch, regression, hotfix, defect). For each such commit, collect the modified files. Label every function in those files as positive.
+
+**Function-level blame labelling:** same commit scan, but instead of labelling whole files, parse the diff hunks to find which specific lines changed, then use a binary search on sorted function start-lines to find the owning function. Only that function is labelled positive.
+
+The blame approach is the SZZ algorithm applied at function granularity — the same method used in academic defect prediction research. The file-level approach is what most off-the-shelf tools actually implement.
+
+---
+
+## The Inflation Problem
+
+On **honojs/hono**, a TypeScript web framework with 297 labelled functions:
+
+| Method | Positive rate |
+|---|---|
+| File-level | 67% |
+| Function-level blame | 31% |
+
+The file-level method marks two-thirds of functions as buggy. That's not a label — it's noise with a 67% bias. The model trained on this data has to learn that most functions are risky, which means it learns approximately nothing.
+
+Why does file-level inflate so badly on hono specifically? The codebase has a small number of large, active files (the router core, the context implementation, the middleware chain). These files have been touched in many fix commits. When you label whole files, every function in those files — including ones that had no involvement in the fix — gets marked positive. The inflation is proportional to the ratio of (functions in active files) to (functions that actually caused bugs).
+
+This pattern isn't specific to hono. The mechanism is structural: file-level labelling amplifies inflation in proportion to file size and activity. A repo with a handful of large, heavily-modified core files is likely to show the same effect.
+
+---
+
+## What the Fix Looks Like
+
+The blame-based labelling implementation works in three steps:
+
+1. For each fix commit, run `git diff-tree --unified=0` to get the raw hunks — old-side line ranges only (the lines that were removed or replaced, i.e., the broken code).
+2. Build a sorted index of function start-lines per file from the snapshot.
+3. For each hunk's `old_start` line, binary-search the index to find the rightmost function start ≤ that line. That function is the owner of the change.
+
+The result is a `(file_path, start_line)` set of blame-attributed functions. Only those get a positive label.
+
+One edge case: pure additions (hunks where `old_count = 0`) are skipped — an inserted block didn't "break" a function that existed before. New code paths aren't labelled as defective.
+
+---
+
+## Effect on Fine-Tuning
+
+I re-ran the hono fine-tuning job with blame-based labels (31% positive rate, down from 67%) and compared against the deterministic baseline (an activity-weighted risk score combining complexity metrics, touch frequency, and recency). Spearman ρ measures rank correlation — +1.0 means perfect ranking, 0 is random, negative means actively wrong:
+
+| | N | Baseline ρ | FT ρ | Δ |
+|---|---|---|---|---|
+| File-level labels (67% pos) | 48 | +0.513 | +0.542 | +0.028 |
+| Blame labels (31% pos) | 48 | +0.314 | **+0.660** | **+0.346** |
+
+Two things happened simultaneously when blame labels replaced file-level labels. The baseline ρ dropped from +0.513 to +0.314 — the holdout became genuinely harder because the false-positive inflation that was padding the baseline's score is gone. FT ρ rose from +0.542 to +0.660 — the model trained on a real signal instead of noise. The Δ jumped from +0.028 to +0.346: a 12× improvement with no change to model architecture, learning rate, or number of training iterations.
+
+The file-level run wasn't inconclusive because of small N or insufficient compute. It was inconclusive because inflated labels corrupted both the training signal and the eval target in the same direction, making everything look mediocre together. Blame attribution fixed the problem at the source.
+
+---
+
+## When Blame Labelling Reveals a Different Problem
+
+On **pocketbase/pocketbase** (Go, 2,404 pairs, 43% positive rate at file level), blame labelling produced a different outcome entirely: 9 positive examples out of 2,746 functions — a 0.3% positive rate. There is no signal to learn at function granularity. The fine-tuning run was abandoned before it started.
+
+This is a distinct failure mode from hono's inflation problem. In hono, 67% file-level was noise amplified by large active files — the true signal existed, blame just found it. In pocketbase, 43% file-level was also inflated, but once you strip the inflation there's almost nothing underneath. The repo's bug-fix commits don't resolve to specific functions: fixes are implemented by adding new code rather than modifying existing function bodies, or the commit messages don't align with the keyword scan, or both.
+
+The two cases together suggest a two-stage diagnostic worth testing more broadly:
+
+1. **Is the file-level positive rate suspiciously high?** If yes, try blame labelling.
+2. **Does blame labelling produce a usable positive rate (say, >5%)?** If no, the repo may not have function-level defect signal in its commit history — fine-tuning is likely a dead end regardless of labelling method.
+
+For pocketbase, the right tool is a tabular ranker trained on structural and activity features, not a fine-tuned LLM. The file-level FT result (Δ=+0.059 on 342 pairs) confirms this: the model barely moved the needle even with 2,164 training examples, because the labels it trained on were mostly noise.
+
+---
+
+## What This Doesn't Fix
+
+**Commit message quality.** Both methods rely on keyword matching to identify fix commits. If a repo uses ticket references (`JIRA-1234`) or non-standard language (`address issue`, `resolve regression`), both methods miss those commits entirely. Better commit classification (a topic for a separate post) improves the recall of the label scan before either attribution method runs.
+
+**Large hunks spanning multiple functions.** If a single diff hunk spans 200 lines and crosses three function boundaries, the binary search assigns it to the owning function at the hunk's start line. The other two functions touched by that hunk are unlabelled. This is conservative — it produces false negatives, not false positives. Under-labelling is less damaging than the file-level over-labelling it replaces.
+
+**True label noise.** Some fix commits touch functions incidentally — a rename, a reformatted constant, an import reorder in the same file. Blame-based labelling will still attribute those hunks to a function. The fix for this is commit intent classification, not attribution method.
+
+---
+
+## The Broader Pattern
+
+File-level labelling is fast and simple, which is why it's the default. It's adequate when your unit of prediction is the file — which is how most static analysis tools work. At function granularity, it breaks down because the assumption it encodes (a bug commit implicates every function in the changed files) is only approximately true at file level, and increasingly false as file size grows.
+
+The fix isn't complicated — blame parsing plus a binary search — but it has to be in the right place in the pipeline. Fixing it in the research scripts is straightforward; fixing it in any production tool requires care around performance (blame is slower than diff), fallback behavior (shallow clones can't run blame), and backward compatibility (models trained with old labels need retraining).
+
+---
+
+## Caveats
+
+- The head-to-head label comparison (file-level vs. blame) is on a single repo (hono, 48 holdout pairs). The mechanism is clear but the magnitude of improvement will vary by repo.
+- Positive rate alone is not a reliable predictor of label quality — it's a proxy. The underlying question is how many true positives you're losing to file-level contamination, which requires knowing the ground truth, which you don't have.
+
+---
+
+## What to Try Next
+
+Run both labelling methods on the same repo with a temporal holdout and compare P@10 — not just Spearman ρ. P@K is more sensitive to the top of the ranking, where label quality matters most for the "which functions should I review?" use case. If blame labels improve P@10 even when ρ is similar, that's the result that translates directly to user value.
