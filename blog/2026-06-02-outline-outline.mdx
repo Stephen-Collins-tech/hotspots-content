@@ -1,0 +1,92 @@
+---
+title: "outline/outline's editor and WebSocket queue carry the highest activity risk — 5 hotspots"
+description: "A Hotspots analysis of outline/outline at commit 7e252f0, surfacing the top functions by activity-weighted risk score."
+pubDate: 2026-06-02
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "outline/outline"
+commit: "7e252f089239729b1cb6a954918e4e4d91f806f2"
+language: "typescript"
+hotspots_version: "1.20.2"
+analyzed_at: "2026-06-02T07:27:54Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 19.52
+topFunction: "SuggestionsMenu"
+topFile: "app/editor/components/SuggestionsMenu.tsx"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "long_function", "god_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 4, long_function: 5}
+---
+
+At CC 158, `perform` in `WebsocketsProcessor.ts` is the kind of function that makes reviewers pause before touching it. Yet the highest activity-weighted risk score belongs to `SuggestionsMenu` — a React component with CC 71 and fan-out into 84 distinct callees that has clearly grown through years of editor feature additions. The two functions are separated by 112 cyclomatic complexity points but share the same underlying problem: too much accumulated in one place, in a part of the codebase that keeps changing.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `SuggestionsMenu` | app/editor/components/SuggestionsMenu.tsx | 19.5 | 71 | 6 | 84 |
+| `perform` | server/queues/processors/WebsocketsProcessor.ts | 18.6 | 158 | 5 | 51 |
+| `isDiagramsNetPng` | shared/editor/lib/FileHelper.ts | 18.4 | 29 | 9 | 9 |
+| `SelectionToolbar` | app/editor/components/SelectionToolbar.tsx | 17.9 | 27 | 6 | 38 |
+| `getChangeset` | shared/editor/lib/ChangesetHelper.ts | 17.8 | 17 | 7 | 26 |
+
+## Large Repo Analysis
+
+outline is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+### `SuggestionsMenu` — app/editor/components/SuggestionsMenu.tsx
+
+This component is both the most complex piece of the editor UI and one of the most actively changed. CC 71 combined with fan-out into 84 distinct callees means every edit here is a structural risk — a change to one trigger path can silently break another. Six levels of nesting suggest the component has grown through accretion: new mention type, new trigger character, new keyboard handler layered on top of the last. Splitting by trigger type (mentions vs. slash commands vs. emoji pickers) would isolate each concern into its own component and bring CC to a manageable range.
+
+### `perform` — server/queues/processors/WebsocketsProcessor.ts
+
+CC 158 puts `perform` in a category of its own. Fan-out into 51 callees confirms it isn't a dispatcher in name only — it carries genuine branching logic that belongs in dedicated per-event handlers. This is a textbook god_function: it knows about every WebSocket message type, every error condition, and every downstream side effect. Extracting handlers for document updates, presence changes, and cursor events would slice CC into digestible units and make the queue processor a true router. Until that refactor happens, every new WebSocket feature adds to an already expensive review surface.
+
+### `isDiagramsNetPng` — shared/editor/lib/FileHelper.ts
+
+ND 9 is the standout here — deeper nesting than anything else in the top five, despite modest CC (29) and low fan-out (9). The name implies a simple file-type check, but nine levels of conditional nesting suggest it's doing more: parsing URLs, inspecting MIME types, and negotiating fallbacks through a series of nested `if`/`else` branches. A guard-clause rewrite — returning early on each negative case rather than nesting further — would collapse the depth without changing behavior and make the logic legible at a glance.
+
+### `SelectionToolbar` — app/editor/components/SelectionToolbar.tsx
+
+SelectionToolbar's CC of 27 and fan-out into 38 callees put it in similar territory to `SuggestionsMenu`, but its role is narrower: it controls the contextual formatting toolbar that appears on text selection. The branching likely reflects conditional toolbar states — different tool sets for table cells, images, code blocks, and plain text. Each context has different formatting affordances, and they've all accumulated in one component.
+
+**Recommendation:** Extract each toolbar variant into its own component or hook. The parent toolbar becomes a context-switch that renders the right sub-toolbar, dropping its own CC significantly and making each variant independently testable.
+
+### `getChangeset` — shared/editor/lib/ChangesetHelper.ts
+
+`getChangeset` sits at the bottom of the top five with the lowest CC (17), but ND 7 tells a more complicated story: the changeset algorithm nests seven levels deep, suggesting a recursive or heavily-conditional implementation. With fan-out into 26 callees it's also load-bearing — other shared utilities depend on it. For a shared library function, deep nesting is a testing liability: edge cases hide in the innermost branches and rarely get exercised. Decomposing the algorithm into named helpers (one for insertion tracking, one for deletion tracking, one for conflict resolution) would flatten the structure and make each path independently testable.
+
+## Key Takeaways
+
+- `perform` in `WebsocketsProcessor.ts` (CC 158) is the highest-complexity target in this snapshot — extracting per-event handlers is the most impactful single refactor available.
+- `SuggestionsMenu` and `SelectionToolbar` share a pattern of branching UI state; both would benefit from splitting into per-context components rather than growing a single component's branch count.
+- `isDiagramsNetPng` and `getChangeset` are shared utilities with deep nesting (ND 9 and ND 7 respectively) — guard-clause rewrites are the fastest path to flattening each without changing behavior.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+| `exit_heavy` | 5 |
+| `long_function` | 5 |
+| `god_function` | 4 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/outline/outline
+cd outline
+git checkout 7e252f089239729b1cb6a954918e4e4d91f806f2
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
