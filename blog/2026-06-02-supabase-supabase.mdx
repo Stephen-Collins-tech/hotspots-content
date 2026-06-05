@@ -1,0 +1,104 @@
+---
+title: "supabase's type parser and storage explorer are the highest risks — all 5 touched today"
+titleSeo: "supabase/supabase code health: ident, DynamicForm, and createStorageExplorerState lead refactoring priority"
+description: "A Hotspots analysis of supabase/supabase at commit 00d530d finds five fire-quadrant functions all modified within the last 24 hours, combining structural complexity with live commit activity across the docs layer, UI library, and Studio."
+introContent: "Every function in supabase's top-five hotspot list was touched in the last day. Two of them share a single file in the docs layer. One has fan-out into 173 distinct callees. The structural debt isn't theoretical — it's actively compounding."
+pubDate: 2026-06-02
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "supabase/supabase"
+commit: "00d530d54a311c8ea977a5b21a630f4e499dcb26"
+language: "typescript"
+hotspots_version: "1.21.1"
+analyzed_at: "2026-06-02T00:00:00Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 20.94
+topFunction: "ident"
+topFile: "packages/pg-meta/src/pg-format/index.ts"
+topPatterns: ["exit_heavy", "complex_branching", "deeply_nested", "long_function", "hub_function"]
+patternCounts: {exit_heavy: 5, complex_branching: 4, deeply_nested: 3, long_function: 3, hub_function: 2, god_function: 2}
+---
+
+Every function in this top five was touched within the last 24 hours. That's not a streak of bad luck — it reflects a codebase under active development, where structural debt and live commit activity are compounding simultaneously. Two of the five functions live in the same file (`apps/docs/features/docs/Reference.typeSpec.ts`), which also contributes three more functions to the watch tier; that file is worth treating as a unit, not just a source of individual hotspots. And `createStorageExplorerState` in the Studio carries fan-out into 173 distinct callees — a number that changes the nature of refactoring from "extract a helper" to "redesign the state boundary."
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `ident` | packages/pg-meta/src/pg-format/index.ts | 20.9 | 15 | 7 | 10 |
+| `parseReferenceType` | apps/docs/features/docs/Reference.typeSpec.ts | 20.7 | 32 | 4 | 9 |
+| `DynamicForm` | apps/ui-library/registry/default/platform/platform-kit-nextjs/components/dynamic-form.tsx | 20.6 | 58 | 11 | 35 |
+| `parseType` | apps/docs/features/docs/Reference.typeSpec.ts | 19.8 | 28 | 2 | 9 |
+| `createStorageExplorerState` | apps/studio/state/storage-explorer.tsx | 19.1 | 44 | 6 | 173 |
+
+## Large Repo Analysis
+
+supabase is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+### `ident` — packages/pg-meta/src/pg-format/index.ts
+
+The name implies a simple SQL identifier formatter, but `ident`'s structural profile tells a more complicated story. CC 15 isn't extreme, but seven levels of nesting inside what should be a formatting utility means the branching is deeply conditional rather than flat — likely handling quoting rules, escape sequences, reserved word checks, and edge cases for different identifier types accumulated over time. What earns it the top risk score is the hub_function pattern: fan-out into 10 distinct callees in a utility that callers probably treat as a leaf node creates an implicit dependency surface that grows with each new formatting rule. Combined with a commit landing within the last day, this function is being edited with complexity it doesn't need to carry.
+
+**Recommendation:** Flatten the nesting with guard clauses — each identifier class (quoted, unquoted, reserved) should be an early return or a dispatch to a named helper, not another nested branch. This keeps `ident` as the entry point while reducing the call depth that makes each change harder to reason about.
+
+### `parseReferenceType` — apps/docs/features/docs/Reference.typeSpec.ts
+
+`parseReferenceType` is one of two top-five hotspots from a single file in the docs layer — a signal that `Reference.typeSpec.ts` is under broad active development, not just isolated churn. At CC 32 and four levels of nesting, it's parsing TypeScript reference types for documentation generation: handling generic parameters, array shapes, union members, and mapped type syntax through a branching tree that has grown with the TypeScript type system itself. Nine callees (FO 9) means it delegates to specialised parsers, but the top-level branching logic still lives here.
+
+The `exit_heavy` pattern suggests many of those 32 branches terminate with early returns, which keeps nesting shallower than CC 32 might imply — but it also means every new type shape handled here adds both a branch and an exit path. Extracting per-category handlers (one for generic references, one for array shapes, one for template literals) and having `parseReferenceType` dispatch into them would isolate each grammar rule and make the function's own CC manageable.
+
+### `DynamicForm` — apps/ui-library/registry/default/platform/platform-kit-nextjs/components/dynamic-form.tsx
+
+ND 11 is the deepest nesting value in this dataset — eleven levels of control structure inside a React component. CC 58 and fan-out into 35 callees confirm that `DynamicForm` has grown into a component that knows about every field type, every validation rule, and every conditional render path that the platform kit supports. At ND 11, the innermost branches are effectively unreachable during a casual code review — a reviewer tracing logic through eleven nested conditions is working from memory, not comprehension.
+
+The god_function and long_function patterns together suggest this isn't a form component so much as a form framework embedded in a single function body. The refactoring path here is component decomposition: each field type (text, select, date, file upload, nested object) becomes its own component, and `DynamicForm` becomes a registry-driven dispatcher. That brings CC and ND down to single digits for each piece while making individual field types independently testable.
+
+### `parseType` — apps/docs/features/docs/Reference.typeSpec.ts
+
+`parseType` sits four ranks below `parseReferenceType` but shares the same file, the same activity window, and a nearly identical fan-out (9). With CC 28 and only ND 2, its complexity is wide rather than deep — a flat sequence of branches that each handle a different TypeScript type construct. The hub_function and cyclic_hub patterns together suggest `parseType` is both the primary entry point for type parsing and a mutual caller with other parsers in the file — a design that makes the call graph non-linear and complicates testing.
+
+The cyclic_hub pattern is the more pressing concern: if `parseType` and `parseReferenceType` call each other, adding or modifying a type shape requires auditing both functions and their shared state. Resolving the cycle — typically by introducing an intermediate dispatch type or breaking the mutual dependency through a shared parse context — is a prerequisite for making either function safely decomposable.
+
+### `createStorageExplorerState` — apps/studio/state/storage-explorer.tsx
+
+`createStorageExplorerState` calls into 173 distinct functions, making it the structural centre of gravity for the Studio's storage management layer. Nothing else in this top five comes close — the next-highest fan-out is 35 (DynamicForm). FO 173 in a state factory means that nearly every operation the storage explorer can perform — listing buckets, uploading files, managing policies, handling errors — is wired directly into this one function. CC 44 and ND 6 sit on top of that breadth, confirming the function is also heavily conditional, not just wide.
+
+This is less a refactoring target than an architectural boundary question: a state factory with 173 callees is really a module boundary that hasn't been drawn yet. Splitting along natural sub-domains (bucket management, file operations, upload state, policy management) would distribute the FO across multiple state slices and make each one independently composable. The Zustand `create` pattern supports this well; `createStorageExplorerState` as it stands is a case where the tool fits the solution but the solution hasn't been applied at the right granularity.
+
+## Key Takeaways
+
+- `Reference.typeSpec.ts` is the file to watch: `parseReferenceType` and `parseType` both crack the top five, and three more functions from the same file sit in the watch tier. Treat the file as the refactoring unit, starting with resolving the cyclic dependency between the two top-ranked parsers.
+- `DynamicForm` (ND 11, CC 58) is the deepest and most complex UI component in this snapshot — component decomposition by field type is the path forward, not incremental cleanup.
+- `createStorageExplorerState`'s FO 173 is an architectural signal, not just a metric: the storage explorer state needs to be split into sub-domain slices before individual function complexity becomes manageable.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 5 |
+| `complex_branching` | 4 |
+| `deeply_nested` | 3 |
+| `long_function` | 3 |
+| `hub_function` | 2 |
+| `god_function` | 2 |
+| `cyclic_hub` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/supabase/supabase
+cd supabase
+git checkout 00d530d54a311c8ea977a5b21a630f4e499dcb26
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
