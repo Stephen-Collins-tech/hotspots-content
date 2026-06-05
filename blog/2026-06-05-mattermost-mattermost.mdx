@@ -1,0 +1,173 @@
+---
+title: "mattermost/mattermost's API and notification layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "mattermost code health: API and notification layer lead refactoring priority across 26,661 functions"
+description: "Five critical-band functions in mattermost's server API, notification actions, and admin console are both structurally complex and actively changing, making them live regression risks at commit 3440453."
+introContent: "Five functions across mattermost's server API, frontend notification logic, and admin console are simultaneously the hardest to reason about and the most recently changed — meaning any engineer shipping code this week is working right next to live regression risk. The top hotspot, `getUsers` in `server/channels/api4/user.go`, carries an activity-weighted risk of 20.86 with a cyclomatic complexity of 33, a nesting depth of 8, and 55 distinct callees — and it was changed 0 days ago."
+pubDate: 2026-06-05
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "mattermost/mattermost"
+commit: "3440453d82613b1d8d67c93011c11d56a1380869"
+language: "typescript"
+hotspots_version: "1.22.0"
+analyzed_at: "2026-06-05T07:15:07Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 20.86
+topFunction: "getUsers"
+topFile: "server/channels/api4/user.go"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "long_function", "god_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 4, long_function: 5, middle_man: 2, hub_function: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in mattermost?"
+    answer: "A god function is one that combines high cyclomatic complexity with high fan-out — it both branches heavily internally and calls out to a large number of distinct functions across the codebase. Fan-out specifically is the count of distinct functions a given function directly invokes; a fan-out of 15 or more is a strong signal, and values like the 61 seen in `PolicyDetails` or the 55 in `getUsers` mean that a single change here can produce unexpected behavior in dozens of downstream call sites. In mattermost, four of the top five hotspots carry this pattern, which means the blast radius of a bug introduced in any of them is disproportionately large. God functions are also hard to test in isolation because their correctness depends on the behavior of all their callees simultaneously."
+  - question: "How do I reduce cyclomatic complexity in TypeScript?"
+    answer: "The most direct technique is extract-method refactoring: identify coherent clusters of branches — cases in a switch, guard conditions that belong to the same rule category — and move each into a named function with a clear contract. A cyclomatic complexity above 15 in TypeScript warrants splitting; above 30 it warrants immediate attention because TypeScript's type narrowing inside nested conditionals introduces implicit paths that the raw CC number doesn't fully capture. A concrete first step for `shouldSkipNotification` (CC 60) today: identify the top-level categories of skip reasons, extract each into a predicate function (e.g., `isUserInDoNotDisturb`, `isChannelMuted`), and replace the nested conditionals with calls to those predicates. That alone can cut the CC of the coordinator function to single digits while making each predicate independently testable."
+  - question: "Is mattermost actively maintained?"
+    answer: "Yes, clearly. Every function in this analysis sits in the fire or watch quadrant — there are zero debt-quadrant functions, meaning there are no high-complexity functions sitting untouched. The top hotspot, `getUsers`, was touched twice in the last 30 days and has a days_since_changed of 0; the remaining four critical-band hotspots were each touched once in the last 30 days and last modified 2 days ago. Active development and structural complexity are not mutually exclusive: the fire-quadrant classification means these functions are being changed right now, which is exactly why their complexity scores matter for near-term regression risk rather than as abstract technical debt."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. This analysis was run against mattermost/mattermost at commit `3440453`. To reproduce it, check out that commit with `git checkout 3440453` and then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without any additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies a function's structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — by a signal reflecting how frequently the function has been changed recently. The result is that a function with cyclomatic complexity 80 that hasn't been touched in two years scores much lower than a function with CC 20 that is committed to every week, because the dormant function has low near-term regression probability regardless of how complex it looks. This prioritization is designed to focus refactoring effort where it reduces the actual probability of bugs being introduced right now — `getUsers` scoring an activity_risk of 20.86 with 2 recent touches is a more urgent refactoring candidate than a similarly complex function with no recent activity would be."
+---
+
+At commit 3440453, I ran Hotspots against mattermost/mattermost — a self-hostable team messaging platform — and found 2,097 critical-band functions across a codebase of 26,661 total functions. Every one of the top five hotspots lands in the "fire" quadrant: high structural complexity and recent commit activity at the same time, which makes them live regression risks rather than backlog cleanup items. I would start with `getUsers` in `server/channels/api4/user.go`: it scores an activity_risk of 20.86, carries cyclomatic complexity 33 with a fan-out of 55, and has been touched twice in the last 30 days — the combination means changes are landing in a function that has 33 independent execution paths and calls out to 55 distinct dependencies.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `getUsers` | server/channels/api4/user.go | 20.9 | 33 | 8 | 55 |
+| `shouldSkipNotification` | webapp/channels/src/actions/notification_actions.tsx | 20.2 | 60 | 8 | 19 |
+| `formatGroup` | webapp/channels/src/components/suggestion/switch_channel_provider.tsx | 19.2 | 34 | 11 | 16 |
+| `FormatAudit` | webapp/channels/src/components/audit_table/format_audit.tsx | 19.1 | 49 | 8 | 8 |
+| `PolicyDetails` | webapp/channels/src/components/admin_console/access_control/policy_details/policy_details.tsx | 19.0 | 44 | 6 | 61 |
+
+## Large Repo Analysis
+
+mattermost is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Repository snapshot
+
+The analysis covers **26,661 functions** at commit `3440453`. Of those, **2,097 are critical-band** — the tier where structural complexity and recent activity combine to create the highest near-term regression risk.
+
+<BandChart fire='8464' debt='0' watch='18197' ok='0' />
+
+Every function in this repo sits in either "fire" or "watch" — there is no dormant structural debt to speak of. That means the risk conversation is entirely about code that is both complex and actively changing. The 8,464 fire-quadrant functions deserve the most attention from reviewers this sprint.
+
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,long_function:5,god_function:4,hub_function:1,middle_man:2' />
+
+Across the top five hotspots, four patterns repeat without exception: complex branching, deep nesting, exit-heavy control flow, and long function length. Four of the five also carry the god-function pattern, meaning they each combine high complexity with broad coupling. That consistency is a signal — these aren't isolated rough patches; they reflect a shared structural tendency in the highest-risk corners of this codebase.
+
+---
+
+### `getUsers` — user.go
+
+<FunctionCard fn='getUsers' file='server/channels/api4/user.go' risk='20.86' band='critical' cc='33' nd='8' fo='55' touches='2' />
+
+`getUsers` sits in the server-side REST API layer and, based on its name and location in `api4/`, handles the HTTP endpoint that returns user lists — likely negotiating filters, pagination, permissions, and response shaping in a single function. The numbers here are striking in combination: cyclomatic complexity of 33 means there are 33 independent execution paths that need test coverage, nesting depth of 8 means the deepest branches require tracking eight levels of conditional context simultaneously, and fan-out of 55 means this function directly calls out to 55 distinct functions elsewhere in the codebase.
+
+<MetricBar label='Fan-out' value='55' threshold='15' max='60' />
+<MetricBar label='Cyclomatic Complexity' value='33' threshold='10' max='60' />
+
+That fan-out of 55 is the standout figure. A god-function with this many callees acts as a coupling hub: any signature change in a downstream dependency has a plausible path back through `getUsers`, and any logic change inside `getUsers` can ripple outward to 55 call sites' worth of behavior. Reviewers are already spending significant effort on this file even with only 2 commits in the last 30 days — that review pressure on a 33-path, 55-callee function is a concrete cost.
+
+The exit-heavy pattern compounds the testing burden: multiple early-return paths mean a test suite has to exercise each exit independently to have meaningful coverage. With 33 paths and 8 nesting levels, full branch coverage here is not a small ask.
+
+**Recommendation:** Decompose `getUsers` by responsibility. Permission checking, filter parsing, and response serialization are each coherent units that can be extracted into named functions. Reducing the fan-out to a smaller coordination layer with well-named helpers would both lower the CC and make the PR review surface smaller. Given 2 touches in 30 days and a last change today, I would prioritize this before the next feature lands on top of it.
+
+---
+
+### `shouldSkipNotification` — notification_actions.tsx
+
+<FunctionCard fn='shouldSkipNotification' file='webapp/channels/src/actions/notification_actions.tsx' risk='20.24' band='critical' cc='60' nd='8' fo='19' touches='1' />
+
+`shouldSkipNotification` is a decision function — from its name, it evaluates whether a given notification should be suppressed. In a messaging platform, that decision likely encodes rules for user status, DND settings, channel membership, mention types, and thread subscription state. The cyclomatic complexity of 60 is the highest single CC value in the top five.
+
+<MetricBar label='Cyclomatic Complexity' value='60' threshold='10' max='60' />
+
+A CC of 60 means 60 independent logical paths through this one function. In TypeScript specifically, that number likely understates the real branching surface: type narrowing inside deeply nested conditionals and async/await chains introduce implicit control flow that static cyclomatic complexity doesn't fully capture. Paired with a nesting depth of 8, this function is genuinely hard to reason about — at depth 8 you are tracking the truth-state of every enclosing condition simultaneously.
+
+The function was touched once in the last 30 days and was last changed 2 days ago. Notification logic is the kind of code where a missed branch means a user either gets spammed or misses a mention — both are user-visible regressions. With 60 paths, the probability that any given change exercises an untested branch is high.
+
+**Recommendation:** Decompose `shouldSkipNotification` into a small set of named predicate functions, each covering a coherent rule category (e.g., user presence rules, channel-level rules, mention-type rules). A coordinator function that calls these predicates in sequence would drop the CC of each component well below 10 and make the overall logic auditable. Given that this file has a single author in the last 90 days, a refactoring PR here is a low-conflict operation.
+
+---
+
+### `formatGroup` — switch_channel_provider.tsx
+
+<FunctionCard fn='formatGroup' file='webapp/channels/src/components/suggestion/switch_channel_provider.tsx' risk='19.15' band='critical' cc='34' nd='11' fo='16' touches='1' />
+
+`formatGroup` lives inside the channel-switcher suggestion provider, which means it almost certainly shapes how user groups are displayed in the quick-switch modal. A formatting function reaching CC 34 and a nesting depth of 11 is unexpected — that depth is the deepest in the entire top five and is a strong refactoring signal on its own.
+
+<MetricBar label='Max Nesting Depth' value='11' threshold='4' max='12' />
+
+Nesting depth 11 means the innermost logic sits inside eleven stacked control structures. In a TypeScript component, that kind of depth often accumulates through optional chaining guards, feature flag checks, and conditional rendering branches that each feel small in isolation but compound into something that is very hard to test and even harder to modify safely. The exit-heavy pattern here means there are multiple return points scattered across those eleven levels.
+
+The function has 16 distinct callees and was touched once in the last 30 days (2 days ago). The channel switcher is a high-frequency UI path — most users invoke it dozens of times per session — so a regression here is immediately visible.
+
+**Recommendation:** Flatten the nesting by extracting guard clauses and intermediate computations into clearly named helper functions. A nesting depth of 11 almost always means there is a sequence of independent checks that can be linearized into early returns at the top level, followed by the core logic. Each extracted helper is also independently testable, which is the most direct way to reduce the coverage burden created by 34 cyclomatic paths.
+
+---
+
+### `FormatAudit` — format_audit.tsx
+
+<FunctionCard fn='FormatAudit' file='webapp/channels/src/components/audit_table/format_audit.tsx' risk='19.12' band='critical' cc='49' nd='8' fo='8' touches='1' />
+
+`FormatAudit` in the audit table component formats audit log entries for display in the admin console. Audit logs typically cover a wide range of action types — logins, settings changes, channel operations, plugin events — and the function name suggests a single formatter that dispatches across all of them. A cyclomatic complexity of 49 is consistent with that interpretation: one large switch or if-else chain that branches on action type.
+
+<MetricBar label='Cyclomatic Complexity' value='49' threshold='10' max='60' />
+
+With 49 paths and nesting depth 8, this function requires 49 test cases for full branch coverage. It is tagged as exit-heavy, meaning those paths terminate at different return points rather than funneling through a single exit — making coverage gaps easy to miss. The fan-out of 8 is comparatively modest, which suggests the coupling problem here is not breadth of dependencies but internal complexity: the logic is dense, not sprawling.
+
+One author has touched this file in the last 90 days. That's a concentration risk: when the sole recent owner is unavailable and a new audit action type needs support, the next developer to touch this function will be navigating 49 paths cold.
+
+**Recommendation:** Introduce a dispatch table or a map of action-type handlers, each implemented as a small, named function. This is the extract-method refactoring applied systematically: each branch of the current `FormatAudit` becomes its own formatter, and `FormatAudit` itself becomes a thin router. That pattern would reduce the function's own CC to roughly the number of action categories, which is far more manageable.
+
+---
+
+### `PolicyDetails` — policy_details.tsx
+
+<FunctionCard fn='PolicyDetails' file='webapp/channels/src/components/admin_console/access_control/policy_details/policy_details.tsx' risk='19.04' band='critical' cc='44' nd='6' fo='61' touches='1' />
+
+`PolicyDetails` is a React component in the access control section of the admin console. Its path — `access_control/policy_details/` — places it squarely in the permissions and policy management UI. A component function with cyclomatic complexity 44 and fan-out of 61 is carrying both dense conditional rendering logic and extremely broad coupling to the rest of the system.
+
+<MetricBar label='Fan-out' value='61' threshold='15' max='65' />
+<MetricBar label='Cyclomatic Complexity' value='44' threshold='10' max='60' />
+
+The fan-out of 61 is the highest in the top five, edging out even `getUsers`. In a React component, high fan-out typically means the component is directly importing and invoking selectors, action creators, utility functions, and child component APIs rather than delegating to intermediate layers. Every one of those 61 callees is a potential source of prop or API shape changes that flow back through this component. The god-function and exit-heavy patterns together mean this component is both broadly coupled and internally branchy — the worst combination for stability.
+
+This file has a single author in the last 90 days and was touched once in the last 30 days. Access control UI is security-adjacent: a rendering bug that hides or misrepresents a policy detail is not just a cosmetic issue.
+
+**Recommendation:** Split `PolicyDetails` into smaller, focused sub-components — one for policy metadata display, one for member/group assignment, one for permission toggles — and lift shared state to a context or container component. That decomposition would reduce the fan-out of any single component significantly and make the conditional rendering logic in each piece independently testable. Given the security context of this component, I would pair any refactoring PR with a targeted review of the branching logic around permission display.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+| `exit_heavy` | 5 |
+| `long_function` | 5 |
+| `god_function` | 4 |
+| `middle_man` | 2 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/mattermost/mattermost
+cd mattermost
+git checkout 3440453d82613b1d8d67c93011c11d56a1380869
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
