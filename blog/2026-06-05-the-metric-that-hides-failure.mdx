@@ -1,0 +1,119 @@
+---
+title: "The Metric That Hides Failure"
+description: "Spearman ρ measures average rank agreement across all files. Precision@K measures whether the files engineers actually review are in the right place. On mature, stable codebases, a ranker can show positive ρ while returning zero bugs in its top 10."
+pubDate: 2026-06-05
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Spearman ρ measures average rank agreement across all files. Precision@K measures whether the files engineers actually review are in the right place. On mature, stable codebases, a ranker can show positive ρ while returning zero bugs in its top 10."
+---
+
+I built a defect risk ranker. I evaluated it with Spearman ρ. The number was positive. I shipped it. Engineers reviewed the top-10 highest-risk files. None of them had bugs.
+
+This is not a hypothetical. Here's what I found when I added a second metric.
+
+---
+
+## The Setup
+
+I run a risk ranker across open-source codebases and report Spearman ρ as the primary metric — rank correlation between predicted risk and observed defect history. I added Precision@K as a secondary check: of the top K files the ranker surfaces, what fraction actually had future defects?
+
+On most repos these two metrics agree. On one repo they disagreed badly enough that I had to rethink what I was measuring.
+
+---
+
+## What Happened on scikit-learn
+
+scikit-learn is a mature scientific Python library. Base defect rate in the holdout period: 21%. A random ranker surfaces defective files 21% of the time at any K.
+
+| Ranker | P@10 | P@20 | P@50 | Spearman ρ |
+|---|---|---|---|---|
+| Random (base rate) | 0.210 | 0.210 | 0.210 | — |
+| Composite risk score | **0.000** | 0.000 | 0.260 | positive |
+| Activity baseline | **0.000** | 0.050 | 0.100 | positive |
+| XGBoost (repo-trained) | **0.000** | 0.000 | **0.000** | — |
+
+All rankers return P@10 = 0. The composite score and activity baseline both show positive Spearman ρ — they are roughly correct in aggregate across all files — but their top 10 contain zero future bugs.
+
+XGBoost is worse. Trained on this repo's own history with the full feature set, it achieves P@100 = 0. Its top hundred predictions contain no bugs at all. It learned the misleading correlation more efficiently than the formula and is more confidently wrong.
+
+The score distribution explains why. The composite risk score produces only three distinct values across all functions in scikit-learn:
+
+| Score bucket | Functions | Future bugs | Bug rate |
+|---|---|---|---|
+| Top | 17 | 0 | **0%** |
+| Middle | 67 | 14 | 21% |
+| Bottom | 546 | 118 | 22% |
+
+The top bucket has zero bugs. The middle and bottom are indistinguishable from random.
+
+---
+
+## Why This Happens
+
+The functions with the highest activity, complexity, and recency on scikit-learn are core stable APIs — base classes in the linear model module, heavily maintained estimators, central data structures. These are among the most carefully stewarded files in the codebase. They accumulate changes but almost never regress.
+
+The real bugs live in less-trafficked code: edge cases in pipeline handling, rarely-touched integration paths, feature extraction utilities that get little attention. These have low churn, low complexity scores, and look safe by every signal in the model.
+
+Every signal the ranker uses — churn, complexity, recency, fan-in — points at the wrong target on this codebase. XGBoost does not fix this because it learns from the same signals. It just learns the misleading correlation more efficiently.
+
+This is not a calibration problem. There is no weight adjustment or threshold tuning that recovers useful P@K here. The signal is structurally wrong for this type of codebase.
+
+---
+
+## The Pattern Is Predictable
+
+Mature scientific and ML libraries have a structure that breaks activity-based risk signals systematically:
+
+- Core APIs are touched constantly for maintenance, optimization, and backward-compatibility work. They accumulate high churn and high complexity.
+- Core APIs rarely regress. The team is expert, tests are dense, review is thorough.
+- Bugs land in peripheral code — integrations, utilities, edge-case handlers — touched infrequently, with low complexity scores.
+
+Any ranker that conflates "touched a lot" with "likely to break" will invert on this pattern. The more carefully it learns from history, the more confidently it gets the wrong answer.
+
+Contrast with Django:
+
+| Repo | Base rate | P@10 |
+|---|---|---|
+| Django | 47.9% | **1.000** |
+| scikit-learn | 21.0% | **0.000** |
+
+Same ranker, same signals, opposite results — because where bugs live is structurally different between the two codebases.
+
+---
+
+## The Deeper Problem: Different Axes Surface Different Files
+
+This failure points at something more fundamental. Churn and complexity identify the wrong files on scikit-learn not because these signals are bad, but because defect risk and activity risk are measuring different things.
+
+I ran a correlation study across 33 open-source codebases, measuring four dimensions per file: defect risk (fraction of commits that were bug fixes), activity risk (the composite hotspot score), coupling (how many distinct files this file tends to change alongside), and ownership concentration (how concentrated authorship is).
+
+| Pair | Mean correlation | Interpretation |
+|---|---|---|
+| Defect risk × Activity risk | +0.668 | Correlated, but not equivalent |
+| Defect risk × Coupling | −0.035 | Nearly independent |
+| Defect risk × Ownership concentration | −0.016 | Nearly independent |
+
+Activity risk and defect risk are correlated on average — busy files do tend to have more defects. But the correlation is not tight enough to treat them as interchangeable, and on repos like scikit-learn it inverts entirely.
+
+Coupling and ownership concentration are nearly independent of defect risk. Files with many co-change partners are not the same files as high-defect files. Files with concentrated authorship are not systematically more or less bug-prone. These axes identify genuinely different code.
+
+A ranker that only surfaces activity risk is leaving coupling risk and ownership risk entirely invisible — and, on stable mature codebases, it may be actively pointing engineers at the wrong place.
+
+---
+
+## What the Right Evaluation Looks Like
+
+**Report P@K alongside ρ.** Correlation across all files can be positive while the top of the ranking is worthless. P@10 and P@20 measure what engineers actually act on.
+
+**Anchor to base rate.** P@10 = 0.100 sounds bad until you know the base rate is 0.050. P@10 = 0.200 sounds good until you know the base rate is 0.210. P@K only means something relative to random selection.
+
+**Flag score collapse.** If a ranker produces fewer than 10 distinct values across hundreds of functions, its top bucket is unreliable. Three distinct values — as happened on scikit-learn — is a strong signal that the ranker has no discriminating power at the top.
+
+**When P@K < base rate, suppress.** Showing a confidently wrong ranking is worse than showing nothing. A tool that surfaces 10 files and zero are defective trains engineers to ignore it. Detecting when the ranker has failed and suppressing output on those repos is the right response.
+
+The higher-level lesson: optimising for Spearman ρ is not the same as optimising for usefulness. A ranker that is slightly right across all files but confidently wrong at the top has passed the metric and failed the job.
