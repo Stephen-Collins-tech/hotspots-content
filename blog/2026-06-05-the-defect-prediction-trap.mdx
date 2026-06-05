@@ -1,0 +1,96 @@
+---
+title: "The Defect Prediction Trap"
+description: "I fine-tuned a model that scored Spearman ρ=+0.678 on defect risk. Then I zeroed out the git history fields and it dropped to −0.142. The model wasn't reading code. It was relaying commit metadata back as a prediction."
+pubDate: 2026-06-05
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "I fine-tuned a model that scored Spearman ρ=+0.678 on defect risk. Then I zeroed out the git history fields and it dropped to −0.142. The model wasn't reading code. It was relaying commit metadata back as a prediction."
+---
+
+I fine-tuned a model that scored Spearman ρ=+0.678 on defect risk prediction. That felt meaningful — a strong rank correlation, comfortably above my deterministic baseline. Then I ran a simple ablation: what if I zero out the git history fields in the prompt?
+
+ρ dropped to −0.142.
+
+The model wasn't reading code. It was relaying commit metadata back as a prediction.
+
+---
+
+## The Setup
+
+My evaluation prompt includes a structured feature block alongside the function's source code:
+
+```
+FILE=django/db/models/query.py | FUNC=QuerySet.filter
+TOUCHES=12 | LAST_CHANGE=4d | BUG_COMMITS=34 | AUTHORS=6 | REVERTS=2
+PATTERNS=high_churn,multi_author
+
+[source code]
+```
+
+My ground truth label is a composite defect score derived from the same codebase's git history — including bug-fix commit counts and revert counts.
+
+You can already see the problem. The label is partly derived from `BUG_COMMITS` and `REVERTS`, which are also in the prompt. A model that ignores the source code entirely and learns *high BUG_COMMITS → high score* will evaluate well.
+
+I ran three ablation conditions on the same fine-tuned adapter against 300 held-out functions from a large, mature Python codebase:
+
+| Condition | What was zeroed | Fine-tuned ρ | Deterministic baseline ρ |
+|---|---|---|---|
+| Full prompt | — | **+0.678** | +0.178 |
+| Git signals zeroed | bug commits, reverts | +0.156 | +0.178 |
+| All history zeroed | above + activity, recency | **−0.142** | +0.178 |
+
+With git signals removed, fine-tuning underperforms the deterministic baseline. With all history zeroed, the predictions are anti-correlated with ground truth. The model learned the feature space so thoroughly that zeroed fields — which the deterministic baseline simply ignores — actively misled it.
+
+---
+
+## Why This Happens
+
+The trap has three ingredients, and most defect prediction benchmarks contain all three:
+
+1. **Labels are derived from git history** — bug-fix commits, reverts, issue links, or some weighted combination
+2. **Features include git history** — churn, author count, recent activity, commit velocity
+3. **The correlation between 1 and 2 is strong by construction** — a file with many bug-fix commits will, definitionally, have a high bug-fix-commit feature
+
+Train a model to predict 1 from 2 and 3 combined, and it doesn't need to understand 3 (the code) at all. A well-calibrated linear regression on the git features alone scores comparably.
+
+Standard held-out evaluation catches overfitting to specific files. It does not catch a model that has learned to relay git metadata. Both models — the one that reads code and the one that ignores it — will score well on held-out functions from the same time window.
+
+---
+
+## The Fix: Temporal Separation
+
+The principled solution is to decouple what you measure from what you predict.
+
+- **Features**: computed from commit history up to a cutoff date — the full picture available at "prediction time"
+- **Labels**: derived exclusively from commits *after* that cutoff — bugs that hadn't happened yet when the features were measured
+
+This is the task that actually matters: given what we know today, which files will need fixing next quarter? A model that scores well here has learned something about which code patterns *precede* defects — not just which files have already been flagged.
+
+When I re-ran my evaluation with this temporal split, the fine-tuned model's ρ dropped from +0.678 to approximately +0.49 on the same codebase. Less impressive, more honest, and — crucially — reproducible across multiple codebases and holdout windows.
+
+---
+
+## Practical Checks
+
+If you're evaluating a defect prediction tool or building your own:
+
+**Check the time windows.** Were the evaluation labels derived from the same period as the features? If yes, the reported metric is an upper bound. The real performance — on defects that haven't happened yet — will be lower.
+
+**Run feature ablations.** Zero out the git history fields and see how much performance drops. Some drop is expected and fine. Near-total collapse — or negative ρ — means the model is a git-relay, not a code analyst.
+
+**Be skeptical of large gaps over simple baselines.** A deterministic score based on commit frequency, recency, and author count is a surprisingly strong predictor. Any model claiming to dramatically outperform it should survive temporal separation and ablation before being trusted.
+
+The higher number is more satisfying to report. The lower, honest number is more useful.
+
+---
+
+## What This Changed For Me
+
+After this experiment, I added a hard rule to my evaluation workflow: no result gets reported without either a feature ablation or a temporal holdout, preferably both. The fine-tuned model I'm running now scores ρ ≈ +0.49 on temporal holdout on Django, +0.60 on scikit-learn, +0.26 on Vue.js core. Those numbers survive the ablation. The +0.678 didn't.
+
+The embarrassing number taught more than the impressive one.
