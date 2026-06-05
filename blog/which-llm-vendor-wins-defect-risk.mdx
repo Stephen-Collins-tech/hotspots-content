@@ -1,0 +1,110 @@
+---
+title: "Which LLM Vendor Wins at Defect Risk Prediction?"
+description: "When evaluating open-weight models for code analysis, the vendor comparison you run in 2024 might give you the wrong answer in 2025."
+pubDate: 2026-06-05
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "When evaluating open-weight models for code analysis, the vendor comparison you run in 2024 might give you the wrong answer in 2025."
+---
+
+When evaluating open-weight models for code analysis, the vendor comparison you run in 2024 might give you the wrong answer in 2025.
+
+I originally compared Alibaba's Qwen2.5-Coder-7B against Meta's Llama 3.1-8B for zero-shot defect risk prediction. Qwen won on Python by a large margin. On TypeScript, they were statistically identical. The finding was clean: code-specialized pretraining matters for Python, not for TypeScript.
+
+Then I asked a natural follow-up: where does Microsoft's Phi fit?
+
+I started with Phi-3.5-mini — the version that was current at the same time as Qwen2.5 and Llama 3.1. The results were weak: +0.021 on Python, +0.083 on TypeScript. The conclusion looked easy: Microsoft trails both Alibaba and Meta on this task.
+
+That conclusion was wrong. It was a stale-model conclusion.
+
+---
+
+## The Setup
+
+I ran a zero-shot benchmark: give each model a function, its complexity metrics, and ask it to score defect risk from 0 to 9. No fine-tuning. No examples. Just the base model responding to the same prompt. I tested five current models plus one prior-generation Phi to measure whether Microsoft's initial weak result was a model-quality issue or just a stale model.
+
+Two test repositories:
+
+- **Django** (Python, 500 holdout function pairs from 2,555) — large, mature project with well-distributed activity
+- **Hono** (TypeScript, 59 holdout function pairs) — smaller, newer web framework
+
+I measured Spearman ρ (rank correlation, −1 to +1) against a composite defect label derived from blame history. To eliminate circularity, I zeroed out all git-history fields in the prompt — the model sees only code structure and complexity metrics, not commit counts or recency. A deterministic activity-weighted baseline serves as the comparison floor — commit frequency, recency, and structural complexity combined into a single score, no model involved.
+
+---
+
+## The Results
+
+### Django (Python)
+
+| Model | Params | Vendor | ρ (zero-shot) |
+|---|---|---|---|
+| Qwen3-4B | 4B | Alibaba | **+0.144** |
+| Qwen2.5-Coder-7B | 7B | Alibaba | +0.116 |
+| Llama 3.2 3B | 3B | Meta | +0.072 |
+| Phi-4-mini | 3.8B | Microsoft | +0.040 |
+| Llama 3.1 8B | 8B | Meta | −0.090 |
+| **Activity baseline** | — | — | **+0.193** |
+
+### Hono (TypeScript)
+
+| Model | Params | Vendor | ρ (zero-shot) |
+|---|---|---|---|
+| Qwen2.5-Coder-7B | 7B | Alibaba | **+0.433** |
+| Llama 3.1 8B | 8B | Meta | +0.430 |
+| Phi-4-mini | 3.8B | Microsoft | +0.273 |
+| Qwen3-4B | 4B | Alibaba | +0.139 |
+| Llama 3.2 3B | 3B | Meta | NaN* |
+| **Activity baseline** | — | — | **+0.203** |
+
+*Llama 3.2 3B output a constant score for all 59 TypeScript functions — rank correlation is undefined.*
+
+---
+
+## Three Things the Data Shows
+
+**Smaller can beat larger — within the same family.** Qwen3-4B scores +0.144 on Python, beating Qwen2.5-Coder-7B (+0.116). A 4B general-purpose model from the current Qwen generation outperforms a 7B code-specialized model from the previous one. Generation matters more than parameter count here.
+
+**The language flips the rankings.** Qwen leads on Python. On TypeScript, Phi-4-mini (+0.273) jumps to the top of the 4B tier while Qwen3-4B drops to the bottom (+0.139). The model that is best for one language is not best for the other. If your codebase is polyglot, you cannot pick a single winner based on language-specific benchmarks alone.
+
+**One generation changes everything for Phi.** Phi-3.5-mini scores +0.021 on Python and +0.083 on TypeScript. Phi-4-mini — same 3.8B parameter count, one generation later — scores +0.040 and +0.273. The TypeScript gap of +0.190 is the largest single-generation improvement I observed across any vendor and size class in this benchmark. Most of the "Microsoft is behind" conclusion from the earlier comparison was a stale-model artifact.
+
+---
+
+## What The Activity Baseline Still Beats
+
+No zero-shot model exceeds ρ=+0.193 on Django. The deterministic baseline — no model, just activity-weighted complexity — is still ahead of every LLM on Python zero-shot. This is a consistent pattern across my Python experiments: a formula based on commit frequency and recency is harder to beat than it appears. Fine-tuning changes this substantially, but that is a different question than which base model to start with.
+
+---
+
+## The Failure Mode You Should Know About
+
+Llama 3.2 3B collapsed on TypeScript. It output an identical score for every one of the 59 Hono functions — rank correlation is undefined. The same model scored positively on Django (+0.072). The failure is specific to short TypeScript functions: on longer Python code the model varies its scores; on Hono's compact handler functions it defaults to a constant. This is not a marginal underperformance — it is a hard failure mode to debug if you don't look at score variance before reporting ρ.
+
+Phi-4-mini has a different operational quirk. It generates reasoning text before the score ("I would rate this as a 5 out of 9…") rather than a bare digit. With a short generation budget the score gets cut off. I caught this and re-ran with a larger token budget, but it means Phi-4-mini requires different inference settings than the other models.
+
+---
+
+## The Practical Takeaway
+
+If you are picking one model for a Python-heavy codebase: **Qwen3-4B**. Best zero-shot signal in the 4B tier on Python, faster inference than Phi-4-mini, zero parse failures with default settings.
+
+If your codebase is primarily TypeScript: **Phi-4-mini** leads the 4B tier, but budget for 48–64 token outputs rather than the 16-token default. For the 7–8B tier, Qwen2.5-Coder-7B and Llama 3.1-8B are statistically identical on TypeScript.
+
+The broader point is about how quickly vendor rankings move. A benchmark from six months ago that concluded "Microsoft is behind" may be measuring the previous release. The right comparison is same-generation, same-size-class — and even then, the answer depends on the language your code is written in.
+
+---
+
+## Caveats
+
+Two repositories is a small sample. Django and Hono are one Python project and one TypeScript project respectively. The Python/TypeScript ranking reversal is a real experimental result, but it may not generalize across all Python and TypeScript projects — the benchmark would need to be validated on a broader set before drawing language-level conclusions.
+
+All models were run at 4-bit quantization on Apple Silicon via MLX. Results may differ under different quantization schemes or hardware.
+
+---
+
+*Models in tables: Qwen2.5-Coder-7B-Instruct (Alibaba), Qwen3-4B (Alibaba), Llama 3.1-8B-Instruct (Meta), Llama 3.2-3B-Instruct (Meta), Phi-4-mini-Instruct (Microsoft). Prior-generation reference: Phi-3.5-mini-Instruct (Microsoft). All 4-bit quantized MLX variants.*
