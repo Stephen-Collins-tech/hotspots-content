@@ -5,7 +5,7 @@ description: "Hotspots analysis of redis/redis at commit 4625b89 finds five crit
 introContent: "The riskiest function in redis/redis hasn't been touched in 51 days, but when it is next changed, whoever opens it will face a nesting depth of 13 and a long if-else chain dispatching across more than a dozen distinct server events. That structural weight is sitting silently in five critical-band functions spread across the module system, client lifecycle, cluster slot migration, and blocked-client machinery — none of them are burning right now, but all of them are overdue for refactoring before the next development push."
 pubDate: 2026-06-07
 tags: ["oss", "c", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "redis/redis"
 commit: "4625b8942a82c4737fc14cbf17c221ea1c3fcdb5"
 language: "c"
@@ -27,10 +27,10 @@ qaSection:
   - question: "How do I reproduce this analysis?"
     answer: "Clone the redis/redis repository and check out commit `4625b89` with `git checkout 4625b89`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root using the Hotspots CLI, available at https://github.com/hotspots-dev/hotspots. The same command works on any local git repository without additional configuration — no project-specific setup is required to get the quadrant breakdown and top hotspot rankings shown here."
   - question: "What does activity-weighted risk mean?"
-    answer: "Activity-weighted risk combines a structural complexity score — derived from cyclomatic complexity, maximum nesting depth, and fan-out — with a signal derived from how frequently the function has been touched in recent commits. A function that is structurally complex but has not been changed in months scores lower than one that is moderately complex and being edited every few days, because the actively-changing function poses a live regression risk right now rather than a theoretical future one. In the redis analysis, all five top functions have zero touches in the last 30 days and 51 days since last modification, which is why their activity_risk scores are high but not as high as they would be if they were also under active development — the structural weight is real, but the near-term regression risk is lower than it would be for a fire-quadrant function of equivalent complexity."
+    answer: "Activity-weighted risk combines a structural complexity score — derived from cyclomatic complexity, maximum nesting depth, and fan-out — with a signal derived from how frequently the function has been touched in recent commits. A function that is structurally complex but has not been changed in months scores lower than one that is moderately complex and being edited every few days, because the actively-changing function poses a live regression risk right now rather than a theoretical future one. In the redis analysis, all five top functions have zero touches in the last 30 days and 51 days since last modification, which is why their activity-weighted risk scores are high but not as high as they would be if they were also under active development — the structural weight is real, but the near-term regression risk is lower than it would be for a fire-quadrant function of equivalent complexity."
 ---
 
-Every top-ranked function in this redis/redis analysis sits in the debt quadrant — structurally complex, untouched for at least 51 days, and waiting for the next developer who has to change them. Across 6,328 functions analyzed at commit 4625b89, 1,152 are rated critical and 2,529 fall into the debt quadrant, meaning high complexity with low recent activity. I would start with `moduleFireServerEvent` in `src/module.c`, which carries an activity_risk of 38.59 and a maximum nesting depth of 13 — in C, that level of nesting compounds pointer-chasing and preprocessor interactions in ways that cyclomatic complexity alone understates.
+Every top-ranked function in this redis/redis analysis sits in the debt quadrant — structurally complex, untouched for at least 51 days, and waiting for the next developer who has to change them. Across 6,328 functions analyzed at commit 4625b89, 1,152 are rated critical and 2,529 fall into the debt quadrant, meaning high complexity with low recent activity. I would start with `moduleFireServerEvent` in `src/module.c`, which carries a risk score of 38.59 and a maximum nesting depth of 13 — in C, that level of nesting compounds pointer-chasing and preprocessor interactions in ways that cyclomatic complexity alone understates.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -58,18 +58,6 @@ The pattern distribution is consistent with large infrastructure C code: cyclic 
 
 ---
 
-## Top 5 hotspots
-
-| Rank | Function | File | Risk | Band | Quadrant |
-|------|----------|------|------|------|----------|
-| 1 | `moduleFireServerEvent` | src/module.c | 38.59 | critical | debt |
-| 2 | `freeClient` | src/networking.c | 35.78 | critical | debt |
-| 3 | `clusterAsmOnEvent` | src/cluster_legacy.c | 34.55 | critical | debt |
-| 4 | `clusterAsmProcess` | src/cluster_asm.c | 33.66 | critical | debt |
-| 5 | `unblockClient` | src/blocked.c | 33.38 | critical | debt |
-
----
-
 ### `moduleFireServerEvent` — module.c
 
 <FunctionCard fn='moduleFireServerEvent' file='src/module.c' risk='38.59' band='critical' cc='21' nd='13' fo='12' touches='0' />
@@ -78,7 +66,7 @@ This function is the server-to-module event bus. It iterates the global `RedisMo
 
 A cyclomatic complexity of 21 across that chain means 21 independent paths, each a required test case. The nesting depth of 13 is the number that stops me: in C, tracking which stack-allocated structs are valid, which client pointer is live, and which cleanup calls are required at a nesting depth of 13 demands that you hold the entire call frame in your head simultaneously. The `in_hook` counter incrementing around the callback and the conditional `moduleCloseKey` at the tail are exactly the kind of invariants that break silently when a new event type is added without a matching cleanup path.
 
-This function has not been touched in 51 days (touches_30d: 0). The file carries a `bug_fix_fraction` of 0.38 across 13 historical commits, and 11 distinct authors have touched it in the last 90 days — broad ownership spread that increases the chance of uncoordinated future edits. It is flagged as both a god function and a cyclic hub, meaning it both concentrates responsibility and sits at the center of a coupling web.
+This function has not been touched in 51 days. The file has a bug-fix commit ratio of 38% across 13 historical commits, and 11 distinct authors have touched it in the last 90 days — broad ownership spread that increases the chance of uncoordinated future edits. It is flagged as both a god function and a cyclic hub, meaning it both concentrates responsibility and sits at the center of a coupling web.
 
 **Recommendation:** Extract each event-type branch into a dedicated `populateModuleData_<EventName>` helper that fills the typed struct and returns it. That collapses the if-else chain to a single dispatch table or switch and reduces the nesting depth to something manageable. The `moduleCloseKey` cleanup path should become explicit in whatever replaces the branch, not a tail condition on the outer loop.
 
@@ -92,9 +80,9 @@ This function tears down a client connection. The source excerpt shows it doing 
 
 A cyclomatic complexity of 36 tells me there are 36 independent execution paths through this teardown sequence. The fan-out of 40 is the more alarming number: 40 distinct functions called from a single routine means a change here can produce unexpected ripple effects across the I/O threading layer, the module system, the replication layer, and the blocked-client subsystem simultaneously. It is classified as both a god function and a hub function, which is consistent with what the code shows — this is where everything about a client's lifetime converges.
 
-The nesting depth of 3 is actually the one reassuring metric here; the complexity comes from sequential branching rather than deeply nested conditionals, which means the individual branches are at least readable in isolation. What makes refactoring difficult is the ordering dependency: freeing happens in a specific sequence because later steps depend on state set by earlier ones (e.g., `replicationCacheMaster` must be called before query buffer cleanup). The `bug_fix_fraction` of 0.57 across 7 historical commits — more than half of all commits to this file tagged as fixes — is worth noting as historical context when prioritizing review.
+The nesting depth of 3 is actually the one reassuring metric here; the complexity comes from sequential branching rather than deeply nested conditionals, which means the individual branches are at least readable in isolation. What makes refactoring difficult is the ordering dependency: freeing happens in a specific sequence because later steps depend on state set by earlier ones (e.g., `replicationCacheMaster` must be called before query buffer cleanup). A bug-fix commit ratio of 57% across 7 historical commits — more than half of all commits to this file tagged as fixes — is worth noting as historical context when prioritizing review.
 
-This function has not been touched in 51 days (touches_30d: 0).
+This function has not been touched in 51 days.
 
 **Recommendation:** This function is a strong candidate for extract-method decomposition along its natural phases: IO-thread migration, module notification, replication state caching, and resource deallocation. Each phase can become a named helper. The goal is not to eliminate the sequencing constraint but to make the sequencing explicit and auditable rather than buried in a 36-path monolith.
 
@@ -106,9 +94,9 @@ This function has not been touched in 51 days (touches_30d: 0).
 
 This function handles autonomous slot migration (ASM) events in the legacy cluster implementation. The source shows a switch on the incoming `event` integer, dispatching across `ASM_EVENT_TAKEOVER`, `ASM_EVENT_MIGRATE_FAILED`, `ASM_EVENT_HANDOFF_PREP`, and `ASM_EVENT_MIGRATE_COMPLETED`. The takeover case does the most work: it iterates slot ranges, calls `clusterDelSlot` and `clusterAddSlot` per slot, bumps the config epoch, saves the config, schedules a PONG broadcast, and then drives the state machine forward by calling `clusterAsmProcess` with `ASM_EVENT_DONE`.
 
-It is flagged as `exit_heavy`, which in the context of a cluster state transition function means there are multiple return paths that must each leave shared cluster state consistent. A cyclomatic complexity of 13 is moderate, but in cluster coordination code, each branch represents a distinct distributed system transition — the correctness surface is larger than the CC alone suggests. The `bug_fix_fraction` of 0.67 across 3 commits is high, though with only 3 total commits, the absolute count is small; I would treat it as a signal to read carefully rather than a conclusion.
+It is flagged as `exit_heavy`, which in the context of a cluster state transition function means there are multiple return paths that must each leave shared cluster state consistent. A cyclomatic complexity of 13 is moderate, but in cluster coordination code, each branch represents a distinct distributed system transition — the correctness surface is larger than the CC alone suggests. A bug-fix commit ratio of 67% across 3 commits is high, though with only 3 total commits, the absolute count is small; I would treat it as a signal to read carefully rather than a conclusion.
 
-This function has not been touched in 51 days (touches_30d: 0). Its coupling to `clusterAsmProcess` (described next) means these two functions need to be understood together — a change in one almost certainly requires verifying the other.
+This function has not been touched in 51 days. Its coupling to `clusterAsmProcess` (described next) means these two functions need to be understood together — a change in one almost certainly requires verifying the other.
 
 **Recommendation:** Document the expected pre- and post-conditions for each event case explicitly in the function, particularly around which cluster state invariants must hold before `clusterBumpConfigEpochWithoutConsensus` is called. That documentation alone reduces the cognitive load for the next developer and surfaces any implicit ordering assumptions before they become bugs.
 
@@ -122,7 +110,7 @@ Where `clusterAsmOnEvent` handles inbound cluster events, `clusterAsmProcess` is
 
 With a nesting depth of 2, this function is the flattest in the top five — the complexity comes from the number of state transitions (CC 15) and the error-string propagation pattern, where a static 256-byte buffer is used to copy `errsds` into the caller's `err` pointer. The static buffer means this function is not re-entrant. It is flagged as `exit_heavy`, and the error path where `errsds` is populated but `err` is NULL silently discards the error string — that is a test-coverage gap worth validating.
 
-The `bug_fix_fraction` of 0.60 across 5 historical commits is the second-highest in this group. All five top functions have gone 51 days without a touch (touches_30d: 0 for each).
+A bug-fix commit ratio of 60% across 5 historical commits is the second-highest in this group. All five top functions have gone 51 days without a touch.
 
 **Recommendation:** Replace the static `buf[256]` error-propagation pattern with a dynamically allocated or caller-provided buffer, or adopt the `errsds` SDS string directly as the error output. The current design is a re-entrancy hazard and silently truncates error messages longer than 255 characters.
 
@@ -136,9 +124,9 @@ This function dispatches cleanup based on the reason a client was blocked (`bsta
 
 The nesting depth of 6 is significant here. The MODULE case is the deepest: it checks `moduleClientIsBlockedOnKeys` before calling `unblockClientWaitingData`, then always calls `unblockClientFromModule` — a two-step cleanup with an embedded conditional. In C, a nesting depth of 6 means the reader must track multiple flag states and pointer validity across several levels of control flow simultaneously. The `serverPanic` in the default branch is good defensive practice, but it also means a missing case causes a crash rather than a graceful error — new block types added to the enum must be handled here or the server will abort.
 
-The `bug_fix_fraction` of 1.0 is striking: both historical commits to this file were tagged as bug fixes. With only 2 total commits that is a thin sample, but it aligns with what the structure suggests — this function is difficult to extend correctly. It has had a single author in the last 90 days, which means tribal knowledge about the blocking subsystem is concentrated.
+A bug-fix commit ratio of 100% is striking: both historical commits to this file were tagged as bug fixes. With only 2 total commits that is a thin sample, but it aligns with what the structure suggests — this function is difficult to extend correctly. It has had a single author in the last 90 days, which means tribal knowledge about the blocking subsystem is concentrated.
 
-This function has not been touched in 51 days (touches_30d: 0).
+This function has not been touched in 51 days.
 
 **Recommendation:** Add a compile-time assertion or a static analysis annotation that enumerates all valid `BLOCKED_*` types, so a new block type added to the enum forces a corresponding case here rather than silently falling through to `serverPanic` at runtime. Separately, the MODULE case should be extracted into a named helper to make its two-phase cleanup explicit.
 
@@ -146,7 +134,7 @@ This function has not been touched in 51 days (touches_30d: 0).
 
 ## Broader context
 
-Two functions in the context data are worth a brief mention. `rdbLoadObject` in `src/rdb.c` appears in the context set with a cyclomatic complexity of 304, a nesting depth of 19, and a fan-out of 118 — it has been touched 6 times in the last 30 days and was last changed 2 days ago, placing it firmly in the fire quadrant. It did not place in the top five because its activity_risk of 21.68 reflects the formula's balance between structural complexity and recent frequency. But 304 independent paths through a single RDB deserialization function that is actively changing represents live regression risk, and I would flag it separately for any team working on persistence. Three functions in `src/networking.c` — `closeClientOnOutputBufferLimitReached`, `_addReplyPayloadToList`, and `_addBulkStrRefToBufferOrList` — also sit in the fire quadrant; `_addBulkStrRefToBufferOrList` was touched 1 time in the last 30 days and last changed 7 days ago, confirming that the networking layer is seeing active iteration alongside its structural debt.
+Two functions in the context data are worth a brief mention. `rdbLoadObject` in `src/rdb.c` appears in the context set with a cyclomatic complexity of 304, a nesting depth of 19, and a fan-out of 118 — it has been touched 6 times in the last 30 days and was last changed 2 days ago, placing it firmly in the fire quadrant. It did not place in the top five because its activity-weighted risk score of 21.68 reflects the formula's balance between structural complexity and recent frequency. But 304 independent paths through a single RDB deserialization function that is actively changing represents live regression risk, and I would flag it separately for any team working on persistence. Three functions in `src/networking.c` — `closeClientOnOutputBufferLimitReached`, `_addReplyPayloadToList`, and `_addBulkStrRefToBufferOrList` — also sit in the fire quadrant; `_addBulkStrRefToBufferOrList` was touched 1 time in the last 30 days and last changed 7 days ago, confirming that the networking layer is seeing active iteration alongside its structural debt.
 
 ## Patterns Found
 
