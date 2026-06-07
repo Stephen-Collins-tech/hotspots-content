@@ -1,0 +1,157 @@
+---
+title: "upscayl's electron commands carry the highest structural debt — 5 functions to address first"
+titleSeo: "upscayl technical debt: electron command handlers lead refactoring priority in 2026"
+description: "Analysis of upscayl/upscayl at a00d55f finds all 12 debt-quadrant functions untouched for months, with the riskiest handler last modified 391 days ago and zero commits in the past 30 days across every top hotspot."
+introContent: "Every one of upscayl's top-ranked functions sits in the debt quadrant — structurally complex code that nobody has touched in months, some for over a year. The question isn't whether these functions are changing right now; it's what happens to the next developer who has to change them cold."
+pubDate: 2026-06-07
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "upscayl/upscayl"
+commit: "a00d55fee90e0f9435d5eaa86e76700df8199af8"
+language: "typescript"
+hotspots_version: "1.23.2"
+analyzed_at: "2026-06-07T07:08:11Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 9.94
+topFunction: "<anonymous>"
+topFile: "electron/commands/custom-models-select.ts"
+topPatterns: ["god_function", "long_function", "complex_branching"]
+patternCounts: {god_function: 1, long_function: 1, complex_branching: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in upscayl?"
+    answer: "A god function is one that directly calls or references so many other functions that it effectively owns too much of the system's behavior — fan-out is the count of distinct functions a given function calls, and a fan-out of 15 or more is a strong signal that a function has accumulated too many responsibilities. In upscayl, `SettingsTab` has a fan-out of 27, meaning it is directly coupled to 27 other functions and hooks. That coupling has two concrete consequences: first, a change anywhere in those 27 dependencies may require reasoning through `SettingsTab` in full to understand the impact; second, the function is effectively untestable in isolation, because any unit test must either stub all 27 dependencies or exercise them all together. The `god_function` pattern also tends to attract more responsibilities over time — it becomes the default destination for new settings — which compounds the fan-out further."
+  - question: "How do I reduce fan-out in TypeScript?"
+    answer: "The primary technique is extract-method combined with grouping related calls behind a custom hook or service module — instead of one component calling 27 functions directly, you create three or four intermediate abstractions that each own a coherent slice of behavior. A fan-out above 15 is a reasonable trigger for decomposition; above 25, as in `SettingsTab`, it warrants attention before the next feature lands on top of it. A concrete first step for `SettingsTab` is to move `sendToTermbin` and its associated clipboard state into a custom `useLogExport` hook — that single extraction removes at least four call sites from the component's direct fan-out and makes the log-export behavior independently testable. Repeat that pattern for the scrollbar timeout pair and the GPU ID localStorage handler, and the component's fan-out can be halved in an afternoon."
+  - question: "Is upscayl actively maintained?"
+    answer: "The commit data tells a nuanced story: none of the five highest-risk functions have been touched in the past 30 days, and the most dormant ones — `customModelsSelect`, `selectFolder`, `initialize_weights`, and `generateSchema` — have each gone 391 days without a modification. `SettingsTab` is slightly more recent at 292 days since last change, and its file has three commits on record. Zero functions in the entire repository fall into the fire or watch quadrants, which means there is no evidence of active churn in the structurally complex parts of the codebase at this snapshot. That does not mean the project is abandoned — it may mean the application has reached a stable feature state — but it does mean the structural debt in the Electron command layer and the settings UI has been accumulating without recent attention, and whoever next changes those areas will be working without recent institutional context."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run against upscayl/upscayl at commit `a00d55f`. To reproduce it, install the Hotspots CLI from https://github.com/hotspots-dev/hotspots, then run `git checkout a00d55f` in your local clone of the repository and execute `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without additional configuration and will produce a ranked hotspot list using the same activity-weighted scoring shown here."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with recent commit frequency, so that functions which are both hard to understand and actively changing score the highest. A function with cyclomatic complexity of 80 that has not been touched in two years scores lower than a CC-20 function touched every week, because the dormant function poses lower near-term regression risk even though it looks more complex in isolation. In upscayl's case, all top-ranked functions are in the debt quadrant with zero recent commits, so their scores reflect structural complexity weighted against inactivity — the risk is not that someone is breaking them right now, but that the next change to them will be made without recent context and against a complex, undertested surface."
+---
+
+upscayl has 12 functions in the debt quadrant and zero in the fire quadrant — no active churn, just structural complexity accumulating in silence. The top-ranked function, an anonymous IPC handler in `electron/commands/custom-models-select.ts`, has not been modified in 391 days. Across 140 functions analyzed, every one of the top five sits in the same position: complex enough to be risky, dormant long enough that the institutional context for changing them safely has likely faded. I would start with `customModelsSelect` and `SettingsTab` because they sit at the boundary between the Electron main process and the renderer — exactly where state mismatches and platform-specific edge cases tend to bite when someone changes them cold.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `<anonymous>` | electron/commands/custom-models-select.ts | 9.9 | 10 | 2 | 10 |
+| `SettingsTab` | renderer/components/sidebar/settings-tab/index.tsx | 9.6 | 7 | 2 | 27 |
+| `initialize_weights` | scripts/test.py | 9.1 | 19 | 4 | 5 |
+| `<anonymous>` | electron/commands/select-folder.ts | 8.6 | 13 | 2 | 7 |
+| `generateSchema` | scripts/generate-schema.js | 8.6 | 10 | 2 | 4 |
+
+## Large Repo Analysis
+
+upscayl is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Codemod / Tooling Files in Results
+
+The function `initialize_weights` in `scripts/test.py` is a Python script that appears to be a local development artifact — the source excerpt contains a hardcoded absolute Windows path (`C:\Users\ghosh\OneDrive\...`) and a direct `model = prepare_AI_model(...)` call at module level, both hallmarks of a personal dev script committed to the repository. Similarly, `generateSchema` in `scripts/generate-schema.js` is a build-time utility script, not application code. If you want to exclude the `scripts/` directory from future Hotspots runs to focus on shipped application code, add the following to `.hotspotsrc.json`: `{ "exclude": ["scripts/"] }`. That will keep the hotspot list focused on the Electron main process and the React renderer.
+
+## Quadrant and Pattern Overview
+
+<BandChart fire='0' debt='12' watch='0' ok='128' caption='All structural risk is in the debt quadrant — no functions are actively changing right now.' />
+
+<PatternCloud patterns='god_function:1,long_function:1,complex_branching:1' />
+
+Three of the top five are debt-quadrant entries; `selectFolder` and `generateSchema` fall into the high band. All five share the same profile: high structural complexity, zero recent commit activity, and no recorded author commits in the past 90 days. That combination is a specific kind of risk — not a fire drill, but a trap that springs the moment someone has to make a change. The structural weight is already loaded; the blast radius is just waiting for a trigger.
+
+---
+
+### `<anonymous>` — `electron/commands/custom-models-select.ts`
+
+<FunctionCard fn='customModelsSelect' file='electron/commands/custom-models-select.ts' risk='9.94' band='debt' cc='10' nd='2' fo='10' touches='0' />
+
+This is the top-ranked function in the repository, and it has not been touched in 391 days. The handler — exported as `customModelsSelect` — manages the full lifecycle of a user picking a custom AI models folder: it opens an OS dialog, handles macOS App Store security-scoped bookmarks, validates that the selected path ends in a directory literally named `models`, loads model files, and pushes the result back to the renderer via an IPC command. That is a lot of distinct responsibilities in one async arrow function.
+
+The cyclomatic complexity of 10 sits right at the moderate threshold, but the fan-out of 10 tells the more interesting story. The function calls into `getMainWindow`, `dialog.showOpenDialog`, `settings.set`, `setSavedCustomModelsPath`, `getModels`, `mainWindow.webContents.send`, `logit`, `dialog.showMessageBoxSync`, and branches on `FEATURE_FLAGS.APP_STORE_BUILD`. Each of those call sites is a coupling point: a change to any of them — a new dialog API shape, a refactored `getModels` signature, a new feature flag — requires reasoning about this function in full. With no author activity in the past 90 days and only one commit in the file's history, there is no recent institutional memory attached to it.
+
+The path-end validation (`folderPaths[0].endsWith(slash + "models")`) is the kind of logic that looks simple until someone asks about Windows UNC paths, symlinks, or a trailing slash edge case on a platform the original author didn't test. TypeScript's async/await chains also add implicit control flow that the cyclomatic complexity score doesn't fully capture — the `await dialog.showOpenDialog` call can resolve in multiple ways depending on platform and App Store entitlements.
+
+**Recommendation:** Extract the bookmark-handling logic and the folder-validation logic into named, testable functions. The core IPC handler should do nothing but orchestrate those calls. That decomposition brings each piece below CC 5, makes the platform-specific branching explicit, and means a future developer touching the App Store bookmark path doesn't have to hold the entire dialog lifecycle in their head at once.
+
+---
+
+### `SettingsTab` — `renderer/components/sidebar/settings-tab/index.tsx`
+
+<FunctionCard fn='SettingsTab' file='renderer/components/sidebar/settings-tab/index.tsx' risk='9.58' band='debt' cc='7' nd='2' fo='27' touches='0' />
+
+The cyclomatic complexity here is 7 — moderate on its own — but the fan-out of 27 is what flags this as critical-band and earns it the `god_function` and `long_function` patterns. A fan-out of 27 means this single React component directly calls or references 27 distinct functions and hooks. Looking at the excerpt: it manages Jotai atoms for custom models path and scale, local state for clipboard copy, scrollbar enable/disable with a timeout, translation atoms, GPU ID persistence via `localStorage`, log copying, a live network fetch to termbin, and a version string parsed from the user agent — all before the JSX return.
+
+That breadth is the definition of a god function: it knows too much about too many things. A change to the GPU ID storage strategy, the log upload endpoint, the scrollbar timeout behavior, or the compression format list all flow through this one component. The file has three commits on record, and one-third of them are tagged as bug fixes — not proof of a defect in the current code, but a historical signal that this file has needed corrective work before.
+
+The component hasn't been touched in 292 days. When it next gets touched — to add a new setting, to swap the termbin endpoint, or to wire up a new Jotai atom — the developer will need to untangle all 27 call sites to understand what is safe to change.
+
+**Recommendation:** Apply extract-method refactoring aggressively. `sendToTermbin` is already a named inner function and is the clearest candidate to pull into its own module. The scrollbar enable/disable pair with its timeout logic is another self-contained unit. The GPU ID handler that writes to `localStorage` should live in a dedicated hook alongside the Jotai atom it complements. Each extraction reduces the fan-out of `SettingsTab` and makes the remaining surface independently testable.
+
+---
+
+### `initialize_weights` — `scripts/test.py`
+
+<FunctionCard fn='initialize_weights' file='scripts/test.py' risk='9.07' band='debt' cc='19' nd='4' fo='5' touches='0' />
+
+This is the only Python function in the top five, and it sits in a script that appears to be a standalone model-testing utility bundled with the repository. The function iterates over the modules of one or more neural networks and applies layer-type-specific weight initialization — Kaiming normal for Conv2d and Linear layers, constant initialization for BatchNorm2d — with conditional bias zeroing at each branch.
+
+The cyclomatic complexity of 19 reflects the `complex_branching` pattern: nested `isinstance` checks inside a double loop (over networks, then over their modules), each with further conditional branches for bias existence. The max nesting depth of 4 confirms that the control structure is genuinely deep — four levels of nested conditionals or loops is the point at which most engineers can no longer hold the full state space in working memory while reading.
+
+This file has a single commit in its history, zero bug-linked commits, and has been untouched for 391 days — the same age as `custom-models-select.ts`. The hardcoded absolute path visible in `prepare_AI_model` (a neighboring function in the same excerpt) is a strong signal that `scripts/test.py` is a local development artifact that was committed without sanitization. Its structural risk score is real, but its blast radius on the shipped product is low given its location in `scripts/`.
+
+**Recommendation:** If this script is genuinely needed for model validation, the `initialize_weights` function should be decomposed by layer type — one function per `isinstance` branch — which brings each piece to CC ≤ 5 and makes the initialization strategy for each layer type independently readable and testable. If the script is a leftover development artifact, the lower-friction option is to remove it or move it behind a clear `scripts/dev/` boundary and exclude it from future analysis runs.
+
+---
+
+### `<anonymous>` — `electron/commands/select-folder.ts`
+
+<FunctionCard fn='selectFolder' file='electron/commands/select-folder.ts' risk='8.61' band='high' cc='13' nd='2' fo='7' touches='0' />
+
+Exported as `selectFolder`, this handler is structurally similar to `customModelsSelect` — it's an async IPC handler that opens an OS folder picker and manages macOS App Store security-scoped bookmarks — but its cyclomatic complexity of 13 is higher, reflecting more branching around the bookmark lifecycle. The excerpt shows a `try/catch` around `app.startAccessingSecurityScopedResource`, conditional bookmark persistence, a cancellation path, and a success path that sets the batch upscale folder path.
+
+The fan-out of 7 is lower than `customModelsSelect`, but the CC of 13 means there are 13 independent execution paths through this function. Each path is a required test case, and right now there are zero commits in the past 30 days, one commit in total history, and no author activity in 90 days — suggesting test coverage for the platform-specific paths is unlikely to be comprehensive.
+
+The structural similarity between this function and `customModelsSelect` is itself a signal: both handlers share the same bookmark-management ceremony, the same dialog invocation pattern, and the same canceled/success branching. That duplicated logic means a future change to the App Store bookmark strategy requires coordinated edits in at least two files.
+
+**Recommendation:** Extract the security-scoped bookmark acquisition pattern into a shared utility — something like `acquireSecurityScopedAccess(bookmarkKey)` — and call it from both handlers. That single extraction eliminates the duplication and reduces the CC of both functions by removing the bookmark-conditional branches.
+
+---
+
+### `generateSchema` — `scripts/generate-schema.js`
+
+<FunctionCard fn='generateSchema' file='scripts/generate-schema.js' risk='8.55' band='high' cc='10' nd='2' fo='4' touches='0' />
+
+`generateSchema` is a recursive JSON-to-JSON-Schema converter. The source excerpt shows a `switch` on the detected type (`object`, `array`, primitive) with nested loops for object property traversal and a comment acknowledging that it assumes array homogeneity. The cyclomatic complexity of 10 comes from the type-dispatch switch plus the conditional branches for empty arrays, non-empty `required` lists, and the null check at entry.
+
+The fan-out of 4 is the lowest in the top five, and the nesting depth of 2 is shallow. The function's risk score is driven primarily by its CC relative to its size. The file has one commit and has not been touched in 391 days. Unlike `initialize_weights`, this script has a clear utility role — generating schemas from settings objects — so it is more likely to be touched if the settings structure evolves.
+
+The assumption that all array items share the type of the first element is a silent correctness constraint that will produce incorrect schemas for heterogeneous arrays. That kind of implicit assumption is harder to catch in a JavaScript file than it would be in TypeScript, where the type system would surface it.
+
+**Recommendation:** If `generate-schema.js` feeds any runtime validation or configuration tooling, migrating it to TypeScript and adding explicit handling for heterogeneous arrays would both catch the implicit assumption at compile time and make the branching logic more legible. At minimum, a comment or an assertion at the array branch would document the constraint so the next developer doesn't inherit a silent footgun.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 1 |
+| `long_function` | 1 |
+| `complex_branching` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/upscayl/upscayl
+cd upscayl
+git checkout a00d55fee90e0f9435d5eaa86e76700df8199af8
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
