@@ -5,7 +5,7 @@ description: "Five god-functions in worldmonitor's notification scripts and API 
 introContent: "Five functions across worldmonitor's notification relay, digest pipeline, and channel API are simultaneously among the most structurally complex in the codebase and still receiving commits this week. If you are shipping changes to any of these paths right now, you are doing it inside code that cyclomatic complexity analysis flags as extreme — and the live commit signal makes that a regression risk today, not a backlog item."
 pubDate: 2026-06-08
 tags: ["oss", "typescript", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "koala73/worldmonitor"
 commit: "b765b8bc545bdc3d398ac474fae4919a35644afc"
 language: "typescript"
@@ -28,10 +28,10 @@ qaSection:
   - question: "How do I reproduce this analysis?"
     answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. To reproduce this exact analysis, check out the repository at commit b765b8b with `git checkout b765b8b`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without additional configuration — no `.hotspotsrc.json` is required to get started."
   - question: "What does activity-weighted risk mean?"
-    answer: "Activity-weighted risk multiplies a function's structural complexity — derived from its cyclomatic complexity, maximum nesting depth, and fan-out — by a signal from recent commit frequency. The result is that a function with extreme structural complexity but no recent changes scores lower than a moderately complex function that is being actively modified, because the near-term regression probability is lower when no one is editing the code. For example, `main` in `scripts/seed-digest-notifications.mjs` has a cyclomatic complexity of 103 and was touched twice in the last 30 days, producing an activity_risk of 21.2 — the highest in the repository. That score means the structural risk is being realized right now, not just sitting as a cleanup backlog item. This prioritization helps focus refactoring effort where it reduces the probability of shipping a bug today."
+    answer: "Activity-weighted risk multiplies a function's structural complexity — derived from its cyclomatic complexity, maximum nesting depth, and fan-out — by a signal from recent commit frequency. The result is that a function with extreme structural complexity but no recent changes scores lower than a moderately complex function that is being actively modified, because the near-term regression probability is lower when no one is editing the code. For example, `main` in `scripts/seed-digest-notifications.mjs` has a cyclomatic complexity of 103 and was touched twice in the last 30 days, producing an activity-weighted risk score of 21.2 — the highest in the repository. That score means the structural risk is being realized right now, not just sitting as a cleanup backlog item. This prioritization helps focus refactoring effort where it reduces the probability of shipping a bug today."
 ---
 
-At commit b765b8b, worldmonitor has 13,005 analyzed functions — 1,613 of them in the critical band. Every one of the top five hotspots sits in the fire quadrant: all are both structurally complex and actively changing right now. The highest-scoring function, `main` in `scripts/seed-digest-notifications.mjs`, carries an activity_risk of 21.2 with a cyclomatic complexity of 103 and nesting depth of 8, and it was touched twice in the last 30 days. I would start there because any engineer modifying that function today is navigating 103 independent execution paths with no structural guardrails.
+At commit b765b8b, worldmonitor has 13,005 analyzed functions — 1,613 of them in the critical band. Every one of the top five hotspots sits in the fire quadrant: all are both structurally complex and actively changing right now. The highest-scoring function, `main` in `scripts/seed-digest-notifications.mjs`, carries an activity-weighted risk score of 21.2 with a cyclomatic complexity of 103 and nesting depth of 8, and it was touched twice in the last 30 days. I would start there because any engineer modifying that function today is navigating 103 independent execution paths with no structural guardrails.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -73,7 +73,7 @@ This is the top-ranked function in the repository, and the numbers justify that 
 
 The source excerpt makes the scope tangible. The function fetches digest rules over HTTP with a timeout, filters them through an elaborate `DIGEST_ONLY_USER` environment variable mechanism — which itself has an expiry-parsing sub-protocol and multiple rejection modes — then fans out to per-user processing with counters and a deferred exit-code gate. The comment inside the code explicitly acknowledges that the complexity budget is under pressure: a sub-routine was extracted specifically to keep the linter score in bounds. That is a signal that the function has already hit a ceiling but has not been structurally decomposed.
 
-The file-level external signals show a `bug_fix_fraction` of 0.5 across its 2 total commits — half of the commits touching this file have been bug fixes. With 2 touches in the last 30 days and `days_since_changed` at 0, this function is being modified right now under those conditions.
+Half of the 2 commits touching this file have been bug fixes. With 2 touches in the last 30 days and no days since last change, this function is being modified right now under those conditions.
 
 My recommendation: extract the `DIGEST_ONLY_USER` parsing and validation into its own tested module (it already has a named helper `parseDigestOnlyUser`, which is a good start), and break the per-user fan-out loop into a separately callable function. Decomposing those two pieces alone would likely cut the CC substantially and make the remaining control flow in `main` legible.
 
@@ -88,9 +88,9 @@ This function is the event dispatch core of worldmonitor's notification relay. F
 <MetricBar label='Cyclomatic Complexity' value='65' threshold='30' max='70' />
 <MetricBar label='Max Nesting Depth' value='9' threshold='4' max='10' />
 
-The nesting depth of 9 is the deepest in the top five, and at that level the cognitive load of tracking which conditions are in scope at any given line is genuinely high. The quiet-hours branching alone introduces at least three outcomes (`suppress`, `hold`, normal delivery), each with its own early-return path. The file-level signals are the strongest in the dataset: `bug_fix_fraction` of 1.0 and `bug_linked_commit_count` of 1 across a total of 1 commit means every commit on this file in the measured window was a bug fix. That is not a proof of current defects, but it is context worth taking seriously when the function is also sitting at CC 65 with a nesting depth of 9.
+The nesting depth of 9 is the deepest in the top five, and at that level the cognitive load of tracking which conditions are in scope at any given line is genuinely high. The quiet-hours branching alone introduces at least three outcomes (`suppress`, `hold`, normal delivery), each with its own early-return path. The file-level signals are the strongest in the dataset: every commit on this file in the measured window was a bug fix (1 of 1 commits). That is not a proof of current defects, but it is context worth taking seriously when the function is also sitting at CC 65 with a nesting depth of 9.
 
-With 1 touch in the last 30 days and `days_since_changed` at 0, this is active work. The most concrete first step is to extract the importance-score gate, the quiet-hours resolution, and the per-channel delivery block into separate, independently testable functions. The event-type dispatch at the top of the function (the early returns for `channel_welcome` and `flush_quiet_held`) already gestures toward a dispatch pattern — that could be formalized into a proper routing table to reduce the branching count.
+With 1 touch in the last 30 days and no days since last change, this is active work. The most concrete first step is to extract the importance-score gate, the quiet-hours resolution, and the per-channel delivery block into separate, independently testable functions. The event-type dispatch at the top of the function (the early returns for `channel_welcome` and `flush_quiet_held`) already gestures toward a dispatch pattern — that could be formalized into a proper routing table to reduce the branching count.
 
 ---
 
@@ -104,7 +104,7 @@ This is the Edge API handler for notification channel management. From the excer
 
 CC 86 in a TypeScript async handler is particularly concerning because TypeScript's type narrowing adds implicit control flow that cyclomatic complexity metrics do not fully capture. Every `if`/`else` branch that narrows a union type is an additional path that needs to be considered, even if it does not increment the counter. The fan-out of 28 includes calls to auth validation, entitlement lookup, CORS helpers, relay forwarding, and exception capture — meaning a change to any of those dependencies has a plausible path back through this handler.
 
-The single commit touching this file has a `bug_fix_fraction` of 1.0, which parallels the pattern in `processEvent`. The actionable recommendation here is to split the GET and POST branches into separate handler functions and move each POST action (e.g. `create-pairing-token`, `set-channel`) into its own handler that accepts a pre-validated request object. That reduces the CC of the top-level `handler` to the auth/routing skeleton, which is far easier to test and reason about.
+The single commit touching this file was a bug fix, which parallels the pattern in `processEvent`. The actionable recommendation here is to split the GET and POST branches into separate handler functions and move each POST action (e.g. `create-pairing-token`, `set-channel`) into its own handler that accepts a pre-validated request object. That reduces the CC of the top-level `handler` to the auth/routing skeleton, which is far easier to test and reason about.
 
 ---
 
@@ -118,7 +118,7 @@ This function handles incoming requests to an AI widget agent endpoint. Based on
 
 With 44 distinct callees, `handleWidgetAgentRequest` has the second-highest fan-out in the top five. A god function with this many dependencies is structurally fragile: adding a new tier, a new rate-limit bucket, or a new injection detection rule all require touching the same function body. The 3 touches in the last 30 days — the highest touch count in the top five — make this the most actively modified hotspot in the dataset right now.
 
-The `pr_review_comment_density` of 2.17 for this file is also the only non-zero review comment density across the top hotspots, suggesting reviewers have flagged concerns here before. Combined with a `bug_fix_fraction` of 0.67 across 3 commits, this function warrants extra scrutiny on any pending PR. The most impactful decomposition is to extract the auth-and-tier resolution into a dedicated function that returns a validated context object, so the streaming logic and model dispatch can operate on clean, pre-validated inputs rather than re-checking conditions inline.
+This file has the only non-zero review comment density across the top hotspots (2.17 comments per commit on average), suggesting reviewers have flagged concerns here before. Combined with 2 of 3 commits being bug fixes, this function warrants extra scrutiny on any pending PR. The most impactful decomposition is to extract the auth-and-tier resolution into a dedicated function that returns a validated context object, so the streaming logic and model dispatch can operate on clean, pre-validated inputs rather than re-checking conditions inline.
 
 ---
 
@@ -132,11 +132,11 @@ This function drains queued notifications for a user whose quiet hours have ende
 
 At CC 37 this is the least complex of the five hotspots, but nesting depth of 8 ties it with `main` for the deepest nesting in the group. The delivery dispatch is a large `if/else if` chain across six channel types, each with its own parameter shape — that structure alone accounts for most of the complexity and all of the depth. Every channel type is an exit-heavy branch: if a delivery fails, the function logs and continues; if nothing is delivered, the queue is not cleared. Each of those conditional paths needs test coverage.
 
-Sharing a file with `processEvent`, this function also carries the same file-level signals: `bug_fix_fraction` of 1.0 and `bug_linked_commit_count` of 1. The concrete recommendation is to replace the per-channel dispatch chain with a channel-type registry — a map from `channelType` to a send function — so adding or modifying a channel type does not require editing the nesting structure of `drainHeldForUser` itself. That refactoring would bring both the CC and the nesting depth down significantly.
+Sharing a file with `processEvent`, this function also carries the same file-level signals: every commit on this file in the measured window was a bug fix. The concrete recommendation is to replace the per-channel dispatch chain with a channel-type registry — a map from `channelType` to a send function — so adding or modifying a channel type does not require editing the nesting structure of `drainHeldForUser` itself. That refactoring would bring both the CC and the nesting depth down significantly.
 
 ---
 
-One additional context note: five functions from `context_only` — `isDesktopRuntime`, `getCSSColor`, `getCachedJson`, `escapeHtml`, and `h` — are all in the watch quadrant with low structural complexity and a single touch each in the last 30 days. None of them warrant refactoring attention now; they are worth monitoring simply because they are active, but their CC values (all ≤ 6) present no structural risk.
+One additional context note: five lower-ranked functions — `isDesktopRuntime`, `getCSSColor`, `getCachedJson`, `escapeHtml`, and `h` — are all in the watch quadrant with low structural complexity and a single touch each in the last 30 days. None of them warrant refactoring attention now; they are worth monitoring simply because they are active, but their CC values (all ≤ 6) present no structural risk.
 
 ## Patterns Found
 
