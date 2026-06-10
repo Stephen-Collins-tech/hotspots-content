@@ -1,0 +1,248 @@
+---
+title: "Why Your Coupling Metric Lies To You"
+description: "Working title: "Three experiments, wrong twice""
+pubDate: 2026-06-10
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Working title: "Three experiments, wrong twice""
+---
+
+Working title: "Three experiments, wrong twice"
+
+Status: Draft — not for publication
+
+Canonical sources:
+- 
+- 
+- 
+-  (F13, F36, F37)
+
+---
+
+## Claim
+
+Co-change frequency is an unreliable predictor of defect risk across codebases of different
+sizes. The fix is not a better similarity metric — it is asking a different question.
+Weighting co-changes by partner defect history produces a stable signal on repos where
+labels are temporally distributed, and collapses where they are not.
+
+---
+
+## Reader Problem
+
+You want to know which files are risky to change. One natural signal: coupling. Files that
+tend to change together are implicitly connected — shared logic, shared dependencies,
+shared fragility. A file that co-changes with many others should be riskier than one that
+changes in isolation.
+
+This intuition is right on some codebases and completely backwards on others. Here is how
+we found out the hard way, twice.
+
+---
+
+## Experiment 1: Raw co-occurrence
+
+The simplest coupling signal is a count: how many distinct files has this file ever changed
+alongside in the same commit? Call it co-change count.
+
+We measured this across 13 codebases and correlated it with defect labels. On smaller,
+focused repos — a Go web framework, a Python microframework — the correlation was positive
+and meaningful. Files with many co-change partners tended to be the ones that later needed
+bug fixes. The intuition held.
+
+On larger, more active repos — a major JavaScript UI framework, a popular React-based
+project — the correlation was negative. Files with the most co-change partners were the
+least likely to be defective. The signal had inverted. Across the full 13-codebase set,
+the relationship between coupling density and signal direction was Pearson r=−0.679
+(p=0.011) — the denser the codebase, the more anti-predictive the signal became.
+
+The explanation took some digging. In a large, active codebase, most commits touch many
+files at once. Config files, changelogs, build scripts, type definitions — they appear
+constantly, in nearly every commit. A file with thousands of co-change partners in that
+context is not a fragile, deeply-coupled component. It is probably a frequently-updated
+peripheral file that happens to share commits with everything.
+
+Co-change count is not measuring coupling. On dense repos, it is measuring how often a
+file gets swept up in bulk commits. High score = busy, not risky.
+
+---
+
+## Experiment 2: Normalised mutual information
+
+Our hypothesis: the problem with raw counts is that they are not adjusted for each file's
+baseline activity level. A file that appears in 90% of all commits has high co-change
+counts by construction, even if its co-changes tell us nothing specific about risk.
+
+Normalised mutual information (NMI) conditions on both files' marginal activity rates. If
+file A appears in 90% of commits and file B appears in 90% of commits, their NMI is low
+— they co-change, but that co-change is not informative because both are just everywhere.
+Only files whose co-occurrence is surprising given their individual activity rates get a
+high score.
+
+We implemented this: for each file pair, compute NMI from their co-occurrence history.
+For each file, record its maximum NMI across all partners.
+
+The results were worse:
+
+| Codebase | ρ NMI | ρ raw co-change | ρ activity baseline |
+|---|---|---|---|
+| Large JS framework | −0.349 | +0.023 | +0.692 |
+| Popular React project | −0.160 | +0.237 | +0.253 |
+| Django (Python) | −0.550 | +0.078 | +0.660 |
+| Go web framework | +0.032 | −0.023 | +0.091 |
+| scikit-learn | +0.117 | +0.514 | +0.346 |
+
+NMI made the large-codebase problem structurally worse, not better. On the JavaScript
+framework, it went from +0.023 to −0.349. On Django, from +0.078 to −0.550.
+
+The reason: taking the maximum NMI over all partners almost always selects coupling to the
+most active files in the codebase. Those files have high mutual information with many
+partners precisely because their presence in a commit is predictable from the presence of
+everyone else. They are not fragile — they are embedded. And max NMI finds exactly them,
+then ranks them highly.
+
+Normalisation addressed the wrong problem. The issue was not that busy files had inflated
+counts. The issue was that coupling to busy files is not the same as coupling to fragile
+files.
+
+---
+
+## Experiment 3: Asking a different question
+
+At this point we stopped trying to fix the metric and changed the question.
+
+Both previous experiments asked: *how coupled is this file to other files?* Dense repos
+broke both because coupling to infrastructure is not the same as coupling to defect risk.
+
+The new question: *does this file tend to co-change with files that historically break?*
+
+For each file, we computed a directed coupling score:
+
+```
+score(file) = Σ over co-change partners [ co-change count × partner defect rate ] / own commit count
+```
+
+A file that co-changes frequently with defect-prone partners scores high. A file that
+co-changes exclusively with stable config files scores near zero, regardless of how active
+it is. The activity of the file itself normalises out.
+
+Results on the same codebases:
+
+| Codebase | ρ directed | ρ raw co-change | ρ activity baseline |
+|---|---|---|---|
+| Large JS framework (full history) | **+0.776** | +0.023 | +0.692 |
+| Popular React project (full history) | **+0.260** | +0.237 | +0.253 |
+| Django (full history) | **+0.452** | +0.078 | +0.660 |
+| Go web framework (full history) | **+0.213** | −0.023 | +0.091 |
+| scikit-learn (full history) | +0.462 | +0.514 | +0.346 |
+
+The sign-flip is gone. The signal is positive on every codebase where we have enough
+labeled data to evaluate it. On the large JavaScript framework, directed coupling (+0.776)
+now exceeds the activity baseline (+0.692) — a coupling signal outperforming the activity
+signal on a repo where coupling was previously anti-predictive.
+
+---
+
+## Then we ran a holdout check
+
+Strong full-history numbers invite suspicion. Partner defect rates and evaluation labels
+are both derived from commit history. If they come from the same window, the signal is
+partly circular — we are asking "do files that co-change with defect-prone files tend to
+be defect-prone?" and the answer is yes almost by construction.
+
+We split each codebase's history at the 80th-percentile commit timestamp. Partner defect
+rates were computed from the earlier 80% only. Labels came from fix commits in the final
+20%.
+
+| Codebase | ρ holdout | ρ full history | leakage? |
+|---|---|---|---|
+| Large JS framework | −0.033 | +0.776 | yes |
+| Popular React project | +0.013 | +0.260 | yes |
+| Go web framework | **+0.309** | +0.213 | low |
+| Django | **+0.565** | +0.452 | low |
+| scikit-learn | −0.222 | +0.462 | yes |
+
+Three codebases collapse. The full-history numbers for the JavaScript frameworks and
+scikit-learn were largely explained by circular label dependency.
+
+Two codebases hold or improve. Django's holdout ρ (+0.565) actually exceeds its
+full-history number and is competitive with the activity baseline on the same holdout
+window (+0.594). The Go framework holdout (+0.309) exceeds its full-history number too —
+a sign the signal is conservative, not inflated.
+
+---
+
+## What separates the two groups
+
+The split appears to track label temporal distribution. Django and the Go framework have
+defect-fixing commits distributed across their full histories — the fix pattern from the
+training window is a reasonable predictor of the fix pattern in the holdout window.
+
+The frameworks where the signal collapses appear to have defect activity concentrated in
+the recent period. When most of the labeled fixes happened in the last 20% of history,
+training-window partner scores don't predict holdout-window risk — because the defect
+pattern itself has shifted.
+
+This is not a flaw unique to coupling signals. Any signal that depends on defect labels
+will face this problem on codebases where the labeling is temporally uneven. It is a
+screener condition, not a death sentence for the approach.
+
+---
+
+## What this means for coupling as a risk signal
+
+**Raw co-occurrence** is unreliable across codebase sizes. It is a useful heuristic on
+small, focused repos and a noise source on large, active ones.
+
+**Normalisation-based fixes** (mutual information and similar) do not address the root
+problem. The issue is not the similarity metric — it is that coupling to busy files and
+coupling to fragile files are different things.
+
+**Directed coupling** — weighting co-changes by partner defect history — is a stable
+signal on codebases where defect labels are distributed across history. It can be computed
+with a single pass over commit history, scales with the number of co-occurring file pairs
+rather than the quadratic number of file pairs, and degrades gracefully when partner
+scores are sparse.
+
+The honest summary: three experiments, wrong twice, conditionally right the third time,
+and the conditions matter.
+
+---
+
+## Caveats
+
+- The full-history directed coupling numbers for three of five codebases are substantially
+  explained by circular labeling. Only the holdout numbers should be treated as evidence
+  of genuine predictive signal.
+- "Leakage" and "no leakage" are determined by the Δ between full-history and holdout ρ.
+  A Δ > 0.15 is flagged as likely leakage. This threshold is a judgment call.
+- All evaluation uses keyword-matched bug-fix commits as labels. Codebases with non-standard
+  or low-volume commit conventions produce unreliable labels, which affects all signals
+  equally but makes the coupling signal undefined when partner scores are all zero.
+- Results come from five codebases spanning Go, Python, and JavaScript. Cross-language
+  and cross-domain generalization has not been systematically tested.
+
+---
+
+## What this means for Hotspots
+
+Directed coupling is a candidate signal for the risk score on codebases that pass a
+label-distribution check — specifically, repos where fix commits are not concentrated in
+the most recent slice of history. On those repos, it provides a complementary dimension
+to activity-based signals: a file can be low-activity but high-coupling-risk if it
+consistently co-changes with the parts of the codebase that break.
+
+The signal does not replace the activity baseline. It extends it.
+
+---
+
+## Next Test
+
+Measure what fraction of fix commits fall in the last 20% of history per repo, and use
+that as a screener for whether directed coupling is reliable on a given codebase. If the
+screener holds, this is promotable.
