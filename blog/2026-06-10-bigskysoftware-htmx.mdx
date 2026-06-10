@@ -1,0 +1,162 @@
+---
+title: "htmx's request and swap layer carries the highest structural debt — 5 functions to address first"
+titleSeo: "htmx technical debt: issueAjaxRequest and tokenize lead the refactoring priority list"
+description: "Analysis of bigskysoftware/htmx at c66b588 finds 64 critical functions, all in the debt quadrant — structurally complex code that hasn't been touched in weeks but carries high blast radius when next changed."
+introContent: "The riskiest function in htmx hasn't been modified in 78 days — but with a cyclomatic complexity of 49, a nesting depth of 14, and 31 distinct function calls, the next developer who touches it will be navigating one of the most structurally dense functions in the repo without the benefit of recent familiarity. All five top hotspots sit in the debt quadrant: no active churn, but significant structural complexity waiting to bite."
+pubDate: 2026-06-10
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: true
+repo: "bigskysoftware/htmx"
+commit: "c66b588dd9d8917321c9c3cf1d8c697df8a779c8"
+language: "javascript"
+hotspots_version: "1.24.0"
+analyzed_at: "2026-06-10T07:05:41Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 19.24
+topFunction: "tokenize"
+topFile: "test/lib/_hyperscript.js"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 4, long_function: 4}
+qaSection:
+  - question: "What is a god function and why does it matter in htmx?"
+    answer: "A god function is a single function that has accumulated responsibility for so many distinct concerns that it becomes the de-facto coordination point for a large subsystem. In concrete structural terms, it shows up as very high cyclomatic complexity combined with high fan-out — the function both contains many decision paths and directly calls many other functions. In htmx, `issueAjaxRequest` is the clearest example: it handles Promise lifecycle, DOM guard checks, target resolution, form-submitter overrides, confirmation dialogs, and request synchronisation strategies all in one body, with a fan-out of 58 distinct callees and a cyclomatic complexity of 76. The practical problems are threefold: it is hard to test any single concern in isolation, a change to any one of those responsibilities risks accidentally affecting the others, and onboarding a new contributor to that area of the code requires understanding the entire function before making even a small modification."
+  - question: "How do I reduce cyclomatic complexity in JavaScript?"
+    answer: "The most direct technique is extract-method refactoring: identify a coherent sub-problem inside the function — one that has clear inputs and a clear output — and pull it into its own named function. For `issueAjaxRequest` with a cyclomatic complexity of 76, I would start with the confirmation-dialog block (the `confirmed === undefined` branch): it has its own closure, its own recursive re-entry, and clear entry/exit semantics, making it a natural extraction target that could reduce the parent function's complexity by 10–15 paths in one move. As a general threshold, cyclomatic complexity above 15 warrants a refactoring conversation; above 30 it should be a blocking item in code review; at 76 it means the function has grown well past the point where any single reviewer can hold all its paths in working memory. After extraction, introduce focused unit tests for each new function — the reduced complexity makes that tractable in a way it is not for the monolithic original."
+  - question: "Is htmx actively maintained?"
+    answer: "The quadrant data gives a clear picture: all 184 high-complexity functions sit in the debt quadrant, meaning none of them have seen recent activity. Every function in the top five has zero touches in the last 30 days. The most dormant top hotspot, `tokenize`, has not been changed in 78 days; `issueAjaxRequest` and `swapWithStyle` were last touched 44 days ago. That does not mean the project is abandoned — `src/htmx.js` shows 5 distinct authors active in the last 90 days and 11 total commits on the file — but the current development pace has not been directed at the structurally complex functions. Active authorship and accumulating structural debt are not mutually exclusive; the debt quadrant is precisely where complexity grows between active development cycles."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run against bigskysoftware/htmx at commit `c66b588`. To reproduce it, check out that commit with `git checkout c66b588`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root using the Hotspots CLI (available at github.com/hotspots-dev/hotspots). The same command works on any local git repository without additional configuration — no `.hotspotsrc.json` is required to get results, though adding one lets you exclude vendored paths as described in the vendor note above."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies a function's structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — by how frequently it has been changed in recent commits. The intent is to surface functions that are both hard to understand AND actively being modified right now, because those are where bugs are most likely to be introduced in the near term. A function with cyclomatic complexity 80 that has not been touched in two years scores considerably lower than one with cyclomatic complexity 20 that is committed to every week, because the dormant function's complexity is a future problem rather than a present one. In the htmx analysis, all top functions are in the debt quadrant — their activity_risk scores are elevated because of extreme structural complexity, not because of recent commit churn, which makes them a refactoring priority for the next development push rather than an immediate regression concern."
+---
+
+At commit c66b588, htmx carries 64 critical-band functions across a codebase of 771 total — and every single one of the top hotspots sits in the debt quadrant, meaning high structural complexity with zero recent activity. The most structurally intense function, `tokenize` in the vendored `_hyperscript.js` test fixture, hasn't been touched in 78 days. The real concern in the core library is `issueAjaxRequest` in `src/htmx.js`: cyclomatic complexity of 76, 58 distinct callees, and 44 days since it was last changed — structural debt with a wide blast radius when the next change does arrive. I would start my review there.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `tokenize` | test/lib/_hyperscript.js | 19.2 | 49 | 14 | 31 |
+| `tokenize` | www/static/test/lib/_hyperscript.js | 19.2 | 49 | 14 | 31 |
+| `issueAjaxRequest` | src/htmx.js | 18.7 | 76 | 5 | 58 |
+| `issueAjaxRequest` | www/static/src/htmx.js | 18.7 | 76 | 5 | 58 |
+| `swapWithStyle` | src/htmx.js | 18.0 | 29 | 7 | 14 |
+
+## Large Repo Analysis
+
+htmx is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Codemod / Tooling Files in Results
+
+Two functions in the top five come from `test/lib/_hyperscript.js` and `www/static/test/lib/_hyperscript.js` — copies of the `_hyperscript` companion library bundled into the htmx test fixtures and static site assets respectively. These score highly because the vendored lexer is genuinely complex, not because htmx's own authors wrote or maintain that code. Similarly, `www/static/src/htmx.js` is a mirror of the canonical `src/htmx.js` under the documentation site's static directory. To exclude all three paths from future Hotspots runs and focus analysis on first-party source, add the following to your `.hotspotsrc.json`: `{ "exclude": ["test/lib/", "www/static/test/", "www/static/src/"] }`. That will surface only the canonical `src/htmx.js` entries in the hotspot list.
+
+## Quadrant breakdown
+
+Every function Hotspots flagged in this repo falls into one of two quadrants: **debt** (high complexity, low recent activity) or **ok** (low complexity, low activity). There are no fire-quadrant functions — nothing is both structurally risky and actively changing right now. That is not a clean bill of health; it means the complexity has been accumulating quietly.
+
+<BandChart fire='0' debt='184' watch='0' ok='587' caption='All 184 high-complexity functions are dormant — structural debt, not active churn' />
+
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,god_function:4,long_function:4' />
+
+Every top hotspot shares the same cluster of antipatterns: complex branching, deep nesting, multiple exit paths, and god-function scope. That consistency tells me the risk is not scattered — it is concentrated in a small number of functions that each try to do too much.
+
+---
+
+## Top hotspots
+
+### `tokenize` — test/lib/_hyperscript.js
+
+<FunctionCard fn='tokenize' file='test/lib/_hyperscript.js' risk='19.24' band='critical' cc='49' nd='14' fo='31' touches='0' />
+
+This function is the lexer for the `_hyperscript` language, walking a source string character by character and dispatching to specialised consumers — `consumeWhitespace`, `consumeIdentifier`, `consumeString`, `consumeOp`, and so on. The source excerpt shows a single large `while` loop containing a deeply nested chain of `if / else if` branches, each testing the current and next character to decide which token type to emit. Template literal tracking adds a brace-depth counter (`templateBraceCount`) that interacts with multiple branches, and a nested `inTemplate()` helper changes the meaning of several conditions depending on runtime state.
+
+The numbers tell the structural story plainly. A cyclomatic complexity of 49 means there are 49 independent execution paths through the function — each one a required test case and a potential edge-case failure. A maximum nesting depth of 14 is among the highest I encounter in production JavaScript; at that depth, the mental stack required to reason about any single branch includes the state of a dozen enclosing conditionals. The fan-out of 31 means the function directly calls 31 distinct helpers, and in JavaScript, where dynamic dispatch can obscure additional dependencies, that count may understate the true coupling.
+
+This function has not been touched in 78 days and has zero bug-linked commits on the file. The structural risk here is not imminent regression — it is the cost paid by whoever next needs to extend the lexer for a new `_hyperscript` token type or fix an edge case in template handling. At nesting depth 14, that work is a significant archaeology exercise.
+
+<MetricBar label='Max Nesting Depth' value='14' threshold='4' max='16' />
+
+The `exit_heavy` and `long_function` patterns compound the testing burden: multiple early-return paths mean any test suite needs to exercise a large cross-product of input states to achieve meaningful coverage.
+
+**Recommendation:** This function is overdue for structural decomposition. Extract the per-token-type dispatch into a lookup table or a map of character predicates to consumer functions. That alone would flatten the nesting and bring the cyclomatic complexity down into a range where individual token rules can be tested in isolation. Given it lives in a test fixture rather than the library core, the refactoring risk is contained — but note the identical copy in `www/static/test/lib/_hyperscript.js` (addressed in the vendor note below).
+
+---
+
+### `tokenize` — www/static/test/lib/_hyperscript.js
+
+<FunctionCard fn='tokenize' file='www/static/test/lib/_hyperscript.js' risk='19.24' band='critical' cc='49' nd='14' fo='31' touches='0' />
+
+This is a byte-for-byte duplicate of the function above — same cyclomatic complexity of 49, same nesting depth of 14, same fan-out of 31, last changed 78 days ago. The duplication itself is a maintenance liability: any fix or refactoring applied to one copy must be manually applied to the other, and the two can silently diverge. See the vendor note at the bottom of this post for the recommended exclusion pattern.
+
+---
+
+### `issueAjaxRequest` — src/htmx.js
+
+<FunctionCard fn='issueAjaxRequest' file='src/htmx.js' risk='18.72' band='critical' cc='76' nd='5' fo='58' touches='0' />
+
+This is the function that initiates every AJAX call htmx makes. The source excerpt shows why it is the most structurally significant function in the core library: it handles Promise construction, DOM-detachment guards, target resolution, form-submitter overrides (both `formaction` and `formmethod`), confirmation dialogs with recursive callback re-entry, and at least three distinct `hx-sync` strategies — all within a single function body, with multiple early returns scattered throughout.
+
+<MetricBar label='Cyclomatic Complexity' value='76' threshold='10' max='80' />
+<MetricBar label='Fan-Out (distinct callees)' value='58' threshold='15' max='60' />
+
+A cyclomatic complexity of 76 is in territory I'd describe as extreme — it implies 76 independent paths, and the excerpt only covers the first third of the function. The fan-out of 58 is the highest in the entire top-five list. In JavaScript's async callback model, that breadth of coupling is particularly hard to reason about: closures capture mutable state (`resolve`, `reject`, `eltData`) across multiple async boundaries, and dynamic property access on `etc` means the static fan-out count likely undercounts the real dependency surface.
+
+The file-level external signals add important historical context. `src/htmx.js` has 4 bug-linked commits, a bug-fix fraction of 0.27 (more than one in four commits to this file has been a bug fix), and a PR review comment density of 11.14 — the highest in the top five. Five distinct authors have touched the file in the last 90 days. None of that proves `issueAjaxRequest` specifically caused those fixes, but a function with CC 76 sitting in a file with that defect history warrants careful attention before the next change.
+
+The function has not been touched in 44 days. That dormancy is not safety — it means the next developer who needs to add a new sync strategy, a new verb, or a new confirmation hook will be doing so inside a 76-path function with 58 callees and significant accumulated structural debt.
+
+**Recommendation:** I would start decomposition by extracting the confirmation-dialog logic (the `confirmed === undefined` branch with its recursive `issueRequest` callback) into a dedicated `resolveConfirmation` function. That single extraction removes a recursive re-entry path and reduces the cyclomatic complexity materially. The sync-strategy block (`hx-sync` parsing and queue management) is a second natural extraction target. Neither extraction requires changing external behaviour.
+
+---
+
+### `issueAjaxRequest` — www/static/src/htmx.js
+
+<FunctionCard fn='issueAjaxRequest' file='www/static/src/htmx.js' risk='18.72' band='critical' cc='76' nd='5' fo='58' touches='0' />
+
+Identical metrics to the `src/htmx.js` entry above — CC 76, ND 5, FO 58, zero touches in 30 days, last changed 44 days ago. This is the copy of the library source mirrored under `www/static/`. The file-level signals here are quieter (no bug-linked commits, 2 authors in 90 days) because most development activity is tracked against `src/htmx.js` directly. The structural risk is the same function. See the vendor note for the recommended exclusion pattern for the mirrored path.
+
+---
+
+### `swapWithStyle` — src/htmx.js
+
+<FunctionCard fn='swapWithStyle' file='src/htmx.js' risk='17.96' band='critical' cc='29' nd='7' fo='14' touches='0' />
+
+`swapWithStyle` is htmx's DOM-swap dispatcher — the function that maps a swap style string (`outerHTML`, `innerHTML`, `afterbegin`, `beforebegin`, `beforeend`, `afterend`, `delete`, or any extension-defined style) to the correct DOM mutation. The source excerpt shows a `switch` statement covering the seven built-in cases with early returns, followed by a `default` branch that iterates over registered extensions, calls each extension's `handleSwap`, and processes any returned elements by pushing settle tasks. If no extension claims the style and it is `innerHTML`, it falls through to `swapInnerHTML`; otherwise it recurses with `htmx.config.defaultSwapStyle`.
+
+A cyclomatic complexity of 29 comes primarily from the extension iteration: the `try/catch` inside the loop, the `Array.isArray` branch, the inner loop over returned elements, and the `nodeType` checks each add independent paths on top of the `switch` cases. The nesting depth of 7 is concentrated in that extension-handling block — a loop, inside a try, inside a conditional, inside another conditional. That is exactly the kind of structure where a future extension adding a new return shape would require careful reading of all the surrounding conditions.
+
+This function shares the same file-level external signals as `issueAjaxRequest`: 4 bug-linked commits, a 0.27 bug-fix fraction, and a PR review comment density of 11.14. It has not been touched in 44 days. The `exit_heavy` pattern is visible throughout — seven of the `switch` cases are early returns, and the default branch has its own early return when an extension handles the swap. That many exit points makes it difficult to write a test that exercises the settle-task path without also verifying correct short-circuit behaviour for all the cases above it.
+
+<MetricBar label='Cyclomatic Complexity' value='29' threshold='10' max='40' />
+
+**Recommendation:** Extract the extension-iteration block into a dedicated `tryExtensionSwap(swapStyle, elt, target, fragment, settleInfo)` function. It has a clear single responsibility — attempt swap delegation to extensions and return a boolean indicating success — and extracting it would reduce `swapWithStyle`'s cyclomatic complexity by roughly half while making the extension contract explicitly testable in isolation.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 4 |
+| `long_function` | 4 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/bigskysoftware/htmx
+cd htmx
+git checkout c66b588dd9d8917321c9c3cf1d8c697df8a779c8
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
