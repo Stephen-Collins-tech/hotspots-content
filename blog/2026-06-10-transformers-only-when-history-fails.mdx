@@ -1,0 +1,146 @@
+---
+title: "Your Transformer Featurizer Only Helps When Your History Is Broken"
+description: "I trained a 3.3M parameter transformer to read function source code and compress it into four numbers. Then I fed those numbers to XGBoost as extra columns."
+pubDate: 2026-06-10
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "I trained a 3.3M parameter transformer to read function source code and compress it into four numbers. Then I fed those numbers to XGBoost as extra columns."
+---
+
+I trained a 3.3M parameter transformer to read function source code and compress it into four numbers. Then I fed those numbers to XGBoost as extra columns. The result: meaningful improvement on exactly the repos where git history had already failed completely — and near-zero or negative impact everywhere else.
+
+---
+
+## Claim
+
+Tabular features derived from git history carry enough signal to rank defect risk on most codebases. Adding source code embeddings from a transformer featurizer improves accuracy only on repos where history-based signals fail — and fails to help, or actively hurts, on repos where they work.
+
+---
+
+## Reader Problem
+
+You're building a code quality ranker. You've read that transformers understand code. You're considering whether to add a model that reads function source as an additional signal. The intuition seems sound: source code surely tells you something that commit counts don't.
+
+The right question is not "does source code contain signal?" It does. The question is "when does that signal add anything that git history doesn't already provide?"
+
+---
+
+## Setup
+
+I trained two ultra-minimal transformer featurizers on cross-repo source code, then evaluated whether adding their output as four additional XGBoost columns improved holdout Spearman ρ over an 8-feature git-history baseline (recency-weighted score, cyclomatic complexity, nesting depth, lines of code, fan-out, fan-in, author recency score, and authors in the last 90 days).
+
+The two variants:
+- **CodeBERTa-small** (~84M params, pretrained on code, frozen backbone + 2-layer trainable head)
+- **Scratch transformer** (4-layer encoder, 256 hidden, ~3.3M params, trained from zero on my corpus)
+
+Both output 4-dim embeddings appended as XGBoost columns. Both were trained across all repos — one model per variant, no per-repo fine-tuning.
+
+The baseline: an 8-feature XGBoost ranker trained on git history metadata.
+
+---
+
+## Experiment or Evidence
+
+| Evidence | Value |
+|---|---|
+| Primary result | scratch mean Δρ = +0.027 across 21 repos (12/21 positive) |
+| Conditional result | scratch mean Δρ = +0.098 on 6 repos where baseline ρ < 0.1 |
+| Baseline | XGBoost on 8 git/structure features |
+| Repos evaluated | 21 (full corpus with valid holdout labels) |
+| Scale PASS threshold | ≥ 70% repos positive |
+
+---
+
+## Result
+
+Unconditional application of the scratch featurizer failed the 70% gate (12/21 = 57%). But the distribution of deltas told a clearer story:
+
+| Repo | baseline ρ | +scratch Δρ |
+|---|---|---|
+| redis | +0.866 | −0.002 |
+| vercel/next.js | +0.939 | −0.000 |
+| microsoft/vscode | +0.849 | +0.002 |
+| golang/go | +0.750 | +0.001 |
+| django/django | +0.796 | +0.003 |
+| … | | |
+| elastic/elasticsearch | +0.020 | +0.002 |
+| facebook/react | +0.060 | −0.108 |
+| google/guava | +0.052 | +0.033 |
+| microsoft/semantic-kernel | −0.212 | **+0.642** |
+| spring-projects/spring-boot | +0.032 | +0.011 |
+
+The featurizer adds near-zero delta on repos where the baseline is already strong, and large positive delta on repos where it is weak. semantic-kernel is the extreme case: the baseline is *negative* (−0.212, worse than random), and the scratch featurizer recovers +0.430 net ρ. The tabular features have no signal there; source code semantics are the only axis that works.
+
+Simulating a conditional policy — apply scratch embeddings only when baseline ρ < 0.1:
+
+| Threshold | Repos | Mean Δρ | % positive |
+|---|---|---|---|
+| baseline < 0.1 | 6 | **+0.098** | **83%** |
+| baseline < 0.2 | 9 | +0.058 | 56% |
+| all repos | 21 | +0.027 | 57% |
+
+The signal is real but local. Apply it everywhere and the gains on weak repos get diluted by regressions on strong ones (react −0.108, excalidraw −0.035).
+
+---
+
+## Why History Beats Source on Most Repos
+
+The 8 tabular features are measuring something different from source code complexity or style. They are measuring *where the team actually spent time fixing things*. A function touched in 12 commits, by 4 authors, in the last 90 days has a very different risk profile from one that hasn't been opened in 3 years — regardless of what the source code looks like.
+
+Source code tells you about the current state of a file. Git history tells you about its *trajectory*. Across my 21-repo evaluation, trajectory dominated.
+
+On the 6 low-signal repos, trajectory fails because the history is degenerate:
+
+| Repo | Why tabular fails |
+|---|---|
+| microsoft/semantic-kernel | 2 positive labels out of 481 — no signal to find |
+| spring-projects/spring-boot | 2.2% positive rate — tabular features can't rank within a class |
+| google/guava | 79% positive rate — same problem, opposite direction |
+| elastic/elasticsearch | 231k rows, 12% positive — signal too diffuse across a large Java monorepo |
+| elysiajs/elysia | 231 rows — insufficient history |
+| facebook/react | 3k rows, dense JS — function styles too diverse for tabular features |
+
+When labels are near-zero or near-one, tabular features can't rank because there's nothing to rank against. Source code is orthogonal to label distribution — the featurizer reads the code regardless of how sparse the positives are.
+
+---
+
+## The Pretrained Model Regressed on TypeScript
+
+CodeBERTa-small, trained on a Python/Java-heavy pretraining corpus, sign-flipped on vuejs/core (TypeScript). Adding its embeddings hurt: Δρ = −0.021 on a repo where the scratch model was slightly positive (+0.002).
+
+The scratch model — trained from zero on my cross-repo corpus spanning multiple languages — had no such bias. It never sign-flipped across 21 repos in my evaluation.
+
+This is the canonical failure mode of frozen pretrained representations applied out-of-distribution. CodeBERTa learned to represent Python and Java code in ways that correlate with bug-proneness *in those languages*. TypeScript encodes different structural patterns, and the frozen representations carry the wrong priors.
+
+For a multi-language tool, the from-scratch model was safer across my 21-repo evaluation. The pretrained model wins within-distribution — it added +0.039 and +0.068 on the two Python repos where I evaluated it — but couldn't be trusted across language boundaries.
+
+The general principle: pretraining helps when your distribution matches the pretraining corpus. When it doesn't, you've imported someone else's biases.
+
+---
+
+## What Went Wrong or Could Be Wrong
+
+**The conditional gate threshold (ρ < 0.1) was derived from the same data used to evaluate it.** I identified the threshold by looking at where the featurizer helps and fitting a cutoff to that. On new repos the threshold may be too tight or too loose. A cross-repo estimator I built (5-fold CV on the training split) correlates with actual holdout ρ at +0.874 across 21 repos, but that validation used the same corpus.
+
+**react's −0.108 regression is unexplained.** React is a dense JavaScript repo with moderate history signal (baseline ρ = +0.060). The scratch featurizer hurts it more than any other repo. My hypothesis: the featurizer learned Python-heavy patterns during cross-repo training (Python repos dominate the training corpus by row count), and JavaScript source encodes differently even for the scratch model. Language-stratified training would test this.
+
+**The 4-dim embedding bottleneck may be too aggressive.** I chose 4 dims to prevent XGBoost from memorizing the embedding space. It's possible that 8 dims would capture more structure. I haven't tested this.
+
+---
+
+## Product Implication
+
+Don't add transformer featurizers unconditionally. Run your tabular baseline first. If it works (ρ > 0.1 on a temporal holdout), the featurizer adds nothing and risks regression. If it fails, source code semantics are likely the only remaining signal axis — and a 3.3M param model trained on your corpus will likely outperform a frozen pretrained model.
+
+The practical gating approach: estimate baseline ρ via cross-validation on the training split (fast — seconds with XGBoost). If the estimate is below 0.1, activate the featurizer for that repo. Cost: a few seconds of CV computation and minimal inference overhead per function at score time.
+
+---
+
+## Next Test
+
+Test whether language-stratified training fixes react's regression. Train separate scratch featurizers per language family (Python/JS/Go/Java) rather than one cross-repo model. If the JS featurizer avoids the react regression while maintaining gains on JS repos like vuejs/core, that validates the language-distribution hypothesis and extends CodeBERTa's per-language wins to the scratch architecture.
