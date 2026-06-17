@@ -1,0 +1,171 @@
+---
+title: "Swiper's mousewheel and touch modules carry the highest risk — 5 functions to address"
+titleSeo: "Swiper technical debt: mousewheel and touch event handlers lead refactoring priority in nolimits4web/swiper"
+description: "Two functions in mousewheel.mjs and one in updateSlides.mjs have been untouched for 97 days each, carrying cyclomatic complexity scores between 44 and 105, while onTouchMove is actively changing with CC 127 — the highest in the repo."
+introContent: "Swiper's highest-risk code isn't where the commits are — it's in the functions that haven't been touched in 97 days but would take a seasoned engineer a full day to reason through safely. The one exception, `onTouchMove`, is the opposite problem: CC 127, three commits in the last 30 days, and two authors working on it right now."
+pubDate: 2026-06-17
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: false
+repo: "nolimits4web/swiper"
+commit: "929c01470c7ee0dc29789f61383ef84608c582d9"
+language: "javascript"
+hotspots_version: "1.25.0"
+analyzed_at: "2026-06-17T08:26:58Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 17.9
+topFunction: "handle"
+topFile: "src/modules/mousewheel/mousewheel.mjs"
+topPatterns: ["exit_heavy", "god_function", "long_function", "complex_branching", "deeply_nested"]
+patternCounts: {complex_branching: 7, exit_heavy: 9, god_function: 9, long_function: 9, deeply_nested: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in swiper?"
+    answer: "A god function is one that owns too many distinct responsibilities — it handles parameter setup, event wiring, state management, and rendering logic all in the same body, making it the single point of failure for a broad slice of the system. In swiper, `Pagination` with a fan-out of 61 and `Mousewheel` with a fan-out of 40 both qualify: a change to either function can ripple into dozens of collaborators in ways that are hard to predict from the diff alone. God functions are particularly difficult to test because you cannot exercise one responsibility in isolation without triggering all the others. Nine of the top hotspot functions carry this pattern, which suggests it reflects a deliberate architectural choice — module factories that own their full feature surface — rather than carelessness, but the cost is paid every time one of those surfaces needs to change."
+  - question: "How do I reduce cyclomatic complexity in JavaScript?"
+    answer: "The most reliable technique is extract-method refactoring: identify a coherent sub-task inside the function — a normalisation step, a guard clause block, a rendering branch — and move it into a named function with a clear contract. A cyclomatic complexity above 15 is a reasonable threshold for considering a split; above 30 it warrants immediate attention, and `onTouchMove` at CC 127 is well past the point where any single engineer can hold all 127 paths in working memory. For `onTouchMove` specifically, I would start by extracting the pointer-type discrimination block near the top of the function — it is a self-contained routing decision that does not depend on the translation-delta logic further down. Decompose-conditional is a complementary technique: replacing nested ternaries and multi-branch if-else chains with named boolean variables or small predicate functions makes each path explicit and individually testable."
+  - question: "Is swiper actively maintained?"
+    answer: "Yes, but the activity is concentrated in a narrow part of the codebase. The touch event pipeline — `onTouchStart`, `onTouchMove`, and `onTouchEnd` in `src/core/events/` — has received commits within the last five days as of this snapshot, with `onTouchMove` touched three times in the last 30 days by two different authors, and `onTouchStart` touched once. The mousewheel module (`handle` and `Mousewheel`) and `updateSlides`, by contrast, each show zero touches in the last 30 days and have not been modified in 97 days, with no active authors in the last 90 days. Active development and structural debt are not mutually exclusive: the project is clearly under active development, but a significant portion of its most complex code is accumulating age without revision."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was produced by the Hotspots CLI, available at github.com/hotspots-dev/hotspots, against commit `929c014` of nolimits4web/swiper. To reproduce it, run `git checkout 929c014` in a local clone of the repository, then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without additional configuration — no `.hotspotsrc.json` setup is required to get a baseline result."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, maximum nesting depth, and fan-out — with how frequently the function has been touched by recent commits, so that functions which are both hard to understand and actively changing score the highest. A function with cyclomatic complexity 105 that hasn't been touched in 97 days, like `updateSlides`, scores lower than it would if it were being edited weekly, because the near-term probability of introducing a regression is lower when nobody is changing it. Conversely, `onTouchMove` at CC 127 with three touches in the last 30 days scores as the live-risk item precisely because structural complexity and active development are happening simultaneously. The goal is to help teams focus refactoring effort where it reduces the probability of bugs being introduced right now, not just where the code happens to look complicated."
+---
+
+The dominant risk story in this snapshot of nolimits4web/swiper is structural debt sitting quietly in `src/modules/mousewheel/mousewheel.mjs` and `src/core/update/updateSlides.mjs` — functions that haven't been modified in 97 days but carry cyclomatic complexity scores that would challenge any engineer asked to change them tomorrow. Across 552 total functions, 79 are rated critical and 178 fall into the debt quadrant, meaning they are structurally complex but currently dormant. The one live-fire risk is `onTouchMove`, with a cyclomatic complexity of 127 and three commits in the last 30 days — I would treat that as the most urgent item precisely because structural complexity and active development are colliding there right now.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `handle` | src/modules/mousewheel/mousewheel.mjs | 17.9 | 61 | 6 | 29 |
+| `Mousewheel` | src/modules/mousewheel/mousewheel.mjs | 17.7 | 45 | 6 | 40 |
+| `updateSlides` | src/core/update/updateSlides.mjs | 17.5 | 105 | 5 | 44 |
+| `onTouchMove` | src/core/events/onTouchMove.mjs | 17.3 | 127 | 4 | 29 |
+| `Pagination` | src/modules/pagination/pagination.mjs | 17.3 | 44 | 5 | 61 |
+
+## Large Repo Analysis
+
+swiper is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Risk landscape
+
+<BandChart fire='12' debt='178' watch='10' ok='352' />
+
+<PatternCloud patterns='exit_heavy:9,god_function:9,long_function:9,complex_branching:7,deeply_nested:5' />
+
+Of 552 analysed functions, 352 are quiet and low-complexity — not worth immediate attention. The 178 in the debt quadrant are the slow-burn concern: structurally dense code that nobody has touched recently, accumulating risk for whenever the next feature or bug fix requires opening those files. Twelve functions are in the fire quadrant, meaning they are both complex and actively changing. The five functions below represent the sharpest points of that overall distribution.
+
+---
+
+### `handle` — src/modules/mousewheel/mousewheel.mjs
+
+<FunctionCard fn='handle' file='src/modules/mousewheel/mousewheel.mjs' risk='17.9' band='critical' cc='61' nd='6' fo='29' touches='0' />
+
+`handle` is the primary wheel event dispatcher in the mousewheel module. Based on the source excerpt, it receives a raw DOM `WheelEvent`, reconciles it against jQuery-wrapped originals, normalises delta values across horizontal and vertical axes, applies RTL direction factors, clamps translation positions to min/max boundaries, manages `recentWheelEvents` for snap-timing logic, and decides whether to propagate the event to a parent swiper or stop it entirely. That is a lot of distinct responsibilities compressed into one function.
+
+The cyclomatic complexity of 61 means there are at least 61 independent execution paths through this function — each one a required test case and a potential site for a regression. A nesting depth of 6 compounds this: the deepest conditionals sit inside loops or other conditionals that themselves depend on `params.loop`, `params.nested`, `params.freeMode`, and RTL state simultaneously. The fan-out of 29 distinct callees means a change to any one of those collaborators can ripple back here in ways that aren't obvious from a diff.
+
+What makes this a structural debt risk rather than an emergency today is the 97 days of silence. No commits, no authors active in the last 90 days. The file's entire commit history amounts to a single commit, and 100% of the commits on this file are tagged as bug fixes — meaning the one time someone did work here, it was to correct a defect. That is thin institutional coverage for a function this complex.
+
+<MetricBar label='Cyclomatic Complexity' value='61' threshold='10' max='130' />
+
+My recommendation: extract the delta-normalisation logic (currently inline and handling legacy `wheelDelta`, `detail`, `deltaMode`, and shift-key cases) into a standalone `normalizeDelta(event)` function, and pull the snap-timing / `recentWheelEvents` management into its own handler. Either extraction alone would cut the path count meaningfully and make the remaining routing logic far easier to audit.
+
+---
+
+### `Mousewheel` — src/modules/mousewheel/mousewheel.mjs
+
+<FunctionCard fn='Mousewheel' file='src/modules/mousewheel/mousewheel.mjs' risk='17.74' band='critical' cc='45' nd='6' fo='40' touches='0' />
+
+`Mousewheel` is the module factory function — the outer container that calls `extendParams`, sets up closure-scoped state (`timeout`, `lastScrollTime`, `lastEventBeforeSnap`, `recentWheelEvents`), defines all inner functions including `normalize` and `handle`, and wires lifecycle event listeners. Its fan-out of 40 is the second highest in this top five, and in JavaScript that number likely undercounts the true coupling: dynamic property lookups on `swiper.params.mousewheel.*` and callback-style event registration hide dependencies that static analysis cannot fully resolve.
+
+The CC of 45 inside what is essentially a module-initialisation function is a signal that too much conditional logic has been folded into setup rather than deferred to the handlers it registers. A nesting depth of 6 — matching `handle` — suggests the two functions share deeply nested decision trees, which makes sense given that `normalize` is defined as a closure inside `Mousewheel` and therefore entangles the two functions' complexity budgets.
+
+Like `handle`, this function carries 97 days without a commit and zero active authors in the last 90 days. The god-function and long-function patterns both apply: the function is both a configuration hub and an implementation container, two roles that will resist independent testing.
+
+<MetricBar label='Fan-Out' value='40' threshold='15' max='65' />
+
+The most tractable first step is to move `normalize` out of the closure entirely — it has no external state dependencies based on what the excerpt shows — which would reduce the factory's own complexity and make `normalize` independently testable.
+
+---
+
+### `updateSlides` — src/core/update/updateSlides.mjs
+
+<FunctionCard fn='updateSlides' file='src/core/update/updateSlides.mjs' risk='17.5' band='critical' cc='105' nd='5' fo='44' touches='0' />
+
+`updateSlides` computes slide sizes, positions, snap-grid entries, and CSS custom properties for every slide on every layout recalculation. From the source excerpt, it handles virtual slides, RTL, grid layouts, centered slides, CSS mode offsets, percentage-based `spaceBetween`, function-valued offset parameters, and per-slide margin resets — all in a single pass. CC 105 is extreme by any reasonable standard; it means there are over a hundred distinct paths through this function, each representing a combination of layout options that could interact unexpectedly.
+
+The fan-out of 44 is the third highest across these five functions and, in a core layout function written in JavaScript, likely understates the real coupling because `swiper.params.*` is accessed through dynamic property chains that static analysis may not fully enumerate. The nesting depth of 5 is moderate relative to the mousewheel functions but still above the threshold where a developer can hold the full conditional tree in working memory.
+
+<MetricBar label='Cyclomatic Complexity' value='105' threshold='30' max='130' />
+
+This function has sat untouched for 97 days. The blast radius when someone next needs to add a layout option — say, a new `cssMode` variant or a grid-layout change — is substantial. I would prioritise extracting the grid-initialisation branch (`gridEnabled` / `swiper.grid`) into a dedicated `applyGridLayout(slides)` helper and the CSS-mode offset block into `applyCSSModeOffsets(wrapperEl, params)`. Both are identifiable from the excerpt as cohesive sub-tasks with limited interdependence on the rest of the function.
+
+---
+
+### `onTouchMove` — src/core/events/onTouchMove.mjs
+
+<FunctionCard fn='onTouchMove' file='src/core/events/onTouchMove.mjs' risk='17.29' band='critical' cc='127' nd='4' fo='29' touches='3' />
+
+This is the only fire-quadrant function in the top five and the one I would treat as the most immediately urgent. `onTouchMove` handles pointer and touch events during an active swipe: it reconciles pointer IDs against tracked touch identifiers, resolves the correct `targetTouch`, guards against nested swiper conflicts, enforces `allowTouchMove`, and gates RTL and edge-release logic before computing translation delta. CC 127 is the highest in this entire dataset — 127 independent execution paths through a single event handler that fires continuously during every touch interaction.
+
+Three commits have touched this file in the last 30 days, with two distinct authors. Three of its four total recorded commits are tagged as bug fixes — a 75% rate. I want to be careful here: that does not prove `onTouchMove` is currently defective, but it does establish a pattern of correctness work on this file that makes the combination of CC 127 and active multi-author editing genuinely concerning. With 127 paths, adding a guard for one edge case can inadvertently disable another, and the exit-heavy pattern — multiple early returns scattered throughout the function — makes it hard to trace which guards are even active at any given call site.
+
+The nesting depth of 4 is notably lower than the mousewheel functions, which tells me the branching here is wide rather than deep: many sequential conditionals rather than deeply stacked ones. That actually makes it harder to extract cleanly, because each branch may depend on shared local state set earlier in the function.
+
+<MetricBar label='Cyclomatic Complexity' value='127' threshold='30' max='130' />
+
+My concrete recommendation: add a characterisation test suite — a set of recorded touch event sequences with asserted outcomes — before making any further changes. With CC 127, meaningful refactoring without a regression safety net is higher risk than leaving the function alone. Once that baseline exists, the pointer-type discrimination block (the `pointermove` vs `touchmove` routing near the top of the excerpt) is a natural first extraction candidate.
+
+---
+
+### `Pagination` — src/modules/pagination/pagination.mjs
+
+<FunctionCard fn='Pagination' file='src/modules/pagination/pagination.mjs' risk='17.26' band='critical' cc='44' nd='5' fo='61' touches='0' />
+
+`Pagination` is the module factory for all pagination UI variants — bullets, progressbar, fraction, and custom. From the source excerpt, it defines the full parameter schema (over 20 pagination-specific config keys), initialises closure state, and then defines a series of inner functions: `isPaginationDisabled`, `setSideBullets`, `getMoveDirection`, `onBulletClick`, and presumably several more for rendering each pagination type. The fan-out of 61 is the highest of any function in this top five — 61 distinct callees — which in a UI factory function likely reflects DOM manipulation helpers, class-name utilities, and swiper lifecycle event registrations spread across multiple modules.
+
+In JavaScript, dynamic property access patterns like `bulletEl[\`$\{position === 'prev' ? 'previous' : 'next'\}ElementSibling\`]` (visible in the excerpt) are precisely the kind of coupling that fan-out metrics undercount: the dependency is resolved at runtime and is invisible to static analysis. The god-function and long-function patterns apply here as much as anywhere in this list — this factory is simultaneously a parameter registry, an event-binding layer, and a multi-variant renderer.
+
+Like the other debt-quadrant entries, `Pagination` has been dormant for 97 days with no active authors. When pagination behaviour next needs to change — a new type, an accessibility fix, a dynamic-bullets edge case — any engineer opening this file will be navigating 61 callees and 44 branching paths in a function that no one has touched in three months.
+
+<MetricBar label='Fan-Out' value='61' threshold='15' max='65' />
+
+The most defensible split is to promote each pagination type's render logic into its own named function outside the factory closure — `renderBullets`, `renderProgressbar`, `renderFraction` likely exist as inner functions today based on the parameter schema shown. Moving them out of the closure reduces the factory's own path count, makes each renderer independently testable, and shrinks the fan-out surface that has to be audited on any given change.
+
+---
+
+## The broader picture
+
+Beyond the top five, the `context_only` data surfaces a coherent cluster worth noting. `onTouchEnd` in `src/core/events/onTouchEnd.mjs` sits in the fire quadrant with CC 75 and three commits in the last 30 days — the same five-day recency window as `onTouchMove` and `onTouchStart`. The entire touch event pipeline (`onTouchStart`, `onTouchMove`, `onTouchEnd`) is in active development simultaneously, which compounds the risk of any single change: these three functions share state through `swiper.touchEventsData` and changes to one can affect the invariants the others assume.
+
+The 178 debt-quadrant functions represent the longer-term obligation. None of them are on fire today, but swiper's architecture concentrates complexity in module factories and event handlers that each own far more behaviour than a single function should. The pattern counts — 9 god functions, 9 long functions, 9 exit-heavy functions across just the top hotspots — suggest this is a structural pattern in how the codebase is organised, not isolated incidents.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 9 |
+| `god_function` | 9 |
+| `long_function` | 9 |
+| `complex_branching` | 7 |
+| `deeply_nested` | 5 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/nolimits4web/swiper
+cd swiper
+git checkout 929c01470c7ee0dc29789f61383ef84608c582d9
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
