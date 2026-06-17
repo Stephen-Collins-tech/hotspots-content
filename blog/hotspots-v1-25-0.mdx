@@ -1,0 +1,83 @@
+---
+title: "Hotspots v1.25.0: Repo Screener, CI Workflows, and Cleaner TypeScript Names"
+description: "v1.25.0 ships a pre-flight check for the ML ranker, a one-command GitHub Actions setup, and two CFG correctness fixes that affect TypeScript and Python analysis."
+pubDate: 2026-06-16
+author: "Stephen Collins"
+tags: ["editorial", "hotspots", "complexity", "release"]
+ogImage: "/og.png"
+summary: "v1.25.0 adds `hotspots train --screen` to tell you before training whether your repo has enough signal for a useful ML model, `hotspots init --ci` to scaffold a GitHub Actions workflow in one command, and two CFG fixes: TypeScript/TSX functions are now named from their assigned variable, and Python try/except/finally no longer produces incorrect CFGs when all branches return."
+introContent: "Three things that should have existed already: a way to know if training is worth running, a one-command CI setup, and TypeScript functions that show up under their actual names."
+---
+
+Three things in this release. Two are new capabilities; two are bug fixes. One of the bug fixes has been silently affecting every TypeScript codebase analyzed by hotspots — worth knowing about.
+
+## `hotspots train --screen`
+
+The ML ranker (`hotspots train`) fits a local RandomForest on your repo's own bug-fix history. It works well on some repos and poorly on others — the quality depends on how much fix-commit history exists and how concentrated bugs are in specific functions. Until now there was no way to check fit before spending the compute.
+
+`--screen` adds a pre-flight check. Run it before training:
+
+```bash
+hotspots train . --screen
+hotspots train . --blame --screen
+```
+
+It inspects the git history and snapshot without fitting any model, then checks:
+
+- **Fix-commit count** — enough labeled examples in the label window?
+- **Positive/negative ratio** — is signal too sparse to learn from?
+- **Snapshot coverage** — enough functions to generalize?
+
+If any check fails, it prints a specific reason and exits without touching `.hotspots/ranker.json`. If everything looks good, it says so and exits — still without training, so you can add `--eval` or adjust `--label-window` before committing.
+
+The practical use case: you're evaluating hotspots on a new repo and want to know if training is worth running. `--screen` gives you that answer in seconds instead of after a multi-minute training run that produces a model with P@10 at baseline.
+
+## `hotspots init --ci`
+
+Setting up a hotspots CI check used to mean writing a GitHub Actions workflow by hand. `hotspots init --ci` scaffolds it:
+
+```bash
+hotspots init --ci
+```
+
+This writes `.github/workflows/hotspots.yml` configured for your repo — snapshot mode on `push` to the default branch, diff mode on pull requests with inline annotations, and the right `--format json` flag for the action parser. Commit the file and push; CI picks it up automatically.
+
+## TypeScript/TSX: functions named from their assignment
+
+This one is a correctness fix with real impact on output quality.
+
+In TypeScript and TSX, most functions aren't declared with `function` — they're assigned:
+
+```typescript
+const validate = (schema: Schema) => {
+  // ...
+};
+
+export const useDataFetcher = () => {
+  // ...
+};
+```
+
+Before this fix, hotspots extracted these as anonymous functions and either omitted them from output or reported them without a name, making the hotspot list harder to act on. The fix names each function from its assigned variable — `validate`, `useDataFetcher` — so output now matches what you'd actually search for in your editor.
+
+This affects arrow functions, function expressions, and exported constants. If you've noticed unnamed or missing functions in TypeScript output, this is the fix.
+
+## Python try/except/finally CFG fix
+
+The control flow graph builder for Python produced an incorrect CFG when a `try/except/finally` block had all branches returning — the `try` body, the `except` handler, and the `finally` block each ended with a `return` or `raise`. In that case, the join node after the block has no predecessors, which caused a validation failure and incorrect cyclomatic complexity for the enclosing function.
+
+The fix: join node creation is now lazy — it's only created when at least one branch reaches it. Functions with exhaustive try/except/finally blocks now produce correct CC values.
+
+---
+
+Update with:
+
+```bash
+curl -fsSL https://hotspots.stephencollins.tech/install.sh | sh
+```
+
+or via Homebrew if you installed that way:
+
+```bash
+brew upgrade hotspots
+```
