@@ -1,0 +1,166 @@
+---
+title: "video.js's events.js carries the highest structural debt — 3 functions to address first"
+titleSeo: "video.js code health: events.js technical debt and spatial-navigation refactoring priority"
+description: "Three of the five highest-risk functions in videojs/video.js live in a single file — src/js/utils/events.js — flagging the event subsystem as the highest-priority refactoring target in the codebase."
+introContent: "Three of the top five hotspots in videojs/video.js come from the same file — src/js/utils/events.js — meaning the event-handling module isn't just one overdue cleanup item but a concentration of structural debt that will bite whoever touches it next. I'd treat that file as a single refactoring project, not three separate tickets."
+pubDate: 2026-06-21
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: false
+repo: "videojs/video.js"
+commit: "81b3cb429fae8dd00659ac5d3b0b1d2d20a283cb"
+language: "javascript"
+hotspots_version: "1.25.3"
+analyzed_at: "2026-06-21T07:34:05Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 14.0
+topFunction: "addIndex"
+topFile: "docs/legacy-docs/api/js/doc-script.js"
+topPatterns: ["exit_heavy", "god_function", "long_function", "deeply_nested", "complex_branching"]
+patternCounts: {exit_heavy: 4, god_function: 4, long_function: 4, deeply_nested: 3, complex_branching: 3, stale_complex: 3}
+qaSection:
+  - question: "What is a god function and why does it matter in video.js?"
+    answer: "A god function is a single function that takes on too many distinct responsibilities — it handles multiple concerns that could each stand alone as separate, named operations. In video.js, the `on` function in events.js is a clear example: it manages cache initialization, GUID assignment, dispatcher construction, handler registration, and native listener wiring all in one body. The problem is coupling: a change to any one of those concerns risks breaking the others, and testing any single responsibility requires exercising the whole function. Four of the top five hotspots carry the god-function pattern flag, which means the event subsystem and spatial-navigation module both have functions where a bug fix or feature addition touches more surface area than it should."
+  - question: "How do I reduce cyclomatic complexity in JavaScript?"
+    answer: "Cyclomatic complexity counts the number of independent execution paths through a function — every `if`, `else if`, `for`, `while`, `case`, and `&&`/`||` in a conditional adds one. The most effective reduction technique is decompose-conditional: extract each distinct branching concern into a named function with a single return value. A complexity above 15 warrants splitting the function; above 30, as with `fixEvent`'s CC of 36, the function almost certainly has separable concerns that can become independently testable units. For `fixEvent` specifically, I would start by extracting the deprecated-property blocklist logic and the method-reattachment block (`preventDefault`, `stopPropagation`, etc.) into separate helpers — each extraction removes several branches from the outer function and gives those paths explicit names that document intent."
+  - question: "Is video.js actively maintained?"
+    answer: "The data shows active development and significant structural debt coexisting. Five functions in `src/js/player.js` — including `techGet_`, `error`, `createEl`, `manualAutoplay_`, and `selectSource` — all sit in the fire quadrant with one touch each in the last 30 days and a `days_since_changed` of 0, indicating the player core is being actively worked on. At the same time, the three critical-band functions in `src/js/utils/events.js` — `on`, `off`, and `fixEvent` — haven't been touched in 416 days, and `updateFocusableComponents` in spatial-navigation.js shares the same dormancy. Active development on the player layer and structural debt in the event primitives are not contradictory — they're a common pattern in mature open-source projects where the core infrastructure stabilizes while higher-level features continue evolving."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run against commit `81b3cb4` of videojs/video.js using the Hotspots CLI, available at github.com/hotspots-dev/hotspots. After checking out the repo at that commit with `git checkout 81b3cb4`, run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without additional configuration — no `.hotspotsrc.json` is required to get started, though one is useful for excluding vendored or generated files like the legacy docs tooling."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with how frequently it has been committed to recently, producing a single score that prioritizes functions that are both hard to understand and actively changing. A function with a cyclomatic complexity of 36 that hasn't been touched in 416 days, like `fixEvent`, scores lower than it would if it were being modified weekly, because dormant complexity carries lower near-term regression risk than complexity that is actively being edited. The intent is to surface functions where a developer is most likely to introduce a bug in the near future — not just where the code looks complicated in the abstract — so that refactoring effort lands where it actually reduces risk."
+---
+
+The most striking finding across 1,120 analyzed functions in videojs/video.js is a cluster: three of the five highest-scoring hotspots — `on`, `off`, and `fixEvent` — all live in `src/js/utils/events.js`, and none of them has been touched in 416 days. These are debt-quadrant functions, meaning the risk isn't live regression right now, but the blast radius when the next change lands in that file is significant. Across the full codebase, I found 44 critical-band functions and 38 in the fire quadrant, but the events module's concentration of untouched, structurally complex code is the story I'd bring to a refactoring planning session first.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `addIndex` | docs/legacy-docs/api/js/doc-script.js | 14.0 | 8 | 6 | 16 |
+| `off` | src/js/utils/events.js | 12.7 | 15 | 3 | 8 |
+| `on` | src/js/utils/events.js | 12.7 | 15 | 5 | 16 |
+| `updateFocusableComponents` | src/js/spatial-navigation.js | 12.3 | 12 | 5 | 16 |
+| `fixEvent` | src/js/utils/events.js | 12.2 | 36 | 4 | 5 |
+
+## Large Repo Analysis
+
+video.js is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Codemod / Tooling Files in Results
+
+The top-scoring function `addIndex` lives in `docs/legacy-docs/api/js/doc-script.js` — a legacy documentation generation script, not part of the player runtime. It scored highly due to genuine structural complexity (nesting depth 6, fan-out 16), but changes to it carry no player regression risk. To exclude the legacy docs tooling from future analysis runs, add the following to your `.hotspotsrc.json`: `{ "exclude": ["docs/legacy-docs/"] }`. If the broader docs assets directory contains other bundled or generated scripts, widening the pattern to `"docs/"` may be appropriate depending on whether any source files under `docs/` are part of the build.
+
+## The Concentration Problem in events.js
+
+Before looking at individual functions, it's worth stating the obvious: when three critical-band functions in the same file all share a `days_since_changed` of 416 and zero commits in the last 30 days, the file itself is the unit of risk. `src/js/utils/events.js` is the event backbone of a widely-used open-source media player — `on`, `off`, and `fixEvent` are the primitives that everything else builds on. Structural debt in foundational primitives doesn't rot quietly; it surfaces when someone finally has to change something.
+
+<BandChart fire='38' debt='120' watch='138' ok='824' caption='Quadrant distribution across 1,120 functions in videojs/video.js' />
+
+<PatternCloud patterns='exit_heavy:4,god_function:4,long_function:4,deeply_nested:3,complex_branching:3,stale_complex:3' />
+
+The pattern distribution across the top hotspots reinforces the file-level story: four god-function flags, four long-function flags, and three stale-complex flags. None of these patterns signal imminent fire — they signal accumulated debt that raises the cost of every future edit.
+
+---
+
+### `addIndex` — doc-script.js
+
+<FunctionCard fn='addIndex' file='docs/legacy-docs/api/js/doc-script.js' risk='14.0' band='critical' cc='8' nd='6' fo='16' touches='0' />
+
+`addIndex` carries the highest activity-weighted risk score of 14.0 in this analysis, which is a notable outcome given that it lives in the legacy documentation tooling (`docs/legacy-docs/api/js/doc-script.js`) rather than the player runtime. The function appears to build a side-navigation index by constructing DOM elements, iterating over class members and inherited members, and assembling a tree of list items and headers — the source excerpt shows a cascade of `createEl` calls, nested loops over parent class arrays, and inner helper closures defined inline.
+
+The nesting depth of 6 is what drives the structural score here. The source shows a `makeList` helper defined inside `addIndex`, which itself contains loops that call back into `classHasMembers` and `parentsHaveMembers` — also defined as closures inside the same function body. That inline-closure pattern means all the logic is entangled in a single lexical scope, making it impossible to test any sub-operation in isolation. A fan-out of 16 means the function reaches out to 16 distinct callees, despite the fact that it has only ever received 1 commit and has 0 authors active in the last 90 days.
+
+This function hasn't been touched in 416 days. There's no bug-linked commit history and no revert activity on the file, so there's no historical defect signal — the concern is purely structural. More practically: this is legacy documentation tooling. I would recommend either excluding it from future analysis with an explicit `.hotspotsrc.json` rule (see the vendor note below), or, if the tooling is still actively used, extracting the inner helper closures — `makeList`, `classHasMembers`, `parentsHaveMembers` — into named module-level functions. That alone would reduce the nesting depth from 6 to something closer to 3 and make each piece independently testable.
+
+---
+
+### `off` — events.js
+
+<FunctionCard fn='off' file='src/js/utils/events.js' risk='12.74' band='critical' cc='15' nd='3' fo='8' touches='0' />
+
+`off` is the event-listener removal primitive. The source excerpt makes the branching logic clear: the function guards against missing cache entries, handles array-type arguments by delegating to `_handleMultipleEvents`, removes all listeners when called without a type, removes all listeners for a type when called without a handler, and finally splices out a single handler by GUID when a specific function reference is provided. That's five meaningfully different code paths before you account for the loop internals — which is exactly what a cyclomatic complexity of 15 measures.
+
+The exit-heavy pattern flag is visible directly in the source: there are six distinct early-return points before the function reaches its main single-handler removal logic. Each exit path is a branch that needs its own test case, and the combinations multiply quickly. With 0 commits in the last 30 days and 416 days since the last change, this isn't an active regression risk today — it's structural debt with a meaningful blast radius, because `off` is called by virtually every component that registers event listeners. Its fan-out of 8 understates the real coupling because JavaScript's dynamic dispatch means callers that invoke it through the `EventTarget` mixin won't appear in static analysis.
+
+My concrete recommendation: introduce a `RemoveEventOptions` parameter object to consolidate the type/fn argument variants, which would collapse at least two of the branching paths and make the call sites more self-documenting. That's a non-breaking change if the existing call signatures remain as overloads during a transition period.
+
+---
+
+### `on` — events.js
+
+<FunctionCard fn='on' file='src/js/utils/events.js' risk='12.71' band='critical' cc='15' nd='5' fo='16' touches='0' />
+
+`on` is the registration counterpart to `off` and carries nearly identical cyclomatic complexity (15) but a higher nesting depth (5 versus 3) and a fan-out of 16 — double that of `off`. The source shows why: after the standard guard clauses and multi-event delegation, `on` constructs an inline `dispatcher` closure that itself contains a handler-iteration loop with an early-exit on `isImmediatePropagationStopped`, a try/catch around each handler invocation, and a passive-event detection branch when wiring the native `addEventListener`. All of that logic lives inside the outer function's conditional block, which is what pushes nesting to 5.
+
+The god-function and deeply-nested pattern flags both apply here, and they're related: `on` is doing event normalization, GUID assignment, cache management, dispatcher construction, and native listener registration in a single function body. That's at least four separable responsibilities. The stale-complex flag is also present — this function is structurally complex and hasn't been modified in 416 days, which means whoever eventually needs to add passive-event support for a new event type, or adapt the dispatcher for a new environment, will be doing so inside a function that requires significant context to understand safely.
+
+<MetricBar label='Fan-Out (on)' value='16' threshold='10' max='20' />
+
+I would start refactoring `on` by extracting the dispatcher construction into a named `createDispatcher(data, elem)` function. That extraction alone reduces the nesting depth of the outer function and makes the dispatcher logic independently testable — currently, testing the handler-invocation loop requires constructing enough state to trigger dispatcher creation through the outer function's branches.
+
+---
+
+### `updateFocusableComponents` — spatial-navigation.js
+
+<FunctionCard fn='updateFocusableComponents' file='src/js/spatial-navigation.js' risk='12.25' band='critical' cc='12' nd='5' fo='16' touches='0' />
+
+`updateFocusableComponents` is responsible for discovering all keyboard/remote-navigable components in the player at a given moment — a task that matters significantly for TV and set-top-box deployments where spatial navigation is the primary input model. The source excerpt reveals the structural shape: an outer `forEach` over `player.children_` contains a multi-branch conditional that checks for focusability directly, or delegates to a recursive inner function `searchForChildrenCandidates` for components with nested `children_` or `items` arrays. The recursion itself is defined as a named inner function, adding another nesting layer.
+
+What pushes nesting to 5 is a late section in the function — visible in the source — that special-cases the `ErrorDisplay` component by querying its DOM directly for `.vjs-errors-ok-button-container` buttons and wrapping each raw DOM element in an ad-hoc object literal that mimics the component interface. The source even includes a `TODO` comment acknowledging this as a temporary workaround pending a refactor of `videojs-errors`. That comment has been sitting there for at least 416 days, given that the function hasn't been modified since.
+
+<MetricBar label='Nesting Depth (updateFocusableComponents)' value='5' threshold='4' max='8' />
+
+The god-function and long-function flags both apply, and the complex-branching flag reflects the multi-way conditional that decides whether a child is focusable directly, needs recursive descent, or requires the DOM-query fallback. The `ErrorDisplay` special case is the most actionable extraction target: pulling it into a separate `getFocusableErrorDisplayButtons(component)` helper would reduce nesting in the main traversal and isolate the workaround behind a named boundary, making it easier to delete when the underlying `videojs-errors` refactor eventually happens.
+
+---
+
+### `fixEvent` — events.js
+
+<FunctionCard fn='fixEvent' file='src/js/utils/events.js' risk='12.22' band='critical' cc='36' nd='4' fo='5' touches='0' />
+
+`fixEvent` has the highest cyclomatic complexity of any function in the top five — a CC of 36, placing it well into territory where the number of paths through the function exceeds what any practical test suite covers exhaustively.
+
+<MetricBar label='Cyclomatic Complexity (fixEvent)' value='36' threshold='10' max='50' />
+
+The function normalizes browser event objects into a consistent internal shape — a class of problem notorious for accumulating branches over time as browser compatibility workarounds are added and rarely removed. The source confirms this: the function maintains an explicit deprecation blocklist (`layerX`, `layerY`, `keyLocation`, `webkitMovementX/Y`, `mozPressure`, `mozInputSource`) and guards individual property copies behind version-specific conditionals (the `returnValue`/`preventDefault` split for IE8). It also reattaches `preventDefault`, `stopPropagation`, `stopImmediatePropagation`, and related methods as custom implementations on the cloned event object, each with its own conditional guard.
+
+The complex-branching and long-function patterns both apply. The fan-out of 5 is deceptively low — most of the branching here is property-existence testing rather than function calls, which static fan-out analysis doesn't capture. The stale-complex flag is apt: this function encodes years of browser compatibility knowledge in a dense branching structure, and 416 days of dormancy means that knowledge is effectively undocumented beyond the code itself.
+
+The most practical first step is auditing the browser compatibility scope. The comments reference IE8 and Safari 6 explicitly. If video.js has dropped support for those targets (worth verifying against the current browser support matrix in the repo), several entire conditional blocks could be removed, reducing CC meaningfully without any behavioral change. What remains after that cleanup would be a more honest picture of what complexity is actually load-bearing.
+
+---
+
+## The fire-quadrant context: player.js
+
+While the events.js debt cluster dominates the top five, the data shows something worth tracking separately: five functions in `src/js/player.js` — `techGet_`, `error`, `createEl`, `manualAutoplay_`, and `selectSource` — all sit in the fire quadrant, each touched once in the last 30 days with a `days_since_changed` of 0. These are actively changing functions in the player core right now. `createEl` in `player.js` carries a fan-out of 25 and a CC of 21, with both god-function and long-function flags. Because these functions are being modified while carrying significant structural complexity, they represent live regression risk that the dormant events.js functions do not — I'd monitor them on every merge into the player layer.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 4 |
+| `god_function` | 4 |
+| `long_function` | 4 |
+| `deeply_nested` | 3 |
+| `complex_branching` | 3 |
+| `stale_complex` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/videojs/video.js
+cd video.js
+git checkout 81b3cb429fae8dd00659ac5d3b0b1d2d20a283cb
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
