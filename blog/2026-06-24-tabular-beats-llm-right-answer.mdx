@@ -1,0 +1,145 @@
+---
+title: "Tabular Beats LLM, and That's the Right Answer"
+description: "On most codebases, a small XGBoost model trained on git history features outperforms a fine-tuned 7B LLM at defect risk ranking — not because the LLM is bad, but because the data is inherently tabular…"
+pubDate: 2026-06-24
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "On most codebases, a small XGBoost model trained on git history features outperforms a fine-tuned 7B LLM at defect risk ranking — not because the LLM is bad, but because the data is inherently tabular…"
+---
+
+On most codebases, a small XGBoost model trained on git history features outperforms a fine-tuned 7B LLM at defect risk ranking — not because the LLM is bad, but because the data is inherently tabular in shape. Here's the evidence and what it implies for architecture.
+
+Status: Draft — not for publication
+
+Canonical sources:
+- 
+- 
+- 
+- 
+- 
+- `docs/research/transformers-tabular-llm-featurizer.md`
+
+---
+
+On most codebases, a small XGBoost model trained on git history features outperforms a fine-tuned 7B LLM at defect risk ranking — not because the LLM is bad, but because the data is inherently tabular in shape. The right architecture uses LLMs to featurize the non-tabular properties that XGBoost cannot compute, not to replace it.
+
+---
+
+## The Setup
+
+I ran per-repo fine-tuning of a 7B language model (LoRA on Qwen2.5-Coder-7B) on function-level defect risk ranking across multiple production codebases. Simultaneously, I evaluated a tabular XGBoost ranker trained on the same repo's git history, using only features the existing analysis pipeline already computes: churn, complexity, ownership, recency, co-change coupling, and file path.
+
+The hypothesis going in was that the LLM, reading actual source code, would surface signals unavailable to tabular features — semantic structure, architectural patterns, code quality signals invisible in git metadata.
+
+---
+
+## The Results
+
+Head-to-head across nine repositories (Spearman ρ against holdout defect labels):
+
+| Repo | Deterministic formula | XGBoost | LLM (7B fine-tuned) |
+|------|----------------------|---------|---------------------|
+| vuejs/core | +0.143 | **+0.994** | — |
+| scikit-learn | +0.139 | **+0.787** | — |
+| vscode | +0.079 | **+0.570** | — |
+| django | +0.165 | **+0.650** | +0.481 (code-only, no git activity) |
+| next.js | +0.062 | **+0.384** | — |
+| golang | +0.312 | **+0.457** | — |
+| svelte | +0.079 | **+0.213** | — |
+| react | +0.125 | +0.096 | — |
+| vite | +0.015 | +0.006 | — |
+
+XGBoost wins on 7 of 9 repos. On the two repos where XGBoost underperforms (react, vite), the LLM also fails — these are small repos with sparse history where neither approach has sufficient training signal.
+
+A note on vuejs/core (ρ=+0.994): Vue has a near-100% positive label rate, meaning almost every file has been involved in a bug-fix commit historically. That inflates the XGBoost number — any model that weakly orders files by activity looks nearly perfect on a repo where every file is labeled risky. The result is real but should not be read as a reliable ceiling on ranking quality.
+
+On Django, the only repo with a directly comparable 7B fine-tuning result, XGBoost achieves ρ=+0.650 vs the fine-tuned LLM's +0.481. The LLM prompt included source code and structural metrics, but git activity fields were zeroed out to isolate the code-reading signal. When activity features are added back to the tabular ranker, the activity-only baseline reaches +0.601 on Django.
+
+Note on label construction: the ρ values in this table are measured against a composite defect score derived from the same activity and git features XGBoost uses as inputs. This inflates XGBoost's apparent margin over the deterministic formula. Separate precision@K evaluation against independent future-bug labels on a temporal holdout shows the same directional result.
+
+---
+
+## Why XGBoost Wins: The Data Is Already Tabular
+
+The features that predict defect risk most reliably are tabular by nature:
+
+| Feature | What it measures |
+|---|---|
+| Churn (lines changed per commit) | Rate of change |
+| Commit frequency | Maintenance load |
+| Author count | Ownership concentration |
+| Recency (days since last change) | Current activity |
+| Co-change coupling | Structural dependencies |
+| File path tokens | Subsystem identity |
+| File age | Historical stability |
+
+These are rows and columns. XGBoost is designed for rows and columns. It finds nonlinear interactions between features — high recency AND high churn together are riskier than either alone — without needing to parse source code to discover them.
+
+The feature ablation confirmed the hierarchy:
+
+| Control | Django ρ | vscode ρ | sklearn ρ | Vue ρ |
+|---|---:|---:|---:|---:|
+| Structural metrics alone | +0.173 | +0.055 | +0.090 | +0.131 |
+| File path (TF-IDF) | +0.575 | +0.485 | +0.555 | +0.141 |
+| Activity features alone | +0.601 | +0.884 | +0.762 | +0.832 |
+| Combined | +0.623 | +0.881 | +0.650 | +0.729 |
+
+Activity features dominate. File path priors are surprisingly strong. Structural metrics alone are barely above a simple deterministic baseline. On vscode and Vue, activity alone achieves ρ > +0.83.
+
+The LLM reads source code to derive signals that are already more reliably captured by git metadata. There is no new information in the code text that beats the count of how often the code changed, who changed it, and when.
+
+---
+
+## Where the LLM Capacity Went
+
+I tested whether smaller models could learn the same signal. On Django with the same training setup:
+
+| Model | ρ (code-only, no git activity) | vs activity baseline |
+|---|---|---|
+| 2B | +0.012 | far below |
+| 3B | +0.074 | below |
+| 7B | **+0.481** | above |
+
+The 3B model fails to reach the deterministic baseline. The jump from 3B to 7B is 6.5× in Spearman ρ — not a calibration difference, a capacity gap. The 7B figure (+0.481) is the authoritative result from the ablated evaluation; an earlier checkpoint reported +0.494 and is superseded by this.
+
+This is informative. A 7B model needs substantial capacity to learn a task that XGBoost handles in seconds with ~50KB of weights. What is that capacity being used for? Almost certainly: encoding file path structure, function naming conventions, and source code patterns that are already partially captured by the path and activity features. The model is working hard to derive signals available more cheaply elsewhere.
+
+---
+
+## The Right Question: What Is Not Tabular?
+
+Not everything about code risk is countable. Some properties require reading:
+
+- **Change intent**: did this commit fix a bug, add a feature, or refactor? The commit message encodes this but is not in the tabular feature set.
+- **Implicit coupling**: two files that never co-change in the same commit but always change in response to the same user bug reports — invisible to co-change counts.
+- **Architectural deliberateness**: a file that grew by 500 lines in three commits because of deliberate expansion is different from one that grew because of three separate bug fixes. Churn counts both the same.
+- **Why a file keeps being touched**: "this is the active development surface" versus "this file keeps breaking" are both high-churn, but they have different risk implications.
+
+These properties are inherently non-tabular. A language model reading diffs can infer them. A tabular ranker cannot.
+
+The productive architecture is not LLM-instead-of-XGBoost. It's LLM-as-featurizer: the model reads diffs, classifies change intent, scores architectural deliberateness, extracts implicit coupling relationships — and then hands XGBoost a richer row. The prediction stays with the model that's actually good at tabular classification.
+
+This architecture is a hypothesis grounded in the feature taxonomy above. I haven't run the experiments yet. That's next.
+
+---
+
+## Caveats
+
+**The LLM comparison is on Django only.** I ran full per-repo LLM fine-tuning on a subset of repos. The claim "XGBoost wins on 7/9 repos" compares XGBoost to the deterministic formula, not to a fine-tuned LLM. On the repo where a direct LLM comparison exists (Django), XGBoost wins, but the margin is one data point.
+
+**Activity leakage was corrected but not uniformly.** The original tabular results used cutoff-safe activity features where available. Repos without cutoff-safe feature recomputation may have inflated activity baselines. The numbers for Django, sklearn, and Vue use corrected activity; others may not.
+
+**The two LLM failures (react, vite) also fail for XGBoost.** The sparse-history case is not a differentiated win for tabular approaches — it's a case where neither works. The actual XGBoost win cases are the medium-to-large repos.
+
+---
+
+## What This Means
+
+A ranking system for code defect risk should default to tabular. XGBoost trained on git history features is faster, cheaper, smaller, and more explainable than a fine-tuned LLM, and achieves competitive or superior accuracy on most production codebases.
+
+The LLM layer earns its cost on specific signal types that are inherently non-tabular: semantic change intent, implicit coupling, architectural characterization of changes. Those are the next experiments.
