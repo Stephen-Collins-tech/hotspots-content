@@ -1,0 +1,111 @@
+---
+title: "The Signal That Evaporated (And the One That Didn't)"
+description: "Two signals looked nearly identical on paper. One collapsed under temporal holdout. The other survived — and the difference tells you something important about how to design defect prediction features…"
+pubDate: 2026-06-24
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Two signals looked nearly identical on paper. One collapsed under temporal holdout. The other survived — and the difference tells you something important about how to design defect prediction features…"
+---
+
+Two signals looked nearly identical on paper. One collapsed under temporal holdout. The other survived — and the difference tells you something important about how to design defect prediction features.
+
+## The Setup
+
+A standard evaluation mistake in defect prediction: compute a signal on the full commit history, compute labels from the same history, measure correlation, report a strong result.
+
+The problem is obvious in retrospect. If your feature and your label are both derived from the same set of commits, a high correlation doesn't mean the signal is predictive — it means the signal and the label are measuring the same thing from different angles.
+
+The fix is a temporal holdout: split history at a cutoff date, compute features from everything before, compute labels from everything after, then measure whether historical signal predicts future defect concentration. Features and labels can't share data if there's a wall between them.
+
+I ran this test on two signals that had shown strong in-sample correlations.
+
+---
+
+## Signal 1: Bug-Fix Commit Rate (fix_density)
+
+`fix_density` is the fraction of a file's commits that were labeled as bug-fix commits. In a standard (non-temporal) evaluation across three repos, it achieved Spearman ρ ≥ 0.944. That's an impressive number. It earned a recommendation for promotion to the CLI.
+
+Under temporal holdout — features from pre-2024 commits, labels from post-2024 commits:
+
+| Repo | fix_density ρ | Activity baseline ρ | Verdict |
+|---|---|---|---|
+| django | +0.095 | +0.140 | WEAK — below baseline |
+| react | −0.013 | n/a | CIRCULAR |
+| vscode | +0.109 | +0.056 | SIGNAL |
+
+From ρ=+0.944 to ρ=+0.095 on django. From ρ=+0.999 to ρ=−0.013 on react.
+
+The in-sample number was not measuring predictive power. It was measuring how well the feature correlates with itself across different time windows — which is close to 1.0 by construction when both windows cover the same commits.
+
+vscode is the exception. It still shows genuine signal (ρ=+0.109, above the activity baseline). The likely explanation: vscode is a large, consistently-maintained codebase where bug concentration is stable enough across multi-year timescales that historical fix-commit density genuinely predicts future defect location. That stability doesn't exist on react, where churn patterns shift faster.
+
+**Verdict: do not promote fix_density as a CLI feature.** One survivor out of three is not a signal — it's a candidate for further investigation.
+
+---
+
+## Signal 2: Bug-Fix Commit Count (convention_bug_fix_count)
+
+The second signal is superficially similar: count of commits to a file that matched fix-keyword patterns (`fix`, `bug`, `patch`, etc.). The hypothesis going in was that this would fail in the same way — that it was circular for the same reason.
+
+It wasn't.
+
+Under temporal holdout across five repos:
+
+| Repo | bug_fix_count ρ | Activity baseline ρ | Verdict |
+|---|---|---|---|
+| django | +0.318 | +0.140 | SIGNAL |
+| vscode | +0.232 | +0.056 | SIGNAL |
+| vuejs/core | +0.572 | +0.104 | SIGNAL |
+| golang | +0.166 | +0.229 | WEAK |
+| react | +0.001 | +0.249 | CIRCULAR |
+
+Three SIGNAL results, one WEAK, one CIRCULAR. Mean ρ across all five: +0.258 — meaningfully above the activity baseline mean of +0.156.
+
+Replicated on five smaller repos: gin (+0.504), httpx (+0.264), axios (+0.286), frp (+0.191) — all SIGNAL. shadcn was the exception (ρ=−0.012, not significant).
+
+**Combined across ten repos: 7 SIGNAL, 1 WEAK, 2 CIRCULAR (react, shadcn).**
+
+---
+
+## Why They Diverged
+
+`fix_density` is a *rate*: fix-commit count divided by total commit count. `convention_bug_fix_count` is a *count*.
+
+The circularity in fix_density comes from the denominator. Total commit count is a strong proxy for file activity, which is already a strong signal in its own right. When you divide fix commits by total commits, you're partly controlling out the activity signal — but in a temporal holdout, you're also dividing the pre-cutoff fix signal by pre-cutoff activity, then comparing to post-cutoff labels. The normalization introduces instability: a file that was high-activity before 2024 but less active after 2024 will have a misleadingly high fix_density relative to its post-cutoff defect rate.
+
+The count doesn't normalize. A file with 50 fix-commit touches before 2024 is likely to have a structurally risky surface area — the kind of code that keeps breaking. That historical count predicts where future bugs land more robustly because it's measuring cumulative fragility, not recent rate.
+
+There's also a base rate effect. On react (circular for both signals), Facebook's release and branching practices mean the same files are touched repeatedly for non-defect reasons, diluting both signals. On vuejs (strongest count result at +0.572), the codebase is smaller and more concentrated — bug history genuinely persists in the same places over time.
+
+---
+
+## What This Means for Feature Design
+
+The lesson isn't "counts beat rates." It's "verify that your feature and your label are not sharing data before you report the correlation."
+
+The practical protocol:
+1. Split at a cutoff date before computing anything.
+2. Compute features from the pre-cutoff window only.
+3. Compute labels from the post-cutoff window only.
+4. Report ρ between those two independent sets.
+
+If the in-sample ρ is 0.94 and the temporal holdout ρ is 0.09, the in-sample number was circular. The signal evaporated because it was never there.
+
+`convention_bug_fix_count` passed this test on 7 of 10 repos, including four languages and a range of repo sizes. It's a valid feature candidate for the tabular ranker — not as a standalone metric, but as a complementary column that survives the check that fix_density failed.
+
+---
+
+## Caveats
+
+**The test repos are not random.** Django, VSCode, Vue, and React are large, high-traffic repos with long histories. The signal may be weaker on smaller repos with fewer years of fix-commit data to draw on.
+
+**The label field used was count-predicts-count.** A stricter test would be: does historical fix-commit count predict whether a file has *any* bug in the post-cutoff window (binary label). The binary version of this test has not been run.
+
+**React and shadcn are structural exceptions, not noise.** React's monorepo and Facebook's release pattern causes fix commits to be distributed rather than concentrated. shadcn's component-library structure has a similar effect. The signal fails for interpretable structural reasons — it's not random failure.
+
+**Golang is borderline (WEAK).** The Go standard library has an unusually stable file layout over time, which inflates the activity baseline and makes it harder for any single feature to beat it.
