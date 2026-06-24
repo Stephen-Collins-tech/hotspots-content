@@ -1,0 +1,163 @@
+---
+title: "streamlit's server and script-runner layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "streamlit code health: websocket endpoint and script runner lead refactoring priority in 2026"
+description: "Five critical-band functions across streamlit's server, script-runner, testing, and component layers are both structurally complex and actively changing, making them live regression risks at commit 7f4879f."
+introContent: "Five functions in streamlit's core layers are simultaneously the most structurally complex and the most actively touched — meaning every commit landing on them this week is a regression bet made against code that already has up to 136 independent execution paths. If your team is shipping to streamlit's server or script-runner subsystems right now, these are the numbers that should be on your radar."
+pubDate: 2026-06-24
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: true
+repo: "streamlit/streamlit"
+commit: "7f4879fd890b41e459c2ca6efbe4b2cf57e2bb78"
+language: "python"
+hotspots_version: "1.25.3"
+analyzed_at: "2026-06-24T12:34:16Z"
+clone_depth: 100
+topRisk: 19.82
+topFunction: "_websocket_endpoint"
+topFile: "lib/streamlit/web/server/starlette/starlette_websocket.py"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 5, deeply_nested: 3, exit_heavy: 5, god_function: 5, long_function: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in streamlit?"
+    answer: "A god function is a single function that takes on so many responsibilities that it becomes the de facto owner of a broad slice of system behavior — it calls many other functions, handles many distinct cases, and accumulates complexity that properly belongs in separate, focused modules. In Python, the problem is amplified because duck typing makes the coupling to all those callees implicit: there is no declared interface to signal what a callee expects, so a god function's actual dependency surface is larger than its call count alone suggests. Every one of the five top hotspots in streamlit is flagged as a god function — `_run_script` calls 51 distinct functions and `parse_tree_from_messages` calls 58 — meaning a change to any of those callees is a potential silent breakage in these central functions. The practical consequence is that god functions are both hard to test in isolation and high blast-radius targets: a single modification must be mentally traced through all the responsibilities the function owns."
+  - question: "How do I reduce cyclomatic complexity in Python?"
+    answer: "Cyclomatic complexity counts independent execution paths, so the most direct reduction technique is decompose-conditional: extract each major branch into a named function that expresses its intent, turning a 50-branch monolith into a dispatcher that reads like a table of contents. A CC above 15 warrants splitting; above 30 it should be treated as a blocking issue before adding new branches. For `parse_tree_from_messages` — the most extreme case here at CC 136 — the concrete first step is to introduce a registry: a `dict` mapping each protobuf element-type string to a factory function, so the `elif` chain collapses into a single `registry[ty](elt, root)` call. That transformation alone could reduce the CC by an order of magnitude while making each element handler independently testable without instantiating the full message-parsing pipeline."
+  - question: "Is streamlit actively maintained?"
+    answer: "The data makes a clear case for active maintenance: all 1,379 structurally complex functions are in the 'fire' quadrant, meaning high complexity is paired with recent commit activity across the board — there is no dormant-debt quadrant at all. The top five hotspots collectively accumulated 8 touches in the last 30 days, and both `_run_script` (touches_30d: 2, days_since_changed: 0) and `_bidi_component` (touches_30d: 2, days_since_changed: 0) recorded changes on the day of analysis itself. What the data also shows is that active maintenance and structural accumulation are co-occurring: `_run_script`'s fan-out of 51 and `parse_tree_from_messages`'s cyclomatic complexity of 136 are not signs of neglect — they are signs of a framework whose public API surface keeps expanding, and whose core functions absorb that expansion without yet being refactored to match."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run against streamlit/streamlit at commit `7f4879f` using the Hotspots CLI, available at github.com/hotspots-dev/hotspots. To reproduce it, check out that commit with `git checkout 7f4879f` inside your local clone of the repository, then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without additional configuration — point it at your own codebase to get an equivalent risk-ranked breakdown."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk (reported as activity_risk) is a score that combines structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with recent commit frequency, so that functions which are both hard to understand and actively changing score the highest. A function with cyclomatic complexity 136 that has not been touched in two years scores much lower than one with CC 43 touched twice in the last 30 days, because the complex-but-dormant function poses lower near-term regression risk than the one where engineers are making decisions inside complex branching logic right now. The intent is to help teams prioritize refactoring effort where it reduces the probability of bugs being introduced in the current development cycle, not simply where the code looks complicated in the abstract — `_run_script`'s activity_risk of 18.94 reflects exactly that combination of structural weight and live commit pressure."
+---
+
+At commit 7f4879f, every one of the top five highest-risk functions in streamlit/streamlit sits in the 'fire' quadrant — high structural complexity and active commit churn at the same time. Across 5,269 total functions, 449 are rated critical, and the top-ranked function, `_websocket_endpoint`, carries an activity_risk of 19.82 with a cyclomatic complexity of 50 and a nesting depth of 8, touched 14 days ago. I would start there precisely because it is not a cleanup item for next quarter — it is a live surface where a misread branch today could break session establishment for every connected client.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `_websocket_endpoint` | lib/streamlit/web/server/starlette/starlette_websocket.py | 19.8 | 50 | 8 | 28 |
+| `_run_script` | lib/streamlit/runtime/scriptrunner/script_runner.py | 18.9 | 43 | 6 | 51 |
+| `formatNumber` | frontend/lib/src/util/formatNumber.ts | 18.5 | 18 | 9 | 12 |
+| `parse_tree_from_messages` | lib/streamlit/testing/v1/element_tree.py | 17.8 | 136 | 4 | 58 |
+| `_bidi_component` | lib/streamlit/components/v2/bidi_component/main.py | 17.5 | 56 | 4 | 40 |
+
+## Quadrant and pattern overview
+
+<BandChart fire='1379' debt='0' watch='3890' ok='0' />
+
+Every function in this codebase lands in either 'fire' or 'watch' — there is no dormant-debt quadrant and no truly quiet quadrant. That means structural complexity is not sitting in cold storage waiting to be discovered; it is co-located with active development across the board. The 1,379 'fire' functions represent code that is both hard to reason about and actively changing right now.
+
+<PatternCloud patterns='complex_branching:5,exit_heavy:5,god_function:5,long_function:5,deeply_nested:3' />
+
+All five top hotspots share the same four antipatterns: complex branching, exit-heavy control flow, god-function scope, and excessive length. Three of the five are also deeply nested. That combination means each function is simultaneously hard to test completely (many exit paths), hard to read (deep nesting), and a blast-radius risk when changed (broad coupling through high fan-out).
+
+---
+
+### `_websocket_endpoint` — starlette_websocket.py
+
+<FunctionCard fn='_websocket_endpoint' file='lib/streamlit/web/server/starlette/starlette_websocket.py' risk='19.82' band='critical' cc='50' nd='8' fo='28' touches='1' />
+
+This async function is the front door for every browser connection to a running streamlit app. From the source excerpt, I can see it handles origin validation, XSRF token checking, signed-cookie parsing for auth, token filtering, session establishment, and the receive loop — all inside a single function body. That explains the cyclomatic complexity of 50: each security check, each cookie-parsing branch, each protocol-enforcement path is an independent execution branch.
+
+The nesting depth of 8 is the number that concerns me most structurally. The excerpt shows nested `try` blocks inside `if is_xsrf_enabled()` inside the outer `try`, with conditional token extraction several levels deeper. At ND 8, a reader has to hold the entire stack of conditions in working memory to understand what state the code is in at any given statement. In Python, that burden is compounded by implicit duck typing — the `websocket` object's behavior at each call site depends on the runtime type, not a declared interface, so the coupling implied by the fan-out of 28 is likely even broader than the number suggests.
+
+<MetricBar label='Cyclomatic Complexity' value='50' threshold='10' max='60' />
+<MetricBar label='Max Nesting Depth' value='8' threshold='4' max='10' />
+
+The file has only one commit in its history with a single author in the last 90 days, and no bug-linked commits or reverts. That means there is no historical defect signal here — but the absence of defect history on a one-commit file also means the function has not yet been stress-tested by repeated change. It was touched 14 days ago, and its exit-heavy structure means any new security requirement (a new token type, a new XSRF mode) will add yet another branch to an already overloaded function.
+
+**Recommendation:** Extract the XSRF and auth-cookie logic into a dedicated `_resolve_user_info(websocket) -> dict` coroutine, and extract the receive loop into `_run_receive_loop(websocket, session_id)`. That alone would halve the CC and bring the nesting depth under 5, while making each security concern independently testable.
+
+---
+
+### `_run_script` — script_runner.py
+
+<FunctionCard fn='_run_script' file='lib/streamlit/runtime/scriptrunner/script_runner.py' risk='18.94' band='critical' cc='43' nd='6' fo='51' touches='2' />
+
+This is the engine that executes a user's Streamlit script on every rerun. The source excerpt shows an explicit `while True` loop (chosen deliberately to avoid recursion stack overflows, per the inline comment), page-change detection, widget-state filtering, query-parameter management across multi-page apps, and media-file reference cleanup — all orchestrated from one function. A fan-out of 51 in Python is significant: 51 distinct callees means a change here can ripple into the pages manager, session state, query params, the media file manager, the sources watcher, and the script run context simultaneously.
+
+<MetricBar label='Fan-Out' value='51' threshold='15' max='60' />
+
+It was touched twice in the last 30 days — including a change recorded at `days_since_changed: 0`, meaning it was modified on the analysis date itself. The `pr_review_comment_density` of 1.0 is the only non-zero review signal in the top five, which tells me reviewers are already asking questions about this function. With CC 43 and ND 6, every new rerun scenario (fragment reruns, page transitions with stale widget state, query-param scoping) adds another branch to a function that is already testing the limits of what a human can reason about in a single sitting.
+
+The god-function and long-function patterns are evident: the excerpt alone covers fragment detection, page-script-hash resolution, widget-state freezing, and query-string population — and that is only the setup phase before the actual script execution.
+
+**Recommendation:** I would extract the page-transition logic (widget-state filtering + query-param scoping) into a `_prepare_page_transition(ctx, rerun_data)` method. That is a self-contained concern with clear inputs and outputs, and isolating it would bring the CC down meaningfully while making the page-transition behavior independently testable — which matters given that multi-page app edge cases appear to be where this function is actively evolving.
+
+---
+
+### `formatNumber` — formatNumber.ts
+
+<FunctionCard fn='formatNumber' file='frontend/lib/src/util/formatNumber.ts' risk='18.47' band='critical' cc='18' nd='9' fo='12' touches='1' />
+
+Despite being a TypeScript utility rather than Python, this function earns its critical band through nesting depth alone: ND 9 is the deepest of any function in the top five, and it manifests as a cascading `if/else if` chain — one branch for each supported format string (`plain`, `localized`, `percent`, `dollar`, `euro`, `yen`, and others visible in the excerpt), with each branch containing its own precision-adjustment logic. The excerpt shows the percent branch alone requires two nested `notNullOrUndefined` checks and arithmetic on `maxPrecision` to back-calculate the correct decimal count after the formatter multiplies by 100.
+
+<MetricBar label='Max Nesting Depth' value='9' threshold='4' max='10' />
+
+With CC 18, there are 18 independent paths through this function, each corresponding to a distinct formatting mode and precision combination. Every path is a potential rendering regression in any dataframe, metric, or column that displays numbers. The exit-heavy pattern means those paths terminate at different points, making exhaustive test coverage non-trivial to verify. The function was touched 14 days ago with one author active in the last 90 days and no prior bug or revert signal — but number-formatting bugs are notoriously hard to catch without locale-specific test cases.
+
+**Recommendation:** Replace the `if/else if` format-dispatch chain with a map of format keys to handler functions, each encapsulating its own precision logic. This converts 18 branching paths into a single lookup plus one handler call, flattening the nesting depth dramatically and making each format mode independently testable and extendable without touching the dispatcher.
+
+---
+
+### `parse_tree_from_messages` — element_tree.py
+
+<FunctionCard fn='parse_tree_from_messages' file='lib/streamlit/testing/v1/element_tree.py' risk='17.76' band='critical' cc='136' nd='4' fo='58' touches='2' />
+
+This function has the highest raw cyclomatic complexity in the entire top five — CC 136 — by a wide margin. It lives in the testing framework (`testing/v1/`), and from the source excerpt it is clear why: it is a monolithic message dispatcher that walks a list of `ForwardMsg` protobuf messages and constructs the in-memory element tree used by Streamlit's app-testing API. Each element type (alert, dataframe, table, button, checkbox, heading, image, and dozens more visible in the excerpt) is handled by its own `elif` branch, and some types fork further — alerts branch on format, checkboxes branch on style, headings branch on tag.
+
+<MetricBar label='Cyclomatic Complexity' value='136' threshold='30' max='150' />
+<MetricBar label='Fan-Out' value='58' threshold='15' max='70' />
+
+At CC 136, there are 136 independent execution paths — one for every element-type and sub-type combination the testing framework must recognize. Every new Streamlit widget added to the public API requires a new branch here, which explains the two touches in 30 days and a `bug_fix_fraction` of 0.3333 across the file's three total commits. One in three commits to this file has been a bug fix, which is consistent with what you'd expect from a function that must stay synchronized with the full element surface area of the framework.
+
+The fan-out of 58 reflects the breadth of that coupling: this function directly instantiates node classes for nearly every element type in the framework. In Python, each instantiation is a duck-typed call — the actual constructor behavior is resolved at runtime, so a signature change to any node class can silently break this function if the mismatch isn't caught by tests.
+
+**Recommendation:** The long-term fix is a registry pattern: each element type registers its own factory function keyed on the protobuf type string, so `parse_tree_from_messages` becomes a generic dispatcher that looks up and calls the appropriate factory. In the near term, even splitting the alert, heading, and checkbox sub-dispatch into dedicated helper functions would reduce the CC materially and give each sub-type its own test surface.
+
+---
+
+### `_bidi_component` — main.py
+
+<FunctionCard fn='_bidi_component' file='lib/streamlit/components/v2/bidi_component/main.py' risk='17.51' band='critical' cc='56' nd='4' fo='40' touches='2' />
+
+The `v2` in the file path signals that this is a second-generation component API. The function implements the full lifecycle of adding a bidirectional component instance to a running app: it validates the script run context, resolves the component from a runtime registry, handles serialization of data (including pandas DataFrames and NumPy arrays per the docstring), enforces style isolation via shadow DOM, wires up `on_*_change` callbacks from `**kwargs`, and manages session state for component results. That scope — registry lookup, data serialization, style sandboxing, event dispatch, state management — in a single method is what produces the CC of 56 and fan-out of 40.
+
+<MetricBar label='Cyclomatic Complexity' value='56' threshold='10' max='60' />
+<MetricBar label='Fan-Out' value='40' threshold='15' max='50' />
+
+The function was last modified at `days_since_changed: 0`, meaning it changed on the same day this analysis was run, and it has been touched twice in the last 30 days by two different authors. Two authors with concurrent recent activity on a CC 56 function in Python is a coordination risk: duck typing means the coupling to downstream serializers, the registry, and the session state is implicit, and two engineers making independent assumptions about that coupling can produce conflicts that only surface at runtime.
+
+The `components/v2/` path also deserves a note: the `v2` designation implies a prior version exists. If `v1` is still in use, any behavior change in `_bidi_component` that diverges from `v1` semantics becomes a compatibility surface to manage — adding yet another dimension of branching risk to an already complex function.
+
+**Recommendation:** The kwargs-to-callback wiring (parsing `on_*_change` keyword arguments) is a self-contained concern that could be extracted immediately into a `_resolve_callbacks(kwargs) -> dict` helper. Separately, the data-serialization path (handling DataFrames, arrays, and JSON-serializable types) is another natural extraction target. Either refactoring reduces the fan-out and CC while making the component protocol easier to test in isolation.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `deeply_nested` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/streamlit/streamlit
+cd streamlit
+git checkout 7f4879fd890b41e459c2ca6efbe4b2cf57e2bb78
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
