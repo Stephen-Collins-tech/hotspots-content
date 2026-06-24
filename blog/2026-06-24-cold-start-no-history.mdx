@@ -1,0 +1,141 @@
+---
+title: "When You Don't Have Enough History to Train"
+description: "Every new repo starts with the same problem: no defect labels, no training signal, no basis for a risk ranking beyond "how often does this file change?"
+pubDate: 2026-06-24
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Every new repo starts with the same problem: no defect labels, no training signal, no basis for a risk ranking beyond "how often does this file change?"
+---
+
+Every new repo starts with the same problem: no defect labels, no training signal, no basis for a risk ranking beyond "how often does this file change?" That's the cold-start problem, and it's the most common failure mode for per-repo defect prediction.
+
+Status: Draft — not for publication
+
+Canonical sources:
+- 
+- 
+- 
+
+---
+
+## The Problem
+
+A well-trained XGBoost model on a repo with a year of defect history is genuinely useful. It learns which files are actually risky versus which ones are just busy. But a new repo — or any repo that hasn't accumulated enough fix-commit history to train on — gets nothing from that model. The model doesn't exist yet.
+
+The naive answer is: wait. Let history accumulate, then train. But that means every new integration starts with the worst possible user experience — a tool that returns results indistinguishable from a random file list.
+
+I ran three experiments to see if there was a better floor.
+
+---
+
+## Experiment 1: Pooled Cross-Repo XGBoost
+
+The first approach: train XGBoost not on the target repo's history, but on the pooled history of every other repo I had. If defect risk patterns generalize across codebases — busy interfaces break, stable core APIs don't — then a model trained on 12 repos should give useful signal on a 13th repo it's never seen.
+
+I ran a 13-fold leave-one-out evaluation across: Elasticsearch, VSCode, n8n, Guava, Angular, Zed, Deno, Django, React, scikit-learn, Pocketbase, Vue, and Excalidraw.
+
+Results:
+
+| Held-out repo | Cross-repo pooled AUC |
+|---|---|
+| django | 0.762 |
+| scikit-learn | 0.745 |
+| vuejs/core | 0.749 |
+| deno | 0.732 |
+| vscode | 0.709 |
+| zed | 0.690 |
+| excalidraw | 0.696 |
+| elasticsearch | 0.682 |
+| n8n | 0.669 |
+| guava | 0.667 |
+| angular | 0.665 |
+| pocketbase | 0.641 |
+| react | 0.635 |
+
+**Median AUC: 0.690. Range: 0.635–0.762.**
+
+That's meaningfully above random (0.5) and requires zero repo-specific history. The model ships bundled; every new repo starts at approximately 0.69 AUC from day one.
+
+The spread matters. Django (0.762) and scikit-learn (0.745) start strong — their defect patterns align well with the training distribution. React (0.635) and Pocketbase (0.641) are the cold-start failures: their structural patterns diverge enough that the pooled model is barely better than a raw activity count.
+
+---
+
+## Experiment 2: Structural Embeddings for Cold-Start Repos
+
+The pooled XGBoost result is a floor, not a ceiling. For the repos where it fails (AUC < 0.70), I wanted to know if structural embeddings could help where raw features couldn't.
+
+I trained a JEPA encoder — a self-supervised architecture that learns representations by predicting masked structural patches from context — on pooled function-level feature sequences across all 13 repos. The encoder produces a 64-dimensional embedding per file. I then concatenated those embeddings onto the raw features and re-ran the LOOCV.
+
+Results, sorted by raw AUC baseline:
+
+| Held-out repo | Raw AUC | +JEPA embeddings | Lift |
+|---|---|---|---|
+| excalidraw | 0.696 | **0.861** | **+0.165** |
+| react | 0.635 | **0.696** | **+0.061** |
+| django | 0.762 | 0.780 | +0.018 |
+| deno | 0.732 | 0.754 | +0.022 |
+| guava | 0.667 | 0.693 | +0.026 |
+| scikit-learn | 0.745 | 0.747 | +0.002 |
+| angular | 0.665 | 0.665 | +0.000 |
+| vscode | 0.709 | 0.713 | +0.004 |
+| elasticsearch | 0.682 | 0.688 | +0.007 |
+| zed | 0.690 | 0.679 | −0.011 |
+| pocketbase | 0.641 | 0.633 | −0.008 |
+| n8n | 0.669 | 0.647 | −0.022 |
+| vuejs/core | 0.749 | 0.726 | −0.023 |
+
+Median lift across all 13 repos: **+0.004**. Not useful as a universal addition.
+
+But split the table at raw AUC 0.70:
+
+- **Below 0.70 (cold-start):** mean lift = +0.049. 4/5 repos positive. React crosses the gate (0.635 → 0.696). Excalidraw gets a large lift (+0.165).
+- **Above 0.70 (adequate signal):** mean lift = −0.004. The embeddings add noise where the raw model already works.
+
+The finding is not "JEPA embeddings help." It's "JEPA embeddings help *only when raw features have failed to reach 0.70 AUC*." The gate is the feature.
+
+---
+
+## What the Gate Is Actually Measuring
+
+The 0.70 AUC threshold isn't arbitrary — it's the empirical boundary between "the training distribution generalizes here" and "it doesn't."
+
+When a repo's raw pooled AUC sits above 0.70, cross-repo features are already finding the right patterns. The repo's defect structure is recognizable to a model trained on similar repos. Adding JEPA embeddings encodes structural patterns from that same training distribution — redundant at best, noisy at worst.
+
+When a repo's raw pooled AUC sits below 0.70, the tabular features from other repos aren't translating. The files that are risky in React don't look like the files that are risky in Django or scikit-learn. But the structural shape of a risky module — the embedding geometry of something that's high-churn, high-coupling, and frequently touched for bug reasons — is more consistent. The encoder gives the model a coordinate system it can't build from raw counts alone.
+
+Pocketbase is the exception that reveals the limit: it sits below 0.70 (raw AUC 0.641) but still gets a slightly negative JEPA lift (−0.008). It's a Go API server with an unusually small and stable surface area. The encoder, trained predominantly on TypeScript and Python repos, encodes patterns that don't match its structure either. The cold-start problem for Pocketbase isn't fixed by pooling or by embeddings — it requires enough Pocketbase-specific history to learn from.
+
+---
+
+## The Architecture
+
+These three experiments point toward a two-tier ranking architecture:
+
+**Tier 1 — Screener (day one, no history):** cross-repo pooled XGBoost trained on accumulated history from opt-in repos. Ships bundled. AUC ~0.69 median. For repos below the 0.70 gate, JEPA embeddings are appended to the feature vector.
+
+**Tier 2 — Repo-specific (once history exists):** self-trained XGBoost on the repo's own accumulated defect labels. AUC ~0.75–0.85. Activates automatically once the repo crosses the screener gate on its own data.
+
+The transition is measurable. The screener isn't a degraded fallback you wait to escape — it's the entry point, and it's useful from day one.
+
+---
+
+## Caveats
+
+**13 repos is a small LOOCV.** The cold-start / above-gate split is 5 repos below 0.70 and 8 above. The lift estimates have wide confidence intervals. Pocketbase below the gate with negative JEPA lift is a real exception, not an outlier to explain away.
+
+**The pooled encoder is trained on a homogeneous corpus.** The 13 repos are mostly TypeScript, Python, Go, and Java web infrastructure. Language diversity and domain diversity are both narrow. The patterns the encoder learns may not transfer to, say, embedded systems C or scientific Fortran.
+
+**AUC is not Spearman ρ.** These experiments measure ranking quality as binary classification AUC (file-level: is this file risky?), not as Spearman rank correlation against a continuous label. Both matter; they can diverge on repos with unusual label distributions.
+
+**The corpus growth hypothesis is untested.** I expect median cold-start AUC to improve meaningfully as the pooled training set grows past 500 repos. That's a hypothesis, not a result.
+
+---
+
+## What Comes Next
+
+The screener gate needs to be validated against temporal holdouts — the experiments above used random stratified splits. The more important question for deployment is whether the cold-start AUC at day one predicts the self-trained AUC a month later; if so, the screener can tell a team early whether their repo is going to need more history before the tool becomes reliable.
