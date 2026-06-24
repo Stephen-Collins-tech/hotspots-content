@@ -1,0 +1,141 @@
+---
+title: "Spearman ρ Looked Fine. P@10 Was Zero."
+description: "Spearman ρ can be positive and meaningful while the top-ranked files contain zero future bugs. Here's how I found that out, why it happens, and how to catch it before it reaches a user."
+pubDate: 2026-06-24
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Spearman ρ can be positive and meaningful while the top-ranked files contain zero future bugs. Here's how I found that out, why it happens, and how to catch it before it reaches a user."
+---
+
+Spearman ρ can be positive and meaningful while the top-ranked files contain zero future bugs. Here's how I found that out, why it happens, and how to catch it before it reaches a user.
+
+Status: Draft — not for publication
+
+Canonical sources:
+- 
+- 
+- 
+
+---
+
+You're building or evaluating a code risk ranking system. You train a model, compute ρ=+0.30 against historical bug labels on a holdout set, and call it working. An engineer using the tool reviews the top-10 files it surfaces — and finds nothing. Every session. Your users stop trusting the tool.
+
+The metric passed. The product failed.
+
+---
+
+## The Setup
+
+I was evaluating defect-risk ranking across several production codebases: Django, scikit-learn, Vue.js. Standard procedure: temporal holdout split (pre/post-2024), compute Spearman ρ between ranked scores and bug-label ground truth on the holdout set.
+
+The results looked reasonable across the board. ρ in the +0.10 to +0.60 range. Models outperforming the deterministic baseline. The tabular ranker shipping to production.
+
+Then I computed precision@K: of the top-K files surfaced to a reviewer, what fraction actually had a future bug?
+
+---
+
+## The Experiment
+
+I evaluated five rankers on temporal holdouts across three repositories:
+
+- A deterministic activity-weighted formula (the baseline)
+- A learned tree ranker trained on the same repo's history
+- A random forest trained on the same tabular features
+- A raw activity score
+- Random (base rate)
+
+K values: 10, 20, 50, 100.
+
+Ground truth: future bug labels from fix-keyword commits in the holdout period.
+
+---
+
+## The Result
+
+On Django (base rate 48%), the results were good. Every serious ranker achieved P@10=1.000 — the top-10 files were all future bug sites. Spearman ρ and P@K agreed.
+
+On scikit-learn (base rate 21%), they diverged completely.
+
+Spearman ρ against an exact-split holdout:
+
+| Ranker | Spearman ρ |
+|---|---|
+| Deterministic formula | +0.139 |
+| Learned tree ranker (XGBoost) | **+0.787** |
+| Random forest | — |
+
+Precision@K against temporal holdout labels — future bugs in a post-2024 window, rebuilt from clean labels:
+
+| Ranker | P@10 | P@20 | P@50 |
+|---|---|---|---|
+| Deterministic formula | **0.000** | 0.000 | 0.260 |
+| Learned tree ranker (XGBoost) | **0.000** | 0.000 | 0.000 |
+| Random forest | **0.200** | 0.350 | 0.220 |
+| Random (base rate) | 0.210 | 0.210 | 0.210 |
+
+Note: the ρ values and P@K values are from different experiments with different holdout constructions. ρ uses an exact-split-by-file holdout; P@K uses a temporal post-2024 holdout. They cannot be combined into a single row — but the conclusion holds across both: ρ registers the learned ranker as impressive (+0.787) while P@K shows its top-100 predictions contain zero future bugs.
+
+The learned tree ranker achieves ρ=+0.787 — an impressive number. Its P@10 is 0.000. Its top-100 predictions contain zero future bugs. The random forest, trained on a different feature regime with a lower ρ, is the only ranker that beats random at P@10.
+
+The deterministic formula collapses to three distinct output values on scikit-learn. The top value is assigned to 17 functions. Of those 17, zero have a future bug. The bottom two buckets are statistically indistinguishable from random. By P@10, the formula actively misleads.
+
+---
+
+## Why This Happens
+
+Spearman ρ measures global rank correlation across all files. If your model ranks the top 500 files with mild positive correlation — a few more correct orderings than incorrect — it achieves a positive ρ even if the top 10 are completely wrong.
+
+On scikit-learn, the failure is structural. The highest-activity, highest-complexity functions are core stable APIs: base classes and foundational algorithms that are maintained carefully and rarely regress. Real bugs land in peripheral code: edge-case utilities, integration paths, rarely-touched feature combinations. Every activity and complexity signal points at the wrong target. A learned ranker trained on those signals learns to be confidently wrong about the top of the distribution.
+
+ρ doesn't see this because it aggregates over thousands of files. The top-10 error is swamped by moderately correct orderings in the long tail.
+
+---
+
+## Caveats
+
+**Label quality matters here.** The scikit-learn holdout labels were rebuilt after discovering a data corruption issue (near-100% positive labels from a leaky feature). The numbers above are from clean labels. Results from corrupted labels would have shown a different (likely even more misleading) picture.
+
+**Base rate matters.** Django has a 48% base rate — nearly half of all functions had a future bug. P@10=1.000 is meaningful but not surprising with that density. Scikit-learn's 21% base rate makes random harder to beat and the failure more visible.
+
+**This is three repositories.** The pattern (ρ positive, P@K=0) was confirmed on scikit-learn. Django and Vue showed no divergence between ρ and P@K. Whether other mature, stable codebases exhibit the same pattern is an open empirical question.
+
+---
+
+## The Real Question: What Metric Are Your Users Optimizing?
+
+An engineer using a hotspot tool doesn't scan all 2,000 files. They review the top 10 before a sprint. Spearman ρ optimizes a metric that no reviewer acts on — global rank correlation across the entire codebase.
+
+Precision@K optimizes the decision: "Is this file worth reviewing?" At K=10, it answers exactly the question the tool is built to answer.
+
+The mismatch matters more on high-quality codebases than on messy ones. A mature project with low bug density and a stable architecture is the hardest case for activity-based signals — and the most likely to surface ρ/P@K divergence. It is also the type of codebase where a developer would most benefit from an accurate tool.
+
+---
+
+## Detection and Recovery
+
+I built a calibration gate that catches this failure before it reaches a user. The mechanism:
+
+1. Score the top-50 functions by the ranker's own ranking
+2. Compute P@10 on those top-50 against fix-keyword commit labels from git history
+3. If P@10 < 0.5 → the ranker is broken on this repo; suppress it
+
+On scikit-learn, the gate fires (P@10=0.000). On Django and Vue, it passes (P@10=1.000). No false positives on these three repos.
+
+When the gate fires, the random forest is the best available tabular fallback, achieving P@10=0.200 on scikit-learn — below Django's bar but above random and above the collapsed formula. Note: the gate was originally designed to trigger a small LLM classifier fallback that appeared to recover P@10=1.000 on scikit-learn in early experiments, but that path was closed after the LLM was found to produce degenerate output — it predicted the same class for 100% of functions regardless of input, making the P@10 figure a measurement artifact rather than a genuine result. The current fallback is the random forest.
+
+The gate runs in seconds from existing git history. No external data, no API calls.
+
+---
+
+## What This Means For Evaluation
+
+Spearman ρ is a useful signal during research: it's cheap to compute, interpretable, and tells you whether a model has learned anything at all. But a ranking system shouldn't ship based on ρ alone, especially on repos with low bug density or stable architecture.
+
+The evaluation protocol that would have caught this problem earlier: always compute P@K alongside ρ, always use temporal holdouts with genuine future labels, and specifically test the top of the distribution rather than the full-list correlation.
+
+For a deployed tool, the calibration gate is the right defense: it detects failure on each specific repo rather than relying on held-out benchmark performance to generalize.
