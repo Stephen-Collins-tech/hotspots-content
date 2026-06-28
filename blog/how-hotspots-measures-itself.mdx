@@ -1,0 +1,106 @@
+---
+title: "How hotspots measures itself"
+description: "The benchmark methodology behind hotspots' risk scores: temporal holdout, Spearman ρ, and why we pin feature SHAs to pre-2024 history."
+pubDate: 2026-06-28
+author: "Stephen Collins"
+tags: ["methodology", "hotspots", "benchmarks", "ml"]
+ogImage: "/og.png"
+summary: "Every hotspots release ships with a reproducible benchmark run across 7 open-source repos. This post explains the methodology: why we use temporal holdout instead of random splits, what Spearman ρ actually measures, and how the trained RandomForest ranker fits into the picture."
+introContent: "A ranking tool that can't measure its own accuracy is just vibes with syntax highlighting. Here's how hotspots keeps itself honest."
+---
+
+A ranking tool that can't measure its own accuracy is just vibes with syntax highlighting.
+
+hotspots ships a reproducible benchmark with every release. The results live in [`benchmarks/RESULTS.md`](https://github.com/Stephen-Collins-tech/hotspots/blob/main/benchmarks/RESULTS.md) — one block per version, never edited after the fact. This post explains what those numbers mean and why the methodology is set up the way it is.
+
+## The core question
+
+hotspots ranks files by risk. The question the benchmark answers is: **does the ranking correlate with where bugs actually appear?**
+
+The answer isn't a yes/no — it's a number. Specifically, Spearman ρ (rank correlation) between the hotspots risk score and the number of bug-fix commits that touched each file in a held-out time window.
+
+A ρ of +1.0 means hotspots ranked every file in perfect bug-frequency order. A ρ of 0 means the ranking is no better than random. In practice, across 7 repos spanning JavaScript, Go, C, TypeScript, and Python, the current baseline sits at a mean ρ of **+0.350**.
+
+## Why temporal holdout matters
+
+The most important design decision is the **temporal split**:
+
+- **Features** are computed from git history up to `2024-01-01` (pinned to a specific commit SHA)
+- **Labels** come from bug-fix commits in `2024-01-01` to `2025-01-01`
+
+There's no overlap. The model never sees future bugs during training. This prevents a subtle form of data leakage that makes offline evaluations look much better than production performance.
+
+The leaky alternative — a random 80/20 split across all commits — lets future bug patterns bleed into the feature computation. A file touched by many bugs in 2024 looks busy in the historical features too, inflating the correlation. Temporal holdout eliminates that. If a signal survives it, it's genuinely predictive, not just correlated with the label density in the training window.
+
+This is the same split used to validate individual signals in the [research repo](https://github.com/Stephen-Collins-tech/hotspots-research). Finding F54 confirmed that `convention_bug_fix_count` (full-history fix-keyword commit count per file) survives the temporal holdout where the rate-based version (F48) does not — the count is independent of the label window by construction.
+
+## The corpus
+
+Seven repos chosen to cover different scales, languages, and maintenance patterns:
+
+| Repo | Language | Files | Bug-linked files |
+|---|---|---|---|
+| facebook/react | JavaScript | 862 | 45 |
+| golang/go | Go | 6,116 | 276 |
+| git/git | C | 633 | 244 |
+| redis/redis | C | 162 | 46 |
+| curl/curl | C | 632 | 216 |
+| microsoft/vscode | TypeScript | 2,245 | 642 |
+| django/django | Python | 756 | 233 |
+
+Each repo is cloned bare and the feature snapshot is computed from a pinned pre-2024 SHA — so benchmark results across versions are directly comparable. The label window is fixed at 2024-01-01 to 2025-01-01.
+
+The corpus isn't large by ML standards. Seven repos is enough to catch gross regressions and validate new signals, but not enough to make strong generalization claims. That's intentional — the benchmark is a sanity check, not a peer-reviewed eval.
+
+## Two metrics
+
+**Spearman ρ** measures whether the rank ordering is right, not whether the scores are calibrated. If hotspots puts the top 100 bug-prone files roughly in the right order, ρ rewards that even if the raw scores are on a completely different scale than the label frequencies. That's the right property for a ranking tool — users care about what's at the top of the list, not whether the score is 0.74 vs 0.81.
+
+**P@10** (precision at top 10) is blunter: of the 10 files hotspots ranks highest, what fraction actually had bugs in the label window? It's noisy on small repos (react has only 45 bug files out of 862 — top 10 at random gives P@10=0.05) but useful for large repos where the top of the list is where engineers look first.
+
+## Where the trained ranker fits in
+
+The baseline numbers above use **ARS** (Activity Risk Score) — the tabular scoring formula that combines LRS, churn, authors, coupling, and structural complexity. No ML.
+
+The trained RandomForest ranker (`hotspots train`) learns file-level weights from your repo's own bug-fix history. It uses 10 features including the new `convention_bug_fix_count` added in v1.26.0. In the research corpus, the ranker consistently outperforms ARS on repos with enough fix-commit history — typically +0.05 to +0.12 ρ improvement — but requires a training run per repo and degrades on sparse repos.
+
+The v1.26.0 benchmark numbers are identical to v1.25.3 because `convention_bug_fix_count` is collected but only activates through the ranker. ARS scores are unchanged. The point of running the benchmark at each release is precisely to verify that claim — that changes to the feature set or infrastructure haven't silently shifted the baseline.
+
+## Reproducing the numbers
+
+```bash
+# Pin the feature snapshots (done once per corpus version)
+# hotspots analyze each worktree at its pinned SHA
+
+# Generate labels for the 2024 window
+python3 benchmarks/label.py data/clones/facebook__react.git \
+  --after 2024-01-01 --before 2025-01-01 \
+  --feature-sha bf859705b55a8ccaedbed8546cd4d9c6c003bf62 \
+  --out /tmp/react-labels.json
+
+# Score with the current binary
+hotspots analyze /tmp/hotspots-bench/react \
+  --mode snapshot --format json --all-functions --force \
+  > /tmp/react-scores.json
+
+python3 benchmarks/score.py /tmp/react-scores.json /tmp/react-labels.json \
+  --repo facebook/react
+```
+
+The raw JSON for each release lives in [`benchmarks/versions/`](https://github.com/Stephen-Collins-tech/hotspots/tree/main/benchmarks/versions).
+
+## What we're not measuring
+
+- **Function-level accuracy.** The benchmark scores files, not functions. Blame-based function labels exist (`hotspots train --blame`) but are too slow to run across seven repos at benchmark time.
+- **Recall.** P@10 measures precision; we don't track how many total bug files appear outside the top 10. A tool that finds 8/10 bugs in the top 10 looks great on P@10 but might miss 90% of the total.
+- **Repos you don't control.** The corpus is public repos with consistent commit conventions. Internal repos with inconsistent fix-commit hygiene may see lower ρ — and are better candidates for the trained ranker than for ARS alone.
+
+The benchmark will grow as the corpus expands and as the trained ranker gets first-class eval support. For now, seven repos and two metrics is enough to know whether a change helps or hurts.
+
+---
+
+Install or update:
+
+```bash
+curl -fsSL https://hotspots.stephencollins.tech/install.sh | sh
+```
