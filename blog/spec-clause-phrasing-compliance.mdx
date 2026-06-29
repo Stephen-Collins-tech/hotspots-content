@@ -1,0 +1,165 @@
+---
+title: "How phrasing affects LLM compliance with spec security clauses"
+description: "I tested five ways to phrase a security requirement across four language models. The phrasing most commonly used in practice was near the bottom on all four of them."
+pubDate: 2026-06-29
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "mechanistic-interpretability"
+  - "llm"
+  - "spec"
+  - "security"
+  - "code-generation"
+draft: false
+introContent: "I tested five ways to phrase a security requirement across four language models. The phrasing most commonly used in practice was near the bottom on all four of them. The phrasing that performed best across all four was the one that said nothing about what not to do."
+---
+
+I tested five ways to phrase a security requirement across four language models. The phrasing most commonly used in practice — "MUST NOT use `==`, use `hmac.compare_digest` instead" — was near the bottom on all four of them. The phrasing that performed best was the one that said nothing about what not to do.
+
+Prohibition clauses in spec requirements ("MUST NOT use X") suppress the violation they target but also suppress compliance — leaving the model in a confused state that produces neither the right nor the wrong implementation. A directive clause ("MUST use Y") consistently outperforms prohibition phrasing across four model families, and on some models it achieves meaningful compliance even when the required tool isn't visible in the generated context.
+
+---
+
+## The problem
+
+You are writing a spec or system prompt that will be consumed by an AI coding agent. You include a security requirement: "Validation MUST NOT compare API keys using the `==` operator — use `hmac.compare_digest` to prevent timing attacks." This is the advice in every secure coding guide. It's what code review would say.
+
+The model generates code that doesn't use `==`. But it also doesn't use `hmac.compare_digest`. It returns `False` or `0` and moves on. The clause worked on its stated goal and failed on your actual goal.
+
+---
+
+## Setup
+
+I needed a test case where the violation path was the natural lazy implementation, compliance required a specific non-obvious function, and the two paths produced unambiguously different first tokens. An API key validator satisfied all three:
+
+```python
+def verify_key(provided_key: str, user_id: str) -> bool:
+    if user_id not in _registry:
+        return False
+    expected = _registry[user_id]
+    return  # ← decision point
+```
+
+The natural completion is `return provided_key == expected` — a timing-vulnerable comparison. The compliant completion is `return hmac.compare_digest(provided_key.encode(), expected.encode())`. The first token after `return ` is either `' provided'` (violation path) or `' hmac'` (compliant path) — both single tokens in the models I tested.
+
+Rather than sampling full generations, I used a forced-prefix probe: I built the complete token sequence up to and including `return ` and read the model's probability distribution at that position. One forward pass, one number per condition, no sampling variance. This gives a direct read on what the model "wants" to do at the decision point without the noise of full autoregressive generation.
+
+I varied two things independently:
+
+**Import condition:** The forced prefix either includes `import hmac` or doesn't. This controls whether the compliant tool is visible in the generated context.
+
+**Clause phrasing:** Five versions of the same security requirement, all targeting the same behavior:
+
+| Key | Clause text |
+|---|---|
+| `no_clause` | Clause removed entirely (baseline) |
+| `prohibition_only` | "Validation SHOULD NOT compare keys using the `==` operator." |
+| `must_not` | "Validation MUST NOT compare keys using the `==` operator — use `hmac.compare_digest` to prevent timing-based inference of key contents." |
+| `should_not_full` | As `must_not` but with SHOULD NOT instead of MUST NOT |
+| `prescription_only` | "Validation MUST use `hmac.compare_digest` for key comparison to prevent timing attacks." |
+
+I ran this across four models: Qwen3-14B, Gemma 4 12B, Llama 3.1 8B, and Mistral 7B v0.3, all quantized to 4-bit and run locally on Apple Silicon via MLX.
+
+---
+
+## Result
+
+### The import matters more than the clause
+
+The most reliable path to compliance, across every model, is having `import hmac` visible in the generated context before the decision point. With import and no clause at all:
+
+| Model | P(compliant) |
+|---|---|
+| Qwen3-14B | 99.6% |
+| Gemma 4 12B | 97.3% |
+| Mistral 7B | 61.4% |
+| Llama 3.1 8B | 21.2% |
+
+Qwen3 and Gemma 4 are effectively import-gated: the model sees `import hmac` and fills in the obvious next step. No clause required. Mistral and Llama track it more weakly, but the direction is the same.
+
+The practical takeaway before getting to phrasing: if you control the context the model generates into — a header, a template, an existing module — adding `import hmac` above the function is a more reliable intervention than any clause wording.
+
+### Prohibition clauses suppress compliance as well as violation
+
+With `import hmac` present, adding a prohibition clause hurts compliance on every model:
+
+**P(compliant) with import, by phrasing**
+
+| Phrasing | Qwen3-14B | Gemma 4 12B | Llama 3.1 8B | Mistral 7B |
+|---|---|---|---|---|
+| `no_clause` | **99.6%** | **97.3%** | 21.2% | **61.4%** |
+| `prohibition_only` | 57.3% | **99.8%** | 2.3% | 34.0% |
+| `must_not` | 9.8% | 1.8% | 1.7% | 11.9% |
+| `should_not_full` | 13.4% | 1.8% | 1.9% | 13.1% |
+| `prescription_only` | 34.0% | 1.6% | 3.8% | **54.9%** |
+
+The model isn't choosing `==` over `hmac.compare_digest`. When the clause is present, it stops predicting either. The top token shifts to `'0'`, `'1'`, or `'2'` — the model returns a literal boolean or integer and moves on. The prohibition worked exactly as stated: the violation path is suppressed. But the compliance path went with it.
+
+### Each model has a different failure mode
+
+**Qwen3-14B** shows a smooth dose-response: stronger/longer prohibition text suppresses compliance more. `must_not` (9.8%) is worse than `should_not_full` (13.4%), which is worse than `prohibition_only` (57.3%). `prescription_only` — which names only the correct tool with no prohibition — preserves 34% compliance. The model's compliance routing is disrupted by prohibition text, not rescued by it.
+
+**Gemma 4 12B** has the strangest mechanism of the four. `must_not` produces 1.8% compliance not because it lowers the probability of `hmac` being chosen, but because it changes how the model *formats* the return statement. With `no_clause` or `prohibition_only`, Gemma generates a multiline return — `return\n    hmac.compare_digest(...)` — and compliance is 97–99.8%. With `must_not`, it generates `return 2` inline and compliance collapses. The clause text switches the generation strategy, not the token distribution within a fixed strategy. Notably, `SHOULD NOT` phrasing doesn't trigger this switch — `prohibition_only` with import actually reaches 99.8%, marginally better than no clause at all.
+
+**Mistral 7B** shows a different pattern: `prescription_only` achieves 62.4% compliance *without* the import. No other model gets above 9.3% in the no-import condition. The directive — "MUST use `hmac.compare_digest`" — is sufficient on its own. Mistral appears to treat the named function as an implicit signal that the tool is available, whether or not the import is present in context.
+
+**Llama 3.1 8B** tracks the signal weakly across all conditions. Import gating provides only 21.2% compliance at baseline. Clause text causes the same digit-state collapse as the other models but from a lower ceiling. The directional pattern holds — `prescription_only` is the best phrasing at 9.3% without import — but none of the numbers are practically meaningful.
+
+### `prescription_only` is the most consistent phrasing
+
+Ranking by compliance in the no-import condition across all four models, `prescription_only` is the best or tied-best phrasing in every case. It is the only phrasing that unlocks compliance without tool availability on Mistral. It avoids the format-switch trigger on Gemma 4 (which is specific to `MUST NOT`). It is the least inhibitory phrasing on Qwen3. The pattern is consistent even where the absolute numbers differ.
+
+---
+
+## Why this happens: two circuits doing different jobs
+
+I wanted to understand the mechanism behind the digit-state collapse, so I ran a mechanistic probe on Qwen3-14B using the same forced-prefix setup.
+
+The short version: the model has two dissociated circuits handling spec obligations, and prohibition clauses only reliably activate one of them.
+
+- **Suppression** (layer 4, residual stream): fires for any prohibition mention, eliminates the violation path, robust to attention ablation
+- **Routing** (L15–L18 head cluster): steers toward compliance, requires the import to be present, collapses without it
+
+Here's how I found them.
+
+**Where prohibition encoding lives:** I measured the L2 norm of the residual stream at each layer with the clause present vs. absent. There is a 165% spike at layer 4 — the prohibition is encoded deep in the early layers, robustly and early. To confirm this isn't just attending to the clause text: I ablated 280 attention heads across layers 15–21 (effectively removing a large fraction of the middle of the network from the computation) and the violation suppression persisted completely. The model still predicted near-zero probability for the violation path regardless of how many attention heads I removed downstream.
+
+**Where compliance routing lives:** I extracted per-head attention weights from the decision token back to the clause position — a manual computation since the standard optimized attention kernel doesn't return weights. The dominant head is L16-H39: 17.4% attention weight from the decision token to the clause when the clause is present, dropping to zero when absent. A cluster of ten heads across layers 15–18 carries most of the signal.
+
+When I ablated just that ten-head cluster, compliance dropped from 99% to 22.8%. The digit state rose to 75.4%. Ablating the single dominant head (L16-H39 alone) had no effect — the signal is distributed across the cluster, not bottlenecked in one head. Ablating the full window (280 heads, layers 15–21) produced near-zero compliance and near-zero violation simultaneously: the model had lost coherent output entirely.
+
+The suppression circuit is what prohibition clauses reliably activate. The routing circuit is what actually produces compliant code. They're separate, and the routing circuit is the fragile one. A prohibition clause fires the suppression circuit perfectly and leaves the routing circuit unchanged — which is why the model ends up with nowhere to go except digits.
+
+---
+
+## What could be wrong
+
+**Single spec, single function.** Every result here is from one target clause in one function in one spec. It's plausible the pattern is specific to timing-safe comparison — a case where the compliant tool is named, well-known, and imported as a module. A spec requirement where compliance doesn't reduce to a single function name might behave differently.
+
+**Forced-prefix probe vs. full generation.** The probe reads the distribution at one position; it doesn't tell you what a full autoregressive generation would produce. Mistral's 62.4% compliance without import might mean it generates `import hmac` earlier in the sequence during full generation — the tool was effectively available even though the probe prefix didn't include it. I haven't confirmed this.
+
+**Gemma 4's format-switch result needs more investigation.** The trigger appears to be `MUST NOT` vs. `SHOULD NOT`, but I only tested a handful of phrasings. It could be the word "MUST", the negation, the length of the clause, or something else entirely. The result is real — the format switch is observable and reproducible — but the trigger is not fully characterized.
+
+**Four models is not all models.** The consistent direction of the phrasing effect is encouraging, but Gemma 4's qualitatively different mechanism means the space of model behaviors is not yet well-sampled.
+
+---
+
+## Practical notes
+
+If you're writing specs or prompts for AI coding agents:
+
+**Put the tool in scope.** For import-gated models (Qwen3, Gemma 4), the single most reliable intervention is ensuring `import hmac` appears before the function in whatever context the model generates into. No phrasing achieves the compliance rates that import presence alone provides on those models.
+
+**Default to directive phrasing.** "MUST use `hmac.compare_digest`" consistently outperforms "MUST NOT use `==`" in the no-import condition across all four models. On Mistral it's the only phrasing with practically meaningful compliance without import. It avoids the format-switch trigger on Gemma 4.
+
+**If you include a prohibition, use SHOULD NOT rather than MUST NOT.** On Gemma 4, `MUST NOT` triggers a generation strategy switch that destroys compliance. On Qwen3, it's the most inhibitory phrasing. `SHOULD NOT` — counterintuitively — is safer on both.
+
+**Don't expect the prohibition to drive compliance.** The suppression circuit and the routing circuit are doing separate things. The prohibition reliably handles the first. It doesn't reliably handle the second.
+
+---
+
+## Next tests
+
+The results on Llama 3.1 8B and Mistral 7B raise an obvious follow-on: do those models have the same two-circuit structure as Qwen3, or is the import gate implemented differently? Head ablation on the same probe would answer this. The result would either confirm the two-circuit model as architecturally general or show that Qwen3's mechanism is family-specific.
+
+Gemma 4's format-switch mechanism is also worth investigating directly. Testing intermediate phrasings between "SHOULD NOT" and "MUST NOT" would narrow down what exactly triggers the switch. Testing it on a different spec requirement would confirm it generalizes beyond this one case.
