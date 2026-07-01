@@ -1,6 +1,8 @@
 ---
-title: "lighthouse's top 5 hotspots are all vendored test fixtures — not its own source"
-description: "A Hotspots analysis of GoogleChrome/lighthouse at commit 1e1e016, surfacing the top functions by activity-weighted risk score."
+title: "lighthouse's audits and renderer carry the highest activity risk — 5 to address first"
+titleSeo: "GoogleChrome/lighthouse code health: audit layer and explodey gauge lead refactoring priority"
+description: "Five critical-band functions spanning lighthouse's renderer and audit core are both structurally complex and actively changing, with _setPerfGaugeExplodey carrying a fan-out of 71 and an activity-weighted risk of 15.09."
+introContent: "Five of lighthouse's critical functions are in the 'fire' quadrant right now — structurally complex and touched within the last 30 days — making them live regression risks, not backlog items. The most striking is `_setPerfGaugeExplodey` in the report renderer, which calls 71 distinct functions and carries an activity-weighted risk of 15.09, touched once in the last 30 days, 28 days ago."
 pubDate: 2026-07-01
 tags: ["oss", "javascript", "refactoring", "code-health"]
 draft: false
@@ -8,17 +10,27 @@ repo: "GoogleChrome/lighthouse"
 commit: "1e1e01613a41345c799c1e776d657eb6c3811230"
 language: "javascript"
 hotspots_version: "1.26.0"
-analyzed_at: "2026-07-01T07:12:23Z"
-clone_depth: 25
-hybrid_touch_threshold: 5
-topRisk: 20.06
-topFunction: "parseURL"
-topFile: "cli/test/fixtures/legacy-javascript.js"
-topPatterns: ["complex_branching", "deeply_nested", "exit_heavy"]
-patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5}
+analyzed_at: "2026-07-01T12:21:22Z"
+clone_depth: 200
+topRisk: 15.09
+topFunction: "_setPerfGaugeExplodey"
+topFile: "report/renderer/explodey-gauge.js"
+topPatterns: ["exit_heavy", "god_function", "long_function", "complex_branching"]
+patternCounts: {exit_heavy: 4, god_function: 2, long_function: 2, complex_branching: 1}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in lighthouse?"
+    answer: "An exit-heavy function contains multiple independent return statements or early-exit paths, each of which represents a distinct execution branch that must be reached by a separate test case to be covered. In lighthouse's audit functions, this pattern appears because audits must handle a waterfall of failure modes — fetch errors, HTTP status codes, missing content, validation failures — before reaching a success path, and each branch is a potential place where incorrect score or display values could be returned. Four of the five top hotspots carry this pattern, including `audit` in `baseline.js` and `audit` in `robots-txt.js`. Practically, this means a test suite that only exercises the happy path leaves the majority of these functions' behavior unverified, and a change to the early-exit ordering can silently alter audit scores for edge-case inputs."
+  - question: "How do I reduce cyclomatic complexity in JavaScript?"
+    answer: "The most reliable technique is extract-method refactoring: identify one coherent decision cluster inside a complex function and move it into a named helper with a clear return type. A cyclomatic complexity above 10 is a signal to consider splitting; above 15, splitting is almost always worthwhile. For `_setPerfGaugeExplodey` specifically, which has a cyclomatic complexity of 23, I would start by pulling the per-metric SVG element creation and update logic — currently inlined in a `forEach` — into a `_renderMetricArc(dom, groupOuter, metric, ...)` helper. That single extraction eliminates several branches from the top-level function and makes the initialization-vs-update distinction an explicit parameter rather than an implicit `maybeFind` fallback, cutting the measurable complexity roughly in half while improving readability."
+  - question: "Is lighthouse actively maintained?"
+    answer: "Yes, and the commit data confirms it. The `audit` function in `core/audits/baseline.js` was touched twice in the last 30 days and has a days_since_changed of 0 — as of this analysis, it changed today. `audit` in `core/audits/agentic/llms-txt.js` was also touched twice in the last 30 days and last changed 12 days ago, reflecting active development on the new agentic audit surface. The presence of 20 fire-quadrant functions — structurally complex code that is actively changing — is itself a sign of a living, evolving codebase. Active development and structural debt are not mutually exclusive: lighthouse is clearly being extended at pace, which is exactly why the fire-quadrant functions carry genuine near-term regression risk."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. This analysis was run against commit `1e1e016` of GoogleChrome/lighthouse. After checking out that commit with `git checkout 1e1e016`, run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root to reproduce the full function-level results. The same command works on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with how frequently that function has been touched in recent commits. A function that is structurally complex but hasn't been changed in years scores lower than one that is moderately complex and modified weekly, because the actively-changing function is where bugs are most likely to be introduced right now. For example, `_setPerfGaugeExplodey` has an activity-weighted risk of 15.09 partly because its fan-out of 71 and cyclomatic complexity of 23 create a large structural surface, and partly because it was touched within the last 30 days — meaning that complexity is being navigated by engineers under current development pressure. This prioritization helps teams spend refactoring effort where it lowers the probability of near-term regressions, not just where the code happens to look complicated."
 ---
 
-Every function in this table carries the same three-pattern signature — `complex_branching`, `deeply_nested`, `exit_heavy` — and all five sit under `test/fixtures/` paths: a legacy-JavaScript detection sample and two bundled third-party scripts (a Mixpanel tracker and a course-hero web app) checked in to validate lighthouse's polyfill-detection and source-map remapping logic. That's not a lighthouse code-health finding — the ignore-paths config for this run was supposed to exclude test fixtures and vendored bundles from analysis, and it didn't get applied, so fixture code got scored and ranked right alongside lighthouse's own audit and gathering logic. I'm publishing the numbers as produced rather than re-running with a manual filter, but treat this post as a heads-up about a pipeline gap rather than a finding about lighthouse itself; the ignore-paths fix belongs in the crawler config, not in this repo.
+Across 6,357 functions in GoogleChrome/lighthouse, 275 sit in the critical band — and five of those are in the fire quadrant, meaning they combine high structural complexity with recent commit activity. I would start with `_setPerfGaugeExplodey` in `report/renderer/explodey-gauge.js`: at an activity-weighted risk of 15.09, a cyclomatic complexity of 23, and a fan-out of 71, it was touched once in the last 30 days — making it a live regression risk, not a cleanup item. Behind it, `audit` in `core/audits/baseline.js` carries an activity-weighted risk of 13.02 and was modified as recently as today, meaning any engineer shipping to that file this week is working in actively shifting ground.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -26,56 +38,106 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 | Function | File | Risk | CC | ND | FO |
 |---|---|---|---|---|---|
-| `parseURL` | cli/test/fixtures/legacy-javascript.js | 20.1 | 216 | 8 | 24 |
-| `MixpanelEventTracking` | core/test/fixtures/source-maps/coursehero-bundle-2.js | 18.3 | 28 | 60 | 18 |
-| `get_page_type` | core/test/fixtures/source-maps/coursehero-bundle-2.js | 18.1 | 85 | 60 | 3 |
-| `AskQuestionController` | core/test/fixtures/source-maps/coursehero-bundle-1.js | 18.1 | 20 | 7 | 62 |
-| `_matches` | core/test/fixtures/source-maps/coursehero-bundle-1.js | 17.6 | 38 | 9 | 9 |
+| `_setPerfGaugeExplodey` | report/renderer/explodey-gauge.js | 15.1 | 23 | 3 | 71 |
+| `audit` | core/audits/baseline.js | 13.0 | 11 | 2 | 12 |
+| `audit` | core/audits/agentic/llms-txt.js | 11.0 | 11 | 2 | 5 |
+| `audit` | core/audits/seo/robots-txt.js | 10.9 | 12 | 2 | 4 |
+| `collectCanonicalURLs` | core/audits/seo/canonical.js | 10.5 | 13 | 4 | 3 |
 
-## Large Repo Analysis
+## Quadrant distribution
 
-lighthouse is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+<BandChart fire='20' debt='821' watch='21' ok='5495' />
 
-### `parseURL` — cli/test/fixtures/legacy-javascript.js
+The quadrant picture tells two distinct stories. The 20 fire-quadrant functions are the immediate concern — structurally complex and being actively changed right now. The 821 debt-quadrant functions are the slower-burning problem: high structural complexity that hasn't been touched recently but will carry serious blast-radius risk whenever the next development push arrives. The 5,495 ok-quadrant functions confirm that most of the codebase is stable and low-complexity — the risk is genuinely concentrated.
 
-CC 216 is not a typo — it's roughly six times the median CC across this table (38) and more than double the next-highest score. Under hybrid-touch mode, that raw complexity got amplified by real commit activity in `legacy-javascript.js`, which is what pushed the risk score to 20.1 despite an unremarkable nesting depth of 8. The catch is provenance: this function sits inside a fixture built to feed lighthouse's legacy-JavaScript audit test cases, so the complexity was very likely inherited from whatever library the sample was pulled from, not authored inside this project. **Recommendation:** don't spend refactoring effort on it — the actual fix is upstream, in the crawler's ignore-paths config, which should have excluded `cli/test/fixtures/` from this run in the first place.
+<PatternCloud patterns='exit_heavy:4,god_function:2,long_function:2,complex_branching:1' />
 
-### `MixpanelEventTracking` — core/test/fixtures/source-maps/coursehero-bundle-2.js
+Four of the five top hotspots are flagged as exit-heavy — meaning they contain multiple independent return paths that each require their own test case to exercise. Two are also flagged as god functions, which amplifies the blast-radius concern: a single function calling 71 other functions is a coordination point where a small change can propagate unexpectedly far.
 
-MixpanelEventTracking and the next function in this table, `get_page_type`, both post a nesting depth of 60 — by far the deepest in this sample, where every other top-five function sits in single digits. That matches `deeply_nested`, one of the three patterns shared across the whole table, but a depth of 60 isn't typical hand-written control flow; it's the signature of a bundler or minifier collapsing many small scopes into one wrapped module. That lines up with the file: `coursehero-bundle-2.js` is a vendored analytics bundle captured to test lighthouse's source-map remapping.
+---
 
-**Recommendation:** treat the ND figure as a bundling artifact rather than a refactoring target — flattening it wouldn't touch any behavior lighthouse itself owns. If the fixture ever needs updating, pull a fresh bundle from the vendor rather than hand-editing the existing one.
+## Function-by-Function Analysis
 
-### `get_page_type` — core/test/fixtures/source-maps/coursehero-bundle-2.js
+### `_setPerfGaugeExplodey` — explodey-gauge.js
 
-`get_page_type` shares its file's ND 60 depth but carries more branching of its own — CC 85 against a fan-out of just 3, meaning almost all of its complexity is self-contained conditional logic rather than delegated calls. Same caveat as its neighbor: this is bundled fixture content, not code lighthouse actively maintains, so I'd rank it below anything found in `core/audits` or `core/gather` regardless of what this table says.
+<FunctionCard fn='_setPerfGaugeExplodey' file='report/renderer/explodey-gauge.js' risk='15.09' band='critical' cc='23' nd='3' fo='71' touches='1' />
 
-### `AskQuestionController` — core/test/fixtures/source-maps/coursehero-bundle-1.js
+This function renders lighthouse's experimental SVG performance gauge — the one that breaks down individual Core Web Vitals metrics as arc segments on a semicircular dial. From the source excerpt I can see it handles geometry calculations, DOM manipulation for SVG elements, arc length computation, metric weighting, and element reuse all in one body. The code itself contains comments acknowledging hacks (`// Hack`, `// HACK:This isn't ideal but it was quick`), and it manually queries, creates, or reuses SVG child elements for each metric in a `forEach` loop — a pattern that fuses initialization and update logic in the same execution path.
 
-AskQuestionController calls into 62 distinct functions — the highest fan-out in this sample by a wide margin, and unusual paired with a comparatively modest CC of 20. That combination, low branching with huge fan-out, is the fingerprint of a coordinating layer that mostly delegates rather than computes, closer to `middle_man` than to the branching-heavy pattern the rest of this table shows. **Recommendation:** in maintained source I'd check whether all 62 callees are load-bearing or whether some are copy-pasted dispatch entries; here, since it's vendored bundle content shared with `_matches` below, the only real action is confirming the fixture hasn't drifted from its upstream source.
+<MetricBar label='Fan-Out (distinct function calls)' value='71' threshold='15' max='80' />
 
-### `_matches` — core/test/fixtures/source-maps/coursehero-bundle-1.js
+The fan-out of 71 is the number that demands attention. In JavaScript, where dynamic property access and prototype-based dispatch can obscure dependencies that static analysis can't fully resolve, 71 *detected* callees likely understates the true coupling. A cyclomatic complexity of 23 means there are at least 23 independent execution paths to test, and the god-function and long-function patterns confirm this is doing far more than one thing. It was touched once in the last 30 days — 28 days ago — so this is an actively changing file carrying live regression risk.
 
-`_matches` closes out the table with the most balanced profile of the five — CC 38, ND 9, FO 9 — and the lowest risk score. Same file, same fixture provenance as `AskQuestionController`: a reasonable one to leave alone.
+The concrete recommendation here is extract-method refactoring: pull the metric-group DOM creation and update logic into a dedicated `_renderMetricArc` helper, and separate the geometry/trigonometry setup (which already delegates to `_determineTrig`) from the DOM mutation pass. That alone would cut the fan-out materially and make the initialization-vs-update branching explicit rather than implicit in `maybeFind` fallbacks.
 
-## Key Takeaways
+---
 
-- All five of lighthouse's top hotspots are vendored test fixtures (`legacy-javascript.js`, `coursehero-bundle-1.js`, `coursehero-bundle-2.js`) that should have been excluded by this run's ignore-paths config — the fix belongs in the crawler, not in lighthouse's source.
-- `parseURL`'s CC 216 is the standout number in this table, but it's inherited complexity from vendored code — not worth refactoring time regardless of when the ignore-paths gap gets fixed.
-- `AskQuestionController`'s fan-out of 62 is worth a five-minute look regardless of provenance, mainly to confirm the bundle hasn't drifted from its upstream source.
+### `audit` — baseline.js
 
-## Codebase Risk Distribution
+<FunctionCard fn='audit' file='core/audits/baseline.js' risk='13.02' band='critical' cc='11' nd='2' fo='12' touches='2' />
 
-That shared pattern signature is typical of the highest-risk functions in any large codebase — they tend to accumulate every structural signal on the way to the top. More useful context is how risk is distributed across all 6,357 analyzed functions:
+This static async method is the entry point for lighthouse's Baseline audit, which scans Chrome trace events to identify which web platform features a page uses and then reports their cross-browser baseline status. The source excerpt shows it filtering `blink.webdx_feature_usage` trace events, deduplicating them into a `Map`, resolving source locations from line/column numbers, then calling `Baseline.getFeatureStatus` per feature and assembling a results table.
 
-| Band | Functions |
+With a cyclomatic complexity of 11 and two distinct `for` loops each containing early-continue guards, it carries multiple exit paths — the exit-heavy and god-function flags are both present. More pressing: it has been touched **2 times in the last 30 days** and was modified **0 days ago**, meaning it changed today. That makes it the single most active function in this list by recency. Any engineer landing a PR against `baseline.js` right now is modifying code that is structurally mid-complexity and accumulating logic quickly as the Baseline feature set expands.
+
+The actionable step is to extract the trace-event filtering and deduplication into a separate `_extractBaselineFeatures(trace)` helper before this function grows further. That would isolate the data-gathering logic from the audit-result-assembly logic and make each independently testable.
+
+---
+
+### `audit` — agentic/llms-txt.js
+
+<FunctionCard fn='audit' file='core/audits/agentic/llms-txt.js' risk='10.95' band='critical' cc='11' nd='2' fo='5' touches='2' />
+
+This function lives in the `agentic/` subdirectory — a path that signals this is part of lighthouse's emerging audit surface for AI-agent-oriented site features. Specifically it audits the presence and structure of an `llms.txt` file, a convention for signalling to LLM crawlers what a site contains. The source excerpt shows a clear waterfall of early returns: error message present → score 0; no status → score 0; server error range → score 0; client error range → not applicable. Then it validates content structure with three regex checks (H1 heading, markdown link, minimum length) and accumulates errors into a table.
+
+The exit-heavy pattern here is the structural risk: 11 cyclomatic complexity with at least five distinct return sites means the function's full behavior requires 11 test cases to exercise completely. Because this is an agentic audit — an area the team is actively building out — it has been touched **2 times in the last 30 days** and was last changed **12 days ago**. The `agentic/` path naming suggests this audit is not yet settled API.
+
+The most targeted improvement is decomposing the HTTP status waterfall into a `_checkHttpStatus(status, content)` helper that returns a result-or-null, keeping the content-structure validation logic clearly separated. That reduces the number of exit paths in the top-level `audit` method and makes the HTTP status handling independently testable.
+
+---
+
+### `audit` — seo/robots-txt.js
+
+<FunctionCard fn='audit' file='core/audits/seo/robots-txt.js' risk='10.88' band='critical' cc='12' nd='2' fo='4' touches='1' />
+
+The robots.txt audit function validates a page's `robots.txt` response — checking HTTP status codes, handling empty content, flagging fetch errors, and then running the actual directive validation through a `validateRobots` call. The source excerpt reveals a similar exit-heavy waterfall to `llms-txt.js`: server error → score 0; client error or empty content → not applicable; error message → score 0; no status → score 0. A combined `||` condition checking both `status >= HTTP_CLIENT_ERROR_CODE_LOW` and `content === ''` is one of the more subtle paths and a potential source of confusion under future maintenance.
+
+With a cyclomatic complexity of 12, one more branch than the `llms-txt.js` audit, and only one touch in the last 30 days (12 days ago), this is less active than `baseline.js` but structurally comparable. The shared structural shape between `robots-txt.js` and `llms-txt.js` — both being HTTP-fetch audits with a status-waterfall pattern followed by content validation — is worth noting: if the team extracts a shared `_checkFetchedResource(status, content, errorMessage)` utility, both audits could delegate their early-exit logic to it, reducing duplicated branching across two critical-band functions simultaneously.
+
+---
+
+### `collectCanonicalURLs` — seo/canonical.js
+
+<FunctionCard fn='collectCanonicalURLs' file='core/audits/seo/canonical.js' risk='10.54' band='critical' cc='13' nd='4' fo='3' touches='1' />
+
+This static method collects and classifies canonical and hreflang link elements from a page, separating absolute canonical URLs, relative canonical links, invalid canonical links, and alternate hreflang URLs into distinct output sets. The source excerpt shows a `for...of` loop over link elements with nested `if/else` branching that reaches a maximum nesting depth of 4 — the deepest in this top-five group.
+
+<MetricBar label='Max Nesting Depth' value='4' threshold='4' max='8' />
+
+The complex-branching flag is earned: at ND 4 and CC 13, a reader has to track whether they're inside a canonical branch, a valid-with-base branch, a valid-without-base branch, or an alternate-hreflang branch simultaneously. The logic distinguishes between `URL.parse(hrefRaw, base) === null` (syntactically invalid even with a base) versus `URL.parse(hrefRaw) === null` (valid only with a base, therefore relative) — a subtle distinction that is easy to regress. It was touched once in the last 30 days, 28 days ago.
+
+The concrete recommendation is to extract the inner URL-classification logic — the nested `URL.parse` calls and their four outcome branches — into a `_classifyCanonicalLink(link)` function returning a discriminated union type. That flattens the nesting in the loop body to a single dispatch and makes the four classification outcomes explicit and individually testable.
+
+---
+
+## The broader picture
+
+The five context-only functions — `getArtifact` in `webmcp.js`, `renderTextURL` and `_createLink` in `details-renderer.js`, `getRequestForScript` in `script-helpers.js`, and `log` in `logger.js` — are all in the watch quadrant: active within the last 30 days but low structural complexity. None warrants refactoring attention right now, but `renderTextURL` hitting a cyclomatic complexity of 10 (the moderate threshold) is worth keeping an eye on if `details-renderer.js` continues to accumulate changes.
+
+The 821 debt-quadrant functions are the longer-term concern. They carry high structural complexity but have not been touched recently — when the next development push lands in any of those files, it will arrive with elevated blast-radius risk and no recent test-coverage pressure to offset it.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
 |---|---|
-| Critical | 275 |
-| High | 566 |
-| Moderate | 1,616 |
-| Low | 3,900 |
+| `exit_heavy` | 4 |
+| `god_function` | 2 |
+| `long_function` | 2 |
+| `complex_branching` | 1 |
 
-_Hotspot patterns belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
 
 ## Reproduce This Analysis
 
@@ -83,7 +145,7 @@ _Hotspot patterns belong to two tiers — Tier 1 (structural): `complex_branchin
 git clone https://github.com/GoogleChrome/lighthouse
 cd lighthouse
 git checkout 1e1e01613a41345c799c1e776d657eb6c3811230
-hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+hotspots analyze . --mode snapshot --explain-patterns --force
 ```
 
 To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
