@@ -1,11 +1,11 @@
 ---
-title: "pandas-dev/pandas: parser and construction layer carries the highest activity risk — 5 functions to address first"
+title: "pandas-dev/pandas: parser, JSON encoder, and DataFrame construction carry the highest risk"
 titleSeo: "pandas code health: tokenizer, JSON encoder, and DataFrame construction lead refactoring priority"
 description: "Analysis of pandas-dev/pandas at commit 395506f finds five critical-band functions — spanning the C tokenizer, vendored ujson encoder, and Python DataFrame construction path — all in the 'fire' quadrant, combining extreme cyclomatic complexity with recent commit activity."
-introContent: "Five functions in pandas are both structurally extreme and actively changing right now, putting the parser, JSON serialization, and DataFrame construction layers at live regression risk as of commit 395506f. The top-ranked function, `tokenize_bytes`, carries an activity_risk of 22.1 with a cyclomatic complexity of 125 — making it the single sharpest edge for any engineer shipping CSV or text-parsing changes this week."
+introContent: "Five functions in pandas are both structurally extreme and actively changing right now, putting the parser, JSON serialization, and DataFrame construction layers at live regression risk as of commit 395506f. The top-ranked function, `tokenize_bytes`, has an activity-weighted risk score of 22.1 with a cyclomatic complexity of 125 — the single sharpest edge for any engineer shipping CSV or text-parsing changes this week."
 pubDate: 2026-07-06
 tags: ["oss", "python", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "pandas-dev/pandas"
 commit: "395506fe8c021c367c7fb5c41e24770cda2861c4"
 language: "python"
@@ -31,7 +31,7 @@ qaSection:
     answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, maximum nesting depth, and fan-out — with how frequently it has been touched by recent commits. A function with a cyclomatic complexity of 125 that has not been changed in two years poses lower near-term regression risk than a function with cyclomatic complexity of 30 that receives commits every week, because the dormant function is not actively being modified and therefore not actively accruing new bugs. The practical effect of this weighting is that it surfaces the functions where a developer is most likely to introduce a regression right now — not just the functions that look complicated in the abstract. All five functions analyzed here score in the critical band precisely because they combine extreme structural complexity with commit activity inside the last 30 days."
 ---
 
-Across 8,269 functions analyzed at commit 395506f, pandas carries 1,083 in the critical band and 2,625 in the 'fire' quadrant — structurally complex and actively changing at the same time. Every one of the top five hotspots falls into that fire quadrant, meaning the most dangerous structural complexity in the codebase is concentrated in code that is being touched right now, not sitting safely in a backlog. I would start with `tokenize_bytes` in `pandas/_libs/src/parser/tokenizer.c`: an activity_risk of 22.1, cyclomatic complexity of 125, and 2 commits in the last 30 days make it a live regression risk rather than cleanup debt.
+Across 8,269 functions analyzed at commit 395506f, pandas carries 1,083 in the critical band and 2,625 in the 'fire' quadrant — structurally complex and actively changing at the same time. Every one of the top five hotspots falls into that fire quadrant, meaning the most dangerous structural complexity in the codebase is concentrated in code that is being touched right now, not sitting safely in a backlog. I would start with `tokenize_bytes` in `pandas/_libs/src/parser/tokenizer.c`: an activity-weighted risk score of 22.1, cyclomatic complexity of 125, and 2 commits in the last 30 days make it a live regression risk rather than cleanup debt.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -73,7 +73,7 @@ Every top-five function carries the full set of Tier 1 antipatterns: complex bra
 
 This is the hot core of pandas' C-level CSV and text parser. The source excerpt makes the scope concrete: `tokenize_bytes` manages a hand-rolled state machine that handles every combination of delimiters, line terminators, quoting, escape characters, comment characters, carriage returns, skip rules, and — critically — two SIMD fast paths (ARM NEON and x86 SSE2) that are compiled in conditionally. Each of those code paths branches further: for example, the NEON and SSE2 blocks each construct distinct vector constants for every special character, and a 256-entry lookup table (`breaks_field_scan`) is populated at runtime to mark which bytes force a state-machine transition. The `neighbor_risk` pattern flag is also set here, meaning nearby functions in the same file share structural complexity — a change to `tokenize_bytes` is unlikely to be fully contained.
 
-A cyclomatic complexity of 125 means there are at minimum 125 independent execution paths through this function. A nesting depth of 10 means the deepest logic is buried ten control-structure levels in. Fan-out of 25 in a C file is substantial direct coupling. With 2 commits touching it in the last 30 days and `days_since_changed` of 0, this is not legacy archaeology — it is live.
+A cyclomatic complexity of 125 means there are at minimum 125 independent execution paths through this function. A nesting depth of 10 means the deepest logic is buried ten control-structure levels in. Fan-out of 25 in a C file is substantial direct coupling. With 2 commits touching it in the last 30 days and last changed the day this analysis ran, this is not legacy archaeology — it is live.
 
 The file has only 1 author in the last 90 days and a total commit count of 2, which means changes here are being made by a single contributor without a history of review comments. That is not a criticism; it is a risk concentration signal. Any regression introduced in the SIMD fast paths or the state-machine transitions will affect every `read_csv` and `read_table` call in downstream pandas users.
 
@@ -90,7 +90,7 @@ The file has only 1 author in the last 90 days and a total commit count of 2, wh
 
 This function determines the JSON type context for any Python object before the ujson serializer encodes it. The source excerpt shows the pattern immediately: a sequence of `PyBool_Check`, `obj == Py_None`, `PyTypeNum_ISDATETIME`, `PyIter_Check`, `PyArray_Check`, `PyLong_Check`, `PyFloat_Check` — each branch dispatching to a different serialization strategy, some with their own nested conditionals for overflow, NaT handling, ISO formatting, and timedelta vs. datetime distinctions. The `goto ISITERABLE` and `goto INVALID` jumps visible in the excerpt add non-local control flow on top of the nesting.
 
-A nesting depth of 14 is the highest in the top five. Fan-out of 58 is extreme — this function is the type-dispatch hub for the entire JSON encoding path, and in C that coupling is explicit and direct. The `pr_review_comment_density` of 10.0 is the highest in the dataset, meaning this file has historically attracted significant review discussion relative to its commit volume. That is a signal worth taking seriously: reviewers have flagged complexity here before.
+A nesting depth of 14 is the highest in the top five. Fan-out of 58 is extreme — this function is the type-dispatch hub for the entire JSON encoding path, and in C that coupling is explicit and direct. This file has historically attracted significant review discussion relative to its commit volume — the highest review-comment-to-commit ratio in the top five. That is a signal worth taking seriously: reviewers have flagged complexity here before.
 
 This file sits in a `vendored/` path (ujson was originally a third-party library that pandas has internalized and heavily modified). I cover the vendoring implications in the vendor note below, but the key point is that because pandas has diverged from upstream ujson, the team now fully owns this complexity.
 
@@ -122,7 +122,7 @@ The source excerpt itself includes a comment dated 2026-03-31 noting that logic 
 
 CC 99 means nearly 99 independent paths through a single method. With nesting depth of 7 and fan-out of 25, reasoning about what happens at the intersection of a malformed multi-index header and an empty file requires tracking many simultaneous states. The `exit_heavy` pattern means test coverage requires exercising all those exit paths explicitly — in practice, most parser edge cases live here.
 
-This function has 1 commit in the last 30 days and `days_since_changed` of 5, so it is actively being modified. At CC 99, each change carries real regression risk for the paths not covered by whatever test triggered the change.
+This function has 1 commit in the last 30 days and was last changed 5 days before this analysis ran, so it is actively being modified. At CC 99, each change carries real regression risk for the paths not covered by whatever test triggered the change.
 
 **Recommendation:** The multi-index header path and the single-index header path are largely independent strategies that happen to share a loop. Splitting `_infer_columns` into `_infer_columns_single_level` and `_infer_columns_multi_level`, called from a thin dispatcher, would bring each piece to a tractable complexity. The duplicate-column deduplication logic is already identified as a candidate for extraction — moving it to a shared helper with `dedup_names` in `pandas/io/common` would reduce the complexity of both files simultaneously.
 
