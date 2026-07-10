@@ -1,0 +1,183 @@
+---
+title: "mitmproxy's web layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "mitmproxy code health: web layer reducers and generated parsers lead refactoring priority"
+description: "Analysis of mitmproxy/mitmproxy at a67fc64 finds flowsReducer in the flows Redux slice as the lone 'fire'-quadrant function among 202 critical-band functions, while four deeply nested generated parsers and a 57-branch test utility sit as untouched structural debt."
+introContent: "mitmproxy's web UI Redux layer has one function that is both structurally extreme and actively changing right now, while four others in the same critical band have been sitting untouched for over a month — structural debt with a high blast radius the moment anyone picks them up. The split between live-fire risk and accumulated complexity tells a clear story about where the next regression is most likely to emerge."
+pubDate: 2026-07-10
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "mitmproxy/mitmproxy"
+commit: "a67fc64596c472cb468be6b3ac188511e8e9ff94"
+language: "python"
+hotspots_version: "1.30.0"
+analyzed_at: "2026-07-10T06:39:05Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 19.92
+topFunction: "flowsReducer"
+topFile: "web/src/js/ducks/flows/index.ts"
+topPatterns: ["god_function", "long_function", "complex_branching", "deeply_nested", "exit_heavy"]
+patternCounts: {complex_branching: 6, deeply_nested: 6, exit_heavy: 6, god_function: 9, long_function: 8}
+qaSection:
+  - question: "What is a god function and why does it matter in mitmproxy?"
+    answer: "A god function is one that takes on too many distinct responsibilities — it calls a large number of other functions, handles many different cases internally, and owns state transitions that belong to several separate concerns. In concrete terms, fan-out is the count of distinct functions directly called from one place; a fan-out above 15 is a strong coupling signal, and above 39 (as seen in `flowsReducer`) it means a single function is the hub for a wide slice of the system's behavior. In mitmproxy specifically, nine of the top hotspot functions carry the god-function pattern, which means changes to any one of them can ripple into many callee functions in hard-to-predict ways — especially in Python, where those callees are resolved at runtime and static analysis can miss the full coupling surface. The practical consequence is that adding a new flow state transition to `flowsReducer`, for example, requires a developer to hold the entire function's branching logic in their head to avoid breaking one of the 39 downstream call targets."
+  - question: "How do I reduce cyclomatic complexity in Python?"
+    answer: "The most direct technique is extract-method refactoring: identify each independent branch or case in the function and move it into a named helper with a clear single responsibility. A cyclomatic complexity above 15 warrants splitting; above 30, as with `flowsReducer` at CC 39, it warrants immediate attention because the number of required test cases to achieve branch coverage grows proportionally with CC. For a Redux-style reducer like `flowsReducer`, a concrete first step is to create one handler function per action type — `handleFlowsReceive`, `handleFlowsAdd`, `handleFlowsUpdate` — each returning the new state slice it is responsible for, then have the top-level reducer delegate by action type in a lookup table rather than a chain of `if/else if` blocks. This alone would bring the main reducer's CC from 39 down to near 1, pushing the complexity into smaller, individually testable units."
+  - question: "Is mitmproxy actively maintained?"
+    answer: "Yes, but the activity is concentrated. Of the 2,757 functions analyzed, 29 are in the fire quadrant — actively changing and structurally complex — while 648 are in the debt quadrant, meaning they are structurally complex but have not been touched recently. The top fire-quadrant function, `flowsReducer`, was touched once in the last 30 days with the most recent change just 8 days ago, which is clear evidence of ongoing web UI development. The four debt-quadrant functions in the top five — `peg$parse` in `filt.js` (31 days since changed), `__bool__` in `tutils.py` (31 days since changed), `peg$parse` in `command.js` (31 days since changed), and `peg$parseExpr` in `filt.js` (31 days since changed), each with zero touches in the last 30 days — include two generated parser artifacts expected to be stable and two functions that represent genuine structural debt. Active development and accumulated structural debt are not mutually exclusive — the data shows a project that is genuinely evolving its web layer while carrying refactoring obligations in both the UI state management and the test infrastructure."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at github.com/badlogic/hotspots. To reproduce this exact analysis, check out mitmproxy at commit `a67fc64` with `git checkout a67fc64`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without additional configuration — no project-specific setup is required."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from its cyclomatic complexity, maximum nesting depth, and fan-out — with how frequently it has been modified by recent commits. A function with cyclomatic complexity 196 that has not been touched in 31 days, like `peg$parseExpr`, scores lower (risk score 15.9) than `flowsReducer` with CC 39 that was modified 8 days ago (risk score 19.92), because the actively-changing function carries a higher probability of introducing a regression in the near term. The intent is to help prioritize refactoring effort where it reduces actual near-term risk rather than simply where the code looks complicated in the abstract. A structurally complex but completely dormant function is debt worth addressing eventually; a structurally complex function being actively modified is a live regression risk that warrants attention this sprint."
+---
+
+Across 2,757 functions analyzed at commit a67fc64, mitmproxy carries 202 in the critical band — and the most urgent is `flowsReducer` in `web/src/js/ducks/flows/index.ts`, which holds a risk score of 19.92. It sits in the 'fire' quadrant: cyclomatic complexity of 39, max nesting depth of 9, and fan-out of 39, touched once in the last 30 days just 8 days ago — structurally extreme and still moving, which makes it a live regression risk, not a cleanup backlog item. Behind it, four more critical-band functions — two generated PEG parsers, a command parser, and a test-infrastructure boolean evaluator — have gone untouched for 31 days each, representing structural debt with a high blast radius the moment development resumes.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `flowsReducer` | web/src/js/ducks/flows/index.ts | 19.9 | 39 | 9 | 39 |
+| `peg$parse` | web/src/js/filt/filt.js | 19.4 | 32 | 32 | 129 |
+| `__bool__` | test/mitmproxy/proxy/tutils.py | 16.4 | 57 | 6 | 25 |
+| `peg$parse` | web/src/js/filt/command.js | 16.2 | 11 | 6 | 56 |
+| `peg$parseExpr` | web/src/js/filt/filt.js | 15.9 | 196 | 32 | 37 |
+
+## Large Repo Analysis
+
+mitmproxy is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Codemod / Tooling Files in Results
+
+Two files in the top hotspots — `web/src/js/filt/filt.js` and `web/src/js/filt/command.js` — are PEG.js-generated parser artifacts, not handwritten source. Their extreme cyclomatic complexity (196 and 32 respectively) and fan-out values (129 and 56) are structural properties of machine-generated recursive-descent parsers, not indicators of handwritten quality problems. To exclude them from future Hotspots analyses, add the following to your `.hotspotsrc.json`: `{ "exclude": ["web/src/js/filt/filt.js", "web/src/js/filt/command.js"] }`. The grammar source files (likely `.pegjs` files) are the appropriate targets for review and test coverage, not the generated output.
+
+mitmproxy is a Python-based interactive TLS-capable proxy with a TypeScript/React web UI. I analyzed it at commit `a67fc64` and found 2,757 total functions, of which 202 land in the critical band.
+
+<BandChart fire='29' debt='648' watch='135' ok='1945' />
+
+The quadrant picture is telling: 648 functions in the debt quadrant versus only 29 in fire means the dominant risk is structural complexity that has accumulated without recent activity — high blast radius waiting for the next development push. But the top hotspot is one of those 29 fire-quadrant functions, and it is moving right now.
+
+<PatternCloud patterns='god_function:9,long_function:8,complex_branching:6,deeply_nested:6,exit_heavy:6' />
+
+Nine god-function hits across the top hotspots is the single most important pattern signal here. In Python especially, a function that calls dozens of distinct callees creates coupling that is wider than it appears, because duck typing means those call targets are resolved at runtime — the static fan-out number understates the true coupling surface.
+
+---
+
+### `flowsReducer` — web/src/js/ducks/flows/index.ts
+
+<FunctionCard fn='flowsReducer' file='web/src/js/ducks/flows/index.ts' risk='19.92' band='fire' cc='39' nd='9' fo='39' touches='1' />
+
+This is the function I would address first, because it is both structurally extreme and actively changing. One commit touched it 8 days ago, and the structural profile — CC 39, nesting depth of 9, fan-out of 39 — puts it firmly in god-function territory.
+
+From the source excerpt, `flowsReducer` is a Redux reducer that owns the entire flows state shape: it handles at least `FLOWS_RECEIVE`, `FLOWS_ADD`, and `FLOWS_UPDATE` actions in a chain of `if/else if` branches, each branch performing index rebuilding, view sorting, selection reconciliation, and highlight-set management. That is a large number of distinct responsibilities packed into one function. The nesting depth of 9 is a direct consequence: each action branch contains its own filter-check conditionals, sorted-insertion logic, and Map-mutation paths, stacked inside one another.
+
+<MetricBar label='Cyclomatic Complexity' value='39' threshold='10' max='60' />
+<MetricBar label='Max Nesting Depth' value='9' threshold='4' max='12' />
+<MetricBar label='Fan-Out' value='39' threshold='15' max='50' />
+
+The fan-out of 39 is particularly consequential here. `flowsReducer` calls into index builders, sort utilities, lookup builders, and view-insertion helpers — a change to any of those callees can change reducer behavior in ways that are hard to trace because the reducer itself is already doing so much. The `exit_heavy` pattern compounds the testing burden: with 39 independent paths and 9 nesting levels, achieving meaningful branch coverage requires a large test matrix.
+
+The external signals are clean — no bug-linked commits, no reverts — so I am not flagging this as defective. But a CC-39 reducer that is still being modified is exactly the kind of function where a subtle state-mutation bug gets introduced and only surfaces under a specific combination of WebSocket race conditions and sort order. The source excerpt even contains an explicit comment noting a WebSocket/HTTP race for the `FLOWS_ADD` path, which confirms the function is navigating non-trivial concurrency concerns.
+
+**My recommendation:** decompose `flowsReducer` by action type. Each `FLOWS_*` action has enough distinct logic to warrant its own handler function. A parent reducer delegates by action type and each child function owns one state transition. This converts a CC-39 monolith into several sub-10 functions, each independently testable.
+
+---
+
+### `peg$parse` — web/src/js/filt/filt.js
+
+<FunctionCard fn='peg$parse' file='web/src/js/filt/filt.js' risk='19.36' band='debt' cc='32' nd='32' fo='129' touches='0' />
+
+This function has not been touched in 31 days and sits in the debt quadrant — high structural complexity with no recent activity. The numbers are extraordinary nonetheless. A fan-out of 129 is the highest in this analysis: `peg$parse` calls into 129 distinct functions. A nesting depth of 32 matches the cyclomatic complexity of 32, which is characteristic of machine-generated recursive-descent parsers — the excerpt confirms this is a PEG.js-generated parser for mitmproxy's filter expression language (`~all`, `~a`, `~b`, `~bq`, and so on).
+
+<MetricBar label='Fan-Out' value='129' threshold='15' max='140' />
+<MetricBar label='Max Nesting Depth' value='32' threshold='4' max='35' />
+
+The `peg$c0` through `peg$c70`+ constant definitions visible in the excerpt — each encoding a grammar terminal or action function — are the scaffolding of a generated parser. Every filter keyword gets its own parse sub-function, and `peg$parse` orchestrates them all. That explains both the extreme fan-out and the deeply nested control flow: the parser tries each alternative in sequence, backtracking on failure, which produces deeply nested `if (s !== peg$FAILED)` chains.
+
+The single author touching this file in the last 90 days and zero bug-linked commits suggest it is stable under current usage. The risk is blast-radius: if mitmproxy's filter language needs a new keyword, or if the grammar source (likely a `.pegjs` file not directly measured here) changes, `peg$parse` will be regenerated in its entirety, and anyone reviewing that diff will face a 129-fan-out, depth-32 function with no obvious manual entry points.
+
+**My recommendation:** do not hand-edit `peg$parse`. Instead, ensure the grammar source file is well-documented and that the generation step is clearly scripted and committed. Add integration tests that cover every filter keyword at the language level — they will catch regressions without requiring anyone to reason through the generated code directly.
+
+---
+
+### `__bool__` — test/mitmproxy/proxy/tutils.py
+
+<FunctionCard fn='__bool__' file='test/mitmproxy/proxy/tutils.py' risk='16.39' band='debt' cc='57' nd='6' fo='25' touches='0' />
+
+`__bool__` in `tutils.py` has not been touched in 31 days and sits in the debt quadrant, but its CC of 57 is the highest of any non-generated function in this list — a strong refactoring signal on its own.
+
+<MetricBar label='Cyclomatic Complexity' value='57' threshold='10' max='70' />
+
+From the source excerpt, this `__bool__` method is the evaluation engine for a proxy test playbook. It drives a while loop over expected vs. actual events, dispatching through `isinstance` checks for `Command`, `OpenConnectionCompleted`, `ConnectionClosed`, `CloseTcpConnection`, `CloseConnection`, `Log`, and `StartHook` — each branch mutating connection state, inserting auto-replies, or catching exceptions from `self.layer.handle_event(x)`. The 57 independent paths through this function reflect the combinatorial space of proxy event types the playbook framework must handle.
+
+This is test infrastructure, not production code, but that framing does not reduce the risk. A buggy playbook evaluator produces false-positive test passes — it can mask regressions in the proxy layers it is supposed to exercise. The god-function pattern is evident: `__bool__` is simultaneously a state machine driver, an event dispatcher, a hook auto-emitter, and an exception logger. The long-function and complex-branching patterns follow naturally from that scope.
+
+The naming itself is a signal worth noting: overloading Python's `__bool__` dunder to run a full playbook evaluation is an unconventional contract. Any developer unfamiliar with this class will not expect `bool(playbook)` to mutate proxy connection state and drive a layer's event loop.
+
+**My recommendation:** extract the per-event-type dispatch logic into named methods (e.g., `_handle_open_connection`, `_handle_hook_command`). The outer `while` loop becomes a thin orchestrator. This brings CC down substantially and makes the playbook's event-handling contract explicit and independently testable. Renaming the public API away from `__bool__` would also make the contract far more discoverable.
+
+---
+
+### `peg$parse` — web/src/js/filt/command.js
+
+<FunctionCard fn='peg$parse' file='web/src/js/filt/command.js' risk='16.2' band='debt' cc='11' nd='6' fo='56' touches='0' />
+
+This is the command-expression counterpart to the filter parser above, also PEG.js-generated, also untouched for 31 days, also sitting in the debt quadrant. Its CC of 11 is far lower than the filter `peg$parse`, which makes sense — the command grammar (handling quoted strings, escape sequences, whitespace, and control characters) is simpler than the full filter expression grammar. But the fan-out of 56 still means changes to this file's generated output will touch 56 distinct internal functions.
+
+<MetricBar label='Fan-Out' value='56' threshold='15' max='130' />
+
+The excerpt shows the same PEG.js scaffolding pattern: `peg$c0` through `peg$c34` define terminals for string delimiters, escape characters, and whitespace classes, and `peg$parse` bootstraps the rule function table. The exit-heavy pattern is present here too — each parse attempt either advances `peg$currPos` or resets it on `peg$FAILED`, creating a branchy backtracking structure.
+
+The same advice applies as for the filter parser: treat this as generated output, protect it with grammar-level tests, and ensure the `.js` file is never hand-edited. The difference from `filt.js` is that the command parser has a single author in the last 90 days and one total commit, suggesting it is even more frozen than the filter parser.
+
+**My recommendation:** if mitmproxy's command language ever needs to evolve, the grammar source should be the single point of change. Verify that the generation toolchain is documented in the contributing guide so that future maintainers do not attempt to patch `command.js` directly.
+
+---
+
+### `peg$parseExpr` — web/src/js/filt/filt.js
+
+<FunctionCard fn='peg$parseExpr' file='web/src/js/filt/filt.js' risk='15.9' band='debt' cc='196' nd='32' fo='37' touches='0' />
+
+`peg$parseExpr` is the most structurally complex function in this entire analysis by cyclomatic complexity, with a CC of 196 — nearly five times the already-high CC of `flowsReducer`. It lives in the same generated file as `peg$parse` above, has not been touched in 31 days, and sits in the debt quadrant. The source excerpt confirms it is the generated parse function for the filter expression rule: it tries each filter keyword (`~all`, `~a`, `~b`, `~bq`, etc.) in sequence, using the PEG backtracking pattern of save-position, attempt match, reset on failure.
+
+<MetricBar label='Cyclomatic Complexity' value='196' threshold='30' max='200' />
+<MetricBar label='Max Nesting Depth' value='32' threshold='4' max='35' />
+
+A CC of 196 means 196 independent execution paths — one for each grammar alternative the function must try. In a handwritten function, that number would be catastrophic. In a generated parser, it is expected and correct: each path corresponds to one filter keyword or subexpression form, and the generator guarantees they are exercised by the grammar's own structure. Nesting depth of 32 mirrors this — each nested `if (s0 === peg$FAILED)` block represents one layer of alternative-trying.
+
+The practical risk is the same as for `peg$parse`: this function will be wholesale regenerated if the grammar changes, and it cannot be meaningfully reviewed at the diff level. The zero touches in 30 days and single total commit confirm it is dormant structural debt, not active risk. But its CC of 196 means any tool or process that flags high-CC functions without understanding generation provenance will surface it repeatedly.
+
+**My recommendation:** add a file-level comment or a `.hotspotsrc.json` exclusion (see vendor note below) marking `filt.js` and `command.js` as generated artifacts. This suppresses noise in future analyses without hiding the grammar source from review.
+
+---
+
+Looking beyond the top five, a few additional functions are worth brief mention. `get_connection` in `mitmproxy/proxy/layers/http/__init__.py` carries a CC of 42 and has been untouched for 31 days — it is a critical-band debt function in the HTTP proxy layer itself, not the web UI. That makes its blast radius potentially larger than anything in the web layer, because changes there sit on every proxied request path. `onKeyDown` in `web/src/js/ducks/ui/keyboard.tsx` is a fire-quadrant function with CC 30, touched once in the last 30 days with the most recent change 27 days ago — worth monitoring as the web UI keyboard handling evolves.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 9 |
+| `long_function` | 8 |
+| `complex_branching` | 6 |
+| `deeply_nested` | 6 |
+| `exit_heavy` | 6 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/mitmproxy/mitmproxy
+cd mitmproxy
+git checkout a67fc64596c472cb468be6b3ac188511e8e9ff94
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
