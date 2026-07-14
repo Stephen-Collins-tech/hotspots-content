@@ -1,0 +1,104 @@
+---
+title: "Hotspots v1.25.1–v1.31.0: Explanations, a Regime-Aware Ranker, and a Burst-Score Formula Term"
+description: "Six releases since v1.25.0: npm/PyPI distribution, a 10th ranker feature, per-repo policy severity, automatic Ridge-vs-RandomForest model selection, deterministic --explain phrase output, and a burst-score term in the activity-risk formula validated on OSV/CVE ground truth."
+pubDate: 2026-07-14
+author: "Stephen Collins"
+tags: ["release", "hotspots", "complexity"]
+ogImage: "/og.png"
+summary: "Since v1.25.0, hotspots shipped on npm and PyPI, added convention_bug_fix_count as a 10th ranker feature, gained per-repo policy severity overrides, started auto-selecting between Ridge and RandomForest based on a repo's complexity-vs-risk regime, added a deterministic --explain phrase layer for CRITICAL/HIGH functions, and — as of v1.31.0 — added a burst-score term to the activity-risk formula after a 5-signal OSV/CVE refit found it the single most consistent predictor missing from the formula (mean ΔAUC +0.116 across 10 validated repos)."
+introContent: "Six versions in four weeks. Most of it is quieter infrastructure — easier installs, a cleaner ranker feature set, tighter CI policy control. The two releases worth reading closely are the ones that change what you see when you run hotspots: v1.30.0 adds a plain-English reason under every CRITICAL/HIGH function, and v1.31.0 changes the formula that decides which functions are CRITICAL/HIGH in the first place."
+---
+
+Six releases since the last one of these posts (v1.25.0). In order: easier installs, a cleaner ranker feature set, per-repo policy control, an auto-selecting model class, a new explanation layer, and a formula change validated against real vulnerability data. The last two are the ones worth reading closely.
+
+## Install from npm or PyPI (v1.25.1–v1.25.3)
+
+Hotspots is now on npm and PyPI, not just Homebrew and `cargo install`:
+
+```bash
+brew install Stephen-Collins-tech/tap/hotspots
+npm install -g @stephencollinstech/hotspots
+pip install hotspots-cli
+cargo install hotspots-cli
+```
+
+The npm and PyPI packages wrap the same compiled binary — no Rust toolchain required to install. Getting the packaging right took three patch releases (isolating publish working directories with subshells, scoping the npm package under `@stephencollinstech`), which is the boring but necessary part of adding a distribution channel.
+
+## `convention_bug_fix_count` — 10th ranker feature (v1.26.0)
+
+The trained ranker (`hotspots train`) now has a 10th feature: `convention_bug_fix_count`, a per-function count of how many times a function was touched by a commit matching conventional fix-keyword patterns (`fix:`, `bug`, `patch`, `hotfix`, `regression`, `defect`). Models trained before this release (`model_version` < 5) are rejected on load with a message to retrain — the feature vector shape changed, so old and new models aren't compatible.
+
+`hotspots train` also got a UX pass in the same release: per-tree ETA using a sliding window instead of a cumulative average (the cumulative version lagged badly on repos where later trees are slower), an upfront estimate-and-confirm prompt, `--yes`/`-y` to skip it in CI, and `--quiet`/`-q` to suppress per-tree progress lines while keeping the estimate and completion messages.
+
+## Per-repo policy severity (v1.28.0)
+
+The two CI-blocking policies — `critical_introduction` and `excessive_risk_regression` — default to `"block"`. As of v1.28.0 you can downgrade either to `"warn"` (report without failing CI) per repo, with a required reason string:
+
+```json
+{
+  "policy": {
+    "critical_introduction": "warn",
+    "critical_introduction_reason": "eval/ scripts are one-shot research code reviewed case-by-case — approved by @you 2026-07-06",
+    "excessive_risk_regression": "block"
+  }
+}
+```
+
+The reason is enforced at config-load time — set severity to anything other than `"block"` without a non-empty `<name>_reason` and `hotspots config validate` fails. The same release fixed `git()` silently ignoring a `GIT_DIR`-inherited working directory, which affected anyone running hotspots from within tooling that sets `GIT_DIR` explicitly.
+
+## Auto-selecting Ridge vs. RandomForest (v1.29.0, F61)
+
+`hotspots train` fits a RandomForest by default. On repos where risk is close to linear in complexity — small, young, single-language repos mostly — a full forest is overkill and sometimes worse than a simple regression. v1.29.0 adds a pre-training screener: it fits a fast depth-2 RandomForest as a probe, compares its ranking quality against a Ridge regression, and picks Ridge automatically when `Δρ < 0.03` (Ridge is statistically indistinguishable from the forest, so skip the expensive one):
+
+```
+Model class: Ridge (regime=LINEAR, Δρ=+0.03) — RandomForest training skipped
+```
+
+`--n-estimators` and `--max-depth` are ignored when the screener selects Ridge. `hotspots analyze` prints which model class the loaded ranker uses, so it's visible after the fact which path a given `.hotspots/ranker.json` took.
+
+## Deterministic `--explain` phrases (v1.30.0, F55)
+
+This is the release that changes what `hotspots analyze` actually shows you.
+
+Once a model is trained, `hotspots analyze . --mode snapshot --explain` adds a one-line `✦` phrase under every CRITICAL/HIGH function:
+
+```
+CRITICAL (5)
+  0.96  benchmarks/bench.py:478   _save_stress_results  [god_function, long_function]
+         ✦ High cyclomatic complexity, structurally complex, and deeply nested.
+```
+
+The phrase isn't generated by a model call — it's a deterministic phrase-table lookup keyed by which features rank in the top 20th percentile for that function within that repo. Same input, same output, every time, with no network dependency and no per-run cost. It's the fastest way to see *why* a function landed in CRITICAL without opening the JSON output and cross-referencing risk factors by hand. No `✦` lines appear without a trained ranker — this is layered on top of the trained-model path, not the activity-risk formula.
+
+## Burst-score term in the activity-risk formula (v1.31.0, F93)
+
+The activity-risk formula (the one that runs whenever there's no trained ranker, or the trained ranker's own precision gate flags its output as unreliable) previously had no term for commit-timing burstiness — whether a file's history is a few frantic clusters of commits or steady, spread-out changes. A follow-on to an earlier 23-signal OSV/CVE sweep found that a small formula built from `burst_score`, `commit_count`, and `convention_fix_count` beat the existing formula's ranking on real vulnerability ground truth by a mean ΔAUC of +0.116 across 10 validated repos (9 of 10 wins) — and that `burst_score` was the piece the formula was missing entirely.
+
+v1.31.0 adds it:
+
+```
+Activity Risk = LRS
+  + ...
+  + max(0, burst_score − 1.0) × 0.3   # commit-timing burstiness
+```
+
+`burst_score` is a sliding 30-day-window max/mean commit ratio per file — always ≥ 1.0, with higher values meaning commits cluster into bursts rather than spreading evenly over time. It's computed in a single `git log` pass over the whole repo (not one subprocess per file — the naive per-file approach was caught and fixed before merge, since it doesn't scale to large repos), the same batching pattern hotspots already uses for touch metrics. The weight is overridable via `scoring.burst` in `.hotspotsrc.json`, same as the other seven activity-risk weights.
+
+I re-ran the 7-repo public benchmark (`benchmarks/RESULTS.md`) after adding the term: mean Spearman ρ against real bug-fix-commit ground truth went from +0.350 to +0.387, with gains on every repo in the corpus — react, go, git, redis, curl, vscode, and django. Full per-repo numbers and the benchmark methodology are in the repo.
+
+---
+
+Update with:
+
+```bash
+brew upgrade hotspots
+npm update -g @stephencollinstech/hotspots
+pip install --upgrade hotspots-cli
+cargo install hotspots-cli
+```
+
+or via the install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Stephen-Collins-tech/hotspots/main/install.sh | sh
+```
