@@ -1,0 +1,179 @@
+---
+title: "pingcap/tidb's planner and DDL layer — 5 functions to address first"
+titleSeo: "tidb code health: planner and DDL hotspots drive refactoring priority in pingcap/tidb"
+description: "Analysis of pingcap/tidb at commit 5d6fdbe finds five critical-band functions in the query planner, DDL, and expression layers that are both structurally complex and actively changing, with activity-weighted risk scores between 18.85 and 19.53."
+introContent: "Five functions in pingcap/tidb's query planner, DDL execution path, and expression evaluator are sitting in the 'fire' quadrant right now — structurally complex and receiving commits in the last seven days. Any engineer shipping code to these layers this week is working against a high regression surface."
+pubDate: 2026-07-14
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "pingcap/tidb"
+commit: "5d6fdbe6f5502ecb86a060b6d9719aeb7bf826a9"
+language: "go"
+hotspots_version: "1.30.0"
+analyzed_at: "2026-07-14T13:55:24Z"
+clone_depth: 25
+hybrid_touch_threshold: 10
+topRisk: 19.53
+topFunction: "buildDDL"
+topFile: "pkg/planner/core/planbuilder.go"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 5, deeply_nested: 4, exit_heavy: 5, god_function: 5, long_function: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in tidb?"
+    answer: "A god function is a single function that takes on so many responsibilities that it becomes the authoritative entry point for a broad subsystem — it calls many other functions, handles many distinct cases, and accumulates logic that should be distributed across smaller units. In tidb, all five top hotspots carry this pattern: `buildDDL` and `AlterTable` each dispatch over the full set of DDL statement and alter-spec types with a cyclomatic complexity of 35, while `HandleTask` reaches across 73 distinct function calls to coordinate an entire index check workflow. The practical consequence is that a change anywhere in the god function's dependency graph — or a new DDL spec type added to the switch — risks breaking unrelated paths because all the logic shares one scope, one set of local variables, and one test surface. Reviewing or testing a god function requires understanding the entire subsystem at once."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The most direct technique is extract-method: identify each independent case arm or conditional cluster and move it into a named function with a clear contract. A cyclomatic complexity above 15 warrants splitting; above 30 it warrants immediate attention — both `buildDDL` and `AlterTable` in tidb sit at exactly 35. In Go specifically, large type-switch or case-switch blocks are the primary driver of high cyclomatic complexity and are natural extraction boundaries: each `case` arm becomes a method on the receiver. A concrete first step for `buildDDL` today would be to extract the `AlterTableStmt` per-spec privilege logic into a `buildAlterTableSpecPrivileges(spec ast.AlterTableSpec) error` method, which would reduce `buildDDL`'s complexity by at least 10 paths and make the authorization logic testable per spec type without constructing a full plan-builder context."
+  - question: "Is tidb actively maintained?"
+    answer: "Yes, and the data is unambiguous about it: every one of the 30,167 analyzed functions lands in either the 'fire' or 'watch' quadrant — there are zero dormant functions in this snapshot. The top five hotspots alone received commits within the last 7 days: `buildDDL` was touched 3 times in the last 30 days and last modified 4 days ago; `AlterTable` received 2 touches in the last 30 days and was also last modified 4 days ago; `HandleTask`, `optimize`, and `foldConstant` each received 1 touch in the last 30 days and were last modified 7 days ago. Active maintenance and high structural complexity are not mutually exclusive — the complexity in these functions reflects the breadth of MySQL-compatible DDL and query optimization they must handle, and the team is visibly iterating on all of it right now."
+  - question: "How do I reproduce this analysis?"
+    answer: "The hotspots CLI is available at https://github.com/nicholasgasior/hotspots. To reproduce this exact analysis, check out the analyzed commit with `git checkout 5d6fdbe` inside a local clone of pingcap/tidb, then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without additional configuration, and the `--explain-patterns` flag surfaces the antipattern classifications shown in this post."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies a function's structural complexity, derived from its cyclomatic complexity, maximum nesting depth, and fan-out, by a signal reflecting how frequently it has been changed recently. The result prioritizes functions that are both hard to understand and actively being modified, because those are the ones most likely to introduce regressions right now. A deeply complex function that has not been touched in two years poses lower near-term risk than a moderately complex function receiving weekly commits, because the dormant function's complexity is not currently being exercised by developer changes. In tidb's top five, all five functions are in the fire quadrant — every high-complexity function identified here is also under active development pressure, which is why the urgency framing applies across the board rather than being reserved for a subset."
+---
+
+At commit 5d6fdbe, pingcap/tidb — a distributed SQL database with 30,167 analyzed functions — has 3,875 in the critical band. Every one of the top five hotspots falls in the 'fire' quadrant: high structural complexity and active recent commits, making them live regression risks rather than cleanup backlog items. I would start with `buildDDL` in `pkg/planner/core/planbuilder.go`, which carries an activity-weighted risk score of 19.53 and was touched 3 times in the last 30 days, last modified just 4 days ago.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `buildDDL` | pkg/planner/core/planbuilder.go | 19.5 | 35 | 9 | 24 |
+| `HandleTask` | pkg/executor/check_table_index.go | 19.4 | 19 | 8 | 73 |
+| `optimize` | pkg/planner/core/rule_decorrelate.go | 19.3 | 18 | 14 | 94 |
+| `AlterTable` | pkg/ddl/schematracker/dm_tracker.go | 18.9 | 35 | 7 | 30 |
+| `foldConstant` | pkg/expression/constant_fold.go | 18.8 | 19 | 4 | 29 |
+
+## Large Repo Analysis
+
+tidb is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 10 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Quadrant and pattern overview
+
+<BandChart fire='11140' debt='0' watch='19027' ok='0' />
+
+Every function in the analyzed codebase lands in either 'fire' or 'watch' — there are no dormant-debt or low-risk-inactive functions in this snapshot. That means all structural complexity in tidb is being exercised under active development pressure. The five functions below account for the densest intersection of structural risk and recent commit activity.
+
+<PatternCloud patterns='complex_branching:5,exit_heavy:5,god_function:5,long_function:5,deeply_nested:4' />
+
+All five top hotspots share every major antipattern: complex branching, excessive exit points, god-function scope, long body length, and — in four of the five — deep nesting. That consistency is a signal about architectural style in these subsystems, not random accumulation.
+
+---
+
+### `buildDDL` — planbuilder.go
+
+<FunctionCard fn='buildDDL' file='pkg/planner/core/planbuilder.go' risk='19.53' band='critical' cc='35' nd='9' fo='24' touches='3' />
+
+`buildDDL` is the plan-builder entry point for all DDL statement types — the source excerpt shows a large top-level type switch dispatching on `ast.DDLNode` subtypes: `AlterDatabaseStmt`, `AlterTableStmt`, and beyond. Inside the `AlterTableStmt` arm there is a second loop over individual `AlterTableSpec` entries, each with its own conditional chain handling rename, partition operations, statistics, constraint additions, and more. That nesting of a loop inside a switch inside a method is what produces the maximum nesting depth of 9.
+
+A cyclomatic complexity of 35 means 35 independent execution paths, each of which is a required test case and a surface where a new DDL statement type could silently fall through. The fan-out of 24 distinct function calls means a change to `buildDDL` — or to any of those 24 callees — can ripple unexpectedly. With 3 commits in the last 30 days and a last-modified date of 4 days ago, this is not a theoretical risk.
+
+The external signals show that two of the 3 recent commits touching this file were bug fixes, and this file has the highest density of PR review comments of any file in the top five. That review activity suggests the team already recognizes this function warrants scrutiny.
+
+<MetricBar label='Cyclomatic Complexity' value='35' threshold='10' max='50' />
+<MetricBar label='Max Nesting Depth' value='9' threshold='4' max='14' />
+
+**Recommendation:** The outer type switch and the inner per-spec loop are two separable responsibilities. I would extract the per-spec privilege-checking logic into a dedicated `buildAlterTablePrivileges(spec)` function, reducing both the nesting depth and the CC of the outer function by roughly half. That extraction also makes it straightforward to test each spec type's authorization path in isolation.
+
+---
+
+### `HandleTask` — check_table_index.go
+
+<FunctionCard fn='HandleTask' file='pkg/executor/check_table_index.go' risk='19.35' band='critical' cc='19' nd='8' fo='73' touches='1' />
+
+`HandleTask` drives a fast check-table index verification worker. The source excerpt shows it acquires a system session, defers cleanup, builds primary key column lists via a three-way switch on handle type (common handle, `PKIsHandle`, or `_tidb_rowid`), then constructs CRC32/MD5 checksum expressions used to compare table row data against index data via inline SQL. A transaction is opened before the excerpt ends, suggesting the function continues into bucket-by-bucket comparison logic.
+
+The standout metric here is the fan-out of 73 — the highest of any function in the top five and more than three times `buildDDL`'s fan-out. Seventy-three distinct function calls in one body means this function reaches broadly across session management, metadata, type handling, SQL execution, and checksum utilities. A change anywhere in that dependency graph can affect correctness here, and a change here can require coordinated edits across multiple packages. The nesting depth of 8 is compounded by Go's explicit error-return style: each early `return err` inside a nested block is both an exit path and a test case that must be exercised.
+
+100% of the recorded changes to this file have been bug fixes. That is historical context for the file, not proof this function is defective, but it does strengthen the case for prioritized review.
+
+<MetricBar label='Fan-out (distinct calls)' value='73' threshold='15' max='100' />
+
+**Recommendation:** The session acquisition and cleanup, the PK column resolution, and the checksum SQL construction are three distinct stages that could each become a named helper. Extracting `resolvePrimaryKeyColumns(tblMeta)` and `buildChecksumExpressions(pkCols, indexCols)` would reduce the fan-out concentration in the outer function and make each stage independently testable — important given the all-bug-fix commit history on this file.
+
+---
+
+### `optimize` — rule_decorrelate.go
+
+<FunctionCard fn='optimize' file='pkg/planner/core/rule_decorrelate.go' risk='19.28' band='critical' cc='18' nd='14' fo='94' touches='1' />
+
+`optimize` implements the `DecorrelateSolver` rule, which transforms correlated subqueries (represented as `LogicalApply` nodes) into joins when correlation columns can be eliminated. The source excerpt shows it handling multiple plan node shapes in sequence: aggregation group-by column extraction, redundant-apply pruning, then a deep chain of type assertions — checking if the inner plan is a `LogicalSelection`, `LogicalMaxOneRow`, or `LogicalProjection` — each with its own early return or recursive call back into `optimize`.
+
+The maximum nesting depth of 14 is the deepest of any function in this analysis, and it is the sharpest signal here.
+
+<MetricBar label='Max Nesting Depth' value='14' threshold='4' max='14' />
+<MetricBar label='Fan-out (distinct calls)' value='94' threshold='15' max='100' />
+
+Depth 14 in a recursive function that pattern-matches on logical plan node types means a reader must simultaneously track the plan tree shape, the current correlated-column state, and which branch of the type-assertion chain they are in. The fan-out of 94 — the highest in the top five — reflects how many plan transformation utilities this rule touches. A logic error at nesting depth 10 may not surface until a complex query with lateral subqueries hits a specific plan shape in production.
+
+This file's single recent commit was a bug fix. Combined with the extreme nesting and a recursive calling convention, that warrants careful review of any change touching the `LogicalProjection` arm in particular, which the source excerpt shows was recently annotated with detailed inline commentary about column schema substitution edge cases.
+
+**Recommendation:** The three inner-plan type-assertion arms (`LogicalSelection`, `LogicalMaxOneRow`, `LogicalProjection`) each represent a separate decorrelation strategy. Extracting each into a `tryDecorrelateViaSelection`, `tryDecorrelateViaMaxOneRow`, and `tryDecorrelateViaProjection` helper would cut the nesting depth roughly in half and make the recursive entry point a readable dispatch table.
+
+---
+
+### `AlterTable` — dm_tracker.go
+
+<FunctionCard fn='AlterTable' file='pkg/ddl/schematracker/dm_tracker.go' risk='18.89' band='critical' cc='35' nd='7' fo='30' touches='2' />
+
+`AlterTable` in the `SchemaTracker` is a DM (Data Migration) in-memory schema tracker implementation of the DDL `ALTER TABLE` operation. The source excerpt shows it resolves and validates alter specs, clones the existing table info for rollback, then iterates over each spec in a switch dispatching to typed helpers: `addColumn`, `dropColumn`, `dropIndex`, `modifyColumn`, `renameTable`, and more. Inside the `AlterTableAddConstraint` arm there is a nested switch on constraint type, handling unique indexes, primary keys, and foreign keys.
+
+The cyclomatic complexity of 35 mirrors `buildDDL` exactly — not a coincidence, since both functions are exhaustive dispatchers over the MySQL `ALTER TABLE` specification. The `SchemaTracker` context means this code underpins schema state tracking for TiDB's DM component, where correctness is load-bearing: an incorrect in-memory schema state will cause downstream replication to diverge silently.
+
+Two commits in the last 30 days and a last-modified date of 4 days ago place this firmly in active territory. Of those two commits, one was a bug fix and one was another kind of change — moderate historical signal.
+
+<MetricBar label='Cyclomatic Complexity' value='35' threshold='10' max='50' />
+
+The source also includes a `TODO` comment about spec reordering to match MySQL's execution order (drop index → drop column → rename → add column → add index). That open TODO inside a 35-path function that is receiving active commits is a latent correctness risk — the wrong spec order can produce different schema states depending on the combination of operations in a single `ALTER TABLE`.
+
+**Recommendation:** Address the spec-reordering TODO before the next feature addition. The ordering logic should be extracted into a `reorderAlterSpecs(specs)` helper that can be unit-tested independently of the dispatch loop, and the nested constraint-type switch should become its own `handleAddConstraint` method.
+
+---
+
+### `foldConstant` — constant_fold.go
+
+<FunctionCard fn='foldConstant' file='pkg/expression/constant_fold.go' risk='18.85' band='critical' cc='19' nd='4' fo='29' touches='1' />
+
+`foldConstant` evaluates whether a scalar expression can be reduced to a constant at plan time. The source excerpt shows it dispatching first on expression type, then — for `ScalarFunction` — checking an unfoldable-function blocklist, an extension-function guard, and a special-handler registry before iterating over the function's arguments to classify each as constant, null, or dynamic. A secondary path handles the case where not all arguments are constant but null propagation can still allow partial folding, with specific carve-outs for `NullEQ`, `ConcatWS`, and `Field` due to their non-standard null semantics.
+
+The nesting depth of 4 is the shallowest of the five hotspots, which is why this function doesn't carry the visual complexity of `optimize`. But a cyclomatic complexity of 19 in an expression evaluator is meaningful: each path is a distinct semantic rule about how constants fold, and an incorrect rule produces wrong query results silently — not a runtime error, but a wrong answer. The 19 paths include multiple `err != nil` early returns inside evaluation calls, each of which suppresses the error and returns the original unfolded expression rather than propagating — a deliberate but subtle design choice that every reviewer needs to understand.
+
+This file's single recent commit was a bug fix. Expression folding bugs are particularly hard to detect because they produce incorrect results only on specific constant-expression shapes.
+
+<MetricBar label='Cyclomatic Complexity' value='19' threshold='10' max='40' />
+
+**Recommendation:** The partial-fold path — where some arguments are constant and null propagation applies — is the most complex branch and has the most carve-outs. I would extract it into a `tryPartialNullFold(ctx, x, argIsConst)` helper with its own test table covering the `NullEQ`, `ConcatWS`, and `Field` edge cases explicitly. That isolates the highest-risk semantic logic from the main dispatch.
+
+---
+
+## A note on the `context_only` functions
+
+Several functions from `pkg/executor/aggfuncs/func_max_min_count.go` — including `deserializeForSpill`, `frontCount`, and `refreshCount4MaxMinCountSliding` — appear in the watch quadrant with moderate activity_risk scores around 14–15. Their structural complexity is low (cyclomatic complexity of 3 each), but they were last changed 0 days ago. These are not refactoring priorities — their low structural complexity means there is no significant blast radius — but the concurrent activity across multiple related helpers in this file warrants monitoring to ensure the sliding-window max/min/count aggregate logic stays consistent.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `deeply_nested` | 4 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/pingcap/tidb
+cd tidb
+git checkout 5d6fdbe6f5502ecb86a060b6d9719aeb7bf826a9
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 10
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
