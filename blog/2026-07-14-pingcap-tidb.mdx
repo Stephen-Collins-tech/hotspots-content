@@ -1,11 +1,11 @@
 ---
-title: "pingcap/tidb's planner and DDL layer carries the highest activity risk — 5 functions to address first"
+title: "pingcap/tidb's planner and DDL layer — 5 functions to address first"
 titleSeo: "tidb code health: planner and DDL hotspots drive refactoring priority in pingcap/tidb"
-description: "Analysis of pingcap/tidb at commit 5d6fdbe finds five critical-band functions in the query planner, DDL, and expression layers that are both structurally complex and actively changing, with activity_risk scores between 18.85 and 19.53."
+description: "Analysis of pingcap/tidb at commit 5d6fdbe finds five critical-band functions in the query planner, DDL, and expression layers that are both structurally complex and actively changing, with activity-weighted risk scores between 18.85 and 19.53."
 introContent: "Five functions in pingcap/tidb's query planner, DDL execution path, and expression evaluator are sitting in the 'fire' quadrant right now — structurally complex and receiving commits in the last seven days. Any engineer shipping code to these layers this week is working against a high regression surface."
 pubDate: 2026-07-14
 tags: ["oss", "go", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "pingcap/tidb"
 commit: "5d6fdbe6f5502ecb86a060b6d9719aeb7bf826a9"
 language: "go"
@@ -28,10 +28,10 @@ qaSection:
   - question: "How do I reproduce this analysis?"
     answer: "The hotspots CLI is available at https://github.com/nicholasgasior/hotspots. To reproduce this exact analysis, check out the analyzed commit with `git checkout 5d6fdbe` inside a local clone of pingcap/tidb, then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without additional configuration, and the `--explain-patterns` flag surfaces the antipattern classifications shown in this post."
   - question: "What does activity-weighted risk mean?"
-    answer: "Activity-weighted risk — reported as activity_risk — multiplies a function's structural complexity, derived from its cyclomatic complexity, maximum nesting depth, and fan-out, by a signal reflecting how frequently it has been changed recently. The result prioritizes functions that are both hard to understand and actively being modified, because those are the ones most likely to introduce regressions right now. A deeply complex function that has not been touched in two years poses lower near-term risk than a moderately complex function receiving weekly commits, because the dormant function's complexity is not currently being exercised by developer changes. In tidb's top five, all five functions are in the fire quadrant — every high-complexity function identified here is also under active development pressure, which is why the urgency framing applies across the board rather than being reserved for a subset."
+    answer: "Activity-weighted risk multiplies a function's structural complexity, derived from its cyclomatic complexity, maximum nesting depth, and fan-out, by a signal reflecting how frequently it has been changed recently. The result prioritizes functions that are both hard to understand and actively being modified, because those are the ones most likely to introduce regressions right now. A deeply complex function that has not been touched in two years poses lower near-term risk than a moderately complex function receiving weekly commits, because the dormant function's complexity is not currently being exercised by developer changes. In tidb's top five, all five functions are in the fire quadrant — every high-complexity function identified here is also under active development pressure, which is why the urgency framing applies across the board rather than being reserved for a subset."
 ---
 
-At commit 5d6fdbe, pingcap/tidb — a distributed SQL database with 30,167 analyzed functions — has 3,875 in the critical band. Every one of the top five hotspots falls in the 'fire' quadrant: high structural complexity and active recent commits, making them live regression risks rather than cleanup backlog items. I would start with `buildDDL` in `pkg/planner/core/planbuilder.go`, which carries an activity_risk of 19.53 and was touched 3 times in the last 30 days, last modified just 4 days ago.
+At commit 5d6fdbe, pingcap/tidb — a distributed SQL database with 30,167 analyzed functions — has 3,875 in the critical band. Every one of the top five hotspots falls in the 'fire' quadrant: high structural complexity and active recent commits, making them live regression risks rather than cleanup backlog items. I would start with `buildDDL` in `pkg/planner/core/planbuilder.go`, which carries an activity-weighted risk score of 19.53 and was touched 3 times in the last 30 days, last modified just 4 days ago.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -69,7 +69,7 @@ All five top hotspots share every major antipattern: complex branching, excessiv
 
 A cyclomatic complexity of 35 means 35 independent execution paths, each of which is a required test case and a surface where a new DDL statement type could silently fall through. The fan-out of 24 distinct function calls means a change to `buildDDL` — or to any of those 24 callees — can ripple unexpectedly. With 3 commits in the last 30 days and a last-modified date of 4 days ago, this is not a theoretical risk.
 
-The external signals show a `bug_fix_fraction` of 0.67 across the 3 recent commits touching this file, and a `pr_review_comment_density` of 0.67 — the highest of any file in the top five. That review activity suggests the team already recognizes this function warrants scrutiny.
+The external signals show that two of the 3 recent commits touching this file were bug fixes, and this file has the highest density of PR review comments of any file in the top five. That review activity suggests the team already recognizes this function warrants scrutiny.
 
 <MetricBar label='Cyclomatic Complexity' value='35' threshold='10' max='50' />
 <MetricBar label='Max Nesting Depth' value='9' threshold='4' max='14' />
@@ -86,7 +86,7 @@ The external signals show a `bug_fix_fraction` of 0.67 across the 3 recent commi
 
 The standout metric here is the fan-out of 73 — the highest of any function in the top five and more than three times `buildDDL`'s fan-out. Seventy-three distinct function calls in one body means this function reaches broadly across session management, metadata, type handling, SQL execution, and checksum utilities. A change anywhere in that dependency graph can affect correctness here, and a change here can require coordinated edits across multiple packages. The nesting depth of 8 is compounded by Go's explicit error-return style: each early `return err` inside a nested block is both an exit path and a test case that must be exercised.
 
-This file has a `bug_fix_fraction` of 1.0 across its single recent commit — 100% of the recorded changes to this file have been bug fixes. That is historical context for the file, not proof this function is defective, but it does strengthen the case for prioritized review.
+100% of the recorded changes to this file have been bug fixes. That is historical context for the file, not proof this function is defective, but it does strengthen the case for prioritized review.
 
 <MetricBar label='Fan-out (distinct calls)' value='73' threshold='15' max='100' />
 
@@ -107,7 +107,7 @@ The maximum nesting depth of 14 is the deepest of any function in this analysis,
 
 Depth 14 in a recursive function that pattern-matches on logical plan node types means a reader must simultaneously track the plan tree shape, the current correlated-column state, and which branch of the type-assertion chain they are in. The fan-out of 94 — the highest in the top five — reflects how many plan transformation utilities this rule touches. A logic error at nesting depth 10 may not surface until a complex query with lateral subqueries hits a specific plan shape in production.
 
-This file's `bug_fix_fraction` is 1.0 on its single recent commit. Combined with the extreme nesting and a recursive calling convention, that warrants careful review of any change touching the `LogicalProjection` arm in particular, which the source excerpt shows was recently annotated with detailed inline commentary about column schema substitution edge cases.
+This file's single recent commit was a bug fix. Combined with the extreme nesting and a recursive calling convention, that warrants careful review of any change touching the `LogicalProjection` arm in particular, which the source excerpt shows was recently annotated with detailed inline commentary about column schema substitution edge cases.
 
 **Recommendation:** The three inner-plan type-assertion arms (`LogicalSelection`, `LogicalMaxOneRow`, `LogicalProjection`) each represent a separate decorrelation strategy. Extracting each into a `tryDecorrelateViaSelection`, `tryDecorrelateViaMaxOneRow`, and `tryDecorrelateViaProjection` helper would cut the nesting depth roughly in half and make the recursive entry point a readable dispatch table.
 
@@ -121,7 +121,7 @@ This file's `bug_fix_fraction` is 1.0 on its single recent commit. Combined with
 
 The cyclomatic complexity of 35 mirrors `buildDDL` exactly — not a coincidence, since both functions are exhaustive dispatchers over the MySQL `ALTER TABLE` specification. The `SchemaTracker` context means this code underpins schema state tracking for TiDB's DM component, where correctness is load-bearing: an incorrect in-memory schema state will cause downstream replication to diverge silently.
 
-Two commits in the last 30 days and a last-modified date of 4 days ago place this firmly in active territory. The `bug_fix_fraction` of 0.5 across those two commits indicates one fix and one other change — moderate historical signal.
+Two commits in the last 30 days and a last-modified date of 4 days ago place this firmly in active territory. Of those two commits, one was a bug fix and one was another kind of change — moderate historical signal.
 
 <MetricBar label='Cyclomatic Complexity' value='35' threshold='10' max='50' />
 
@@ -139,7 +139,7 @@ The source also includes a `TODO` comment about spec reordering to match MySQL's
 
 The nesting depth of 4 is the shallowest of the five hotspots, which is why this function doesn't carry the visual complexity of `optimize`. But a cyclomatic complexity of 19 in an expression evaluator is meaningful: each path is a distinct semantic rule about how constants fold, and an incorrect rule produces wrong query results silently — not a runtime error, but a wrong answer. The 19 paths include multiple `err != nil` early returns inside evaluation calls, each of which suppresses the error and returns the original unfolded expression rather than propagating — a deliberate but subtle design choice that every reviewer needs to understand.
 
-This file's `bug_fix_fraction` is 1.0 on its single recent commit. Expression folding bugs are particularly hard to detect because they produce incorrect results only on specific constant-expression shapes.
+This file's single recent commit was a bug fix. Expression folding bugs are particularly hard to detect because they produce incorrect results only on specific constant-expression shapes.
 
 <MetricBar label='Cyclomatic Complexity' value='19' threshold='10' max='40' />
 
