@@ -5,7 +5,7 @@ description: "Five god functions across sqlmap's injection detection, blind infe
 introContent: "Every one of sqlmap's top five structural hotspots is actively changing right now, not sitting in a backlog. The injection-detection function alone carries a cyclomatic complexity of 484 and was touched twice in the last 30 days — that combination makes every commit to it a live regression risk."
 pubDate: 2026-07-17
 tags: ["oss", "python", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "sqlmapproject/sqlmap"
 commit: "9db49d5e34eef29e6f5f765fe318b84a0bfec4c1"
 language: "python"
@@ -28,10 +28,10 @@ qaSection:
   - question: "How do I reproduce this analysis?"
     answer: "Clone the sqlmap repository and check out commit `9db49d5` with `git checkout 9db49d5`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` using the Hotspots CLI available at https://github.com/hotspots-dev/hotspots. The same command works on any local git repository without additional configuration — no project-specific setup is required. The results will match the scores reported here for that exact commit."
   - question: "What does activity-weighted risk mean?"
-    answer: "Activity-weighted risk combines structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with how frequently a function has been touched by recent commits. A function that is structurally extreme but hasn't been changed in years carries lower near-term risk than one that is moderately complex and touched every week, because the dormant function is unlikely to introduce a regression this sprint. The fire-quadrant functions at the top of this report score so highly because they combine both dimensions at once: `bisection` has a cyclomatic complexity of 345 and an activity_risk of 21.57, last changed 4 days ago, meaning the next commit to that file lands in code with 345 independent execution paths. This prioritization is designed to answer 'where should I focus refactoring effort to reduce the probability of introducing a bug in the next two weeks?' rather than 'where is the most complicated code in absolute terms?'"
+    answer: "Activity-weighted risk combines structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with how frequently a function has been touched by recent commits. A function that is structurally extreme but hasn't been changed in years carries lower near-term risk than one that is moderately complex and touched every week, because the dormant function is unlikely to introduce a regression this sprint. The fire-quadrant functions at the top of this report score so highly because they combine both dimensions at once: `bisection` has a cyclomatic complexity of 345 and a risk score of 21.57, last changed 4 days ago, meaning the next commit to that file lands in code with 345 independent execution paths. This prioritization is designed to answer 'where should I focus refactoring effort to reduce the probability of introducing a bug in the next two weeks?' rather than 'where is the most complicated code in absolute terms?'"
 ---
 
-Across sqlmap's 2,940 analyzed functions, 617 score in the critical band — and the five highest-priority ones are all in the 'fire' quadrant, meaning they are both structurally extreme and receiving commits this week. `checkSqlInjection` in `lib/controller/checks.py` carries a cyclomatic complexity of 484, a max nesting depth of 13, and an activity_risk of 21.44, making it the single most dangerous function to modify right now. sqlmap is the reference open-source SQL injection framework; at this scale, structural risk in the core detection and exploitation engine translates directly to regression exposure for every user running a scan. I would start with `checkSqlInjection` and `bisection` before any other refactoring work.
+Across sqlmap's 2,940 analyzed functions, 617 score in the critical band — and the five highest-priority ones are all in the 'fire' quadrant, meaning they are both structurally extreme and receiving commits this week. `dictionaryAttack` in `lib/utils/hash.py` carries the highest risk score in the set at 21.58, but the real outlier is `checkSqlInjection`, whose cyclomatic complexity of 484 is nearly double the next-highest function in this report. sqlmap is the reference open-source SQL injection framework; at this scale, structural risk in the core detection and exploitation engine translates directly to regression exposure for every user running a scan. I would start with `dictionaryAttack` and `bisection` before any other refactoring work.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -63,21 +63,21 @@ All five top hotspots share the same five antipatterns: complex branching, deep 
 
 ---
 
-### `checkSqlInjection` — checks.py
+### `dictionaryAttack` — hash.py
 
-<FunctionCard fn='checkSqlInjection' file='lib/controller/checks.py' risk='21.44' band='critical' cc='484' nd='13' fo='104' touches='2' />
+<FunctionCard fn='dictionaryAttack' file='lib/utils/hash.py' risk='21.58' band='critical' cc='261' nd='8' fo='69' touches='2' />
 
-This is the function I would review first. It orchestrates sqlmap's entire injection detection loop — iterating over test payloads, handling DBMS fingerprinting heuristics, managing boundary selection for digit-like versus alpha parameters, and dispatching technique-specific probes. The source excerpt alone shows boundary selection logic, two separate heuristic DBMS check calls (`heuristicCheckDbms` and `dialectCheckDbms`), interactive user prompts mid-loop, and per-technique branching — all inside a single `while tests:` loop.
+This is the function I would review first — it carries the highest risk score in the dataset. `dictionaryAttack` is sqlmap's built-in hash cracking function. The source excerpt shows it doing a substantial amount of work in sequence: platform-sensitive multiprocessing initialization (with try/except branches for FreeBSD, ctypes, and `cpu_count` failures), a first pass over `attack_dict` to identify hash types via regex recognition, and then a second nested-loop pass to normalize each hash value before the actual attack — with a large conditional chain distinguishing at least 30 distinct hash types (MD5, SHA variants, bcrypt, PBKDF2, scrypt, Django, WordPress, ASP.NET Identity, and others) to determine the correct normalization and salting strategy.
 
-<MetricBar label='Cyclomatic Complexity' value='484' threshold='30' max='500' />
+<MetricBar label='Cyclomatic Complexity' value='261' threshold='30' max='300' />
 
-A cyclomatic complexity of 484 means there are 484 independent execution paths through this function. Each one is a distinct test case that, if untested, is a silent regression surface. The max nesting depth of 13 compounds this: reasoning about what state is in scope at the deepest conditional requires tracking 13 levels of context simultaneously. The fan-out of 104 means that in Python — where types are resolved at runtime — this function is directly coupled to over a hundred distinct callees, most of which it cannot verify statically.
+The CC of 261 is largely attributable to that hash-type dispatch chain — each `elif hash_regex in (HASH.X, ...)` branch is a separate execution path. The nesting depth of 8 reflects the three-level loop structure (hash_regex → user → hash) with conditionals inside. The fan-out of 69 covers the combination of hash algorithm implementations, multiprocessing primitives, logging calls, and encoding utilities.
 
-It was touched twice in the last 30 days and last changed 4 days ago. That is a live regression risk, not a cleanup item.
+It was touched twice in the last 30 days, last changed 3 days ago — making it the most recently active of the five hotspots.
 
-The exit-heavy pattern means there are multiple early-return and break paths scattered through those 484 branches, each of which can silently short-circuit detection logic in ways that are hard to cover with tests.
+The external signals show no historical bug-linked commits or reverts on this file, which suggests the structural complexity hasn't caused documented incidents so far. That doesn't reduce the regression risk of the next change.
 
-**Recommendation:** Don't attempt a single large refactor. The highest-return first step is to extract the DBMS fingerprinting and reduction logic — the `heuristicCheckDbms` / `dialectCheckDbms` calls and the surrounding `kb.reduceTests` / `kb.extendTests` prompt blocks — into a dedicated function. That alone would remove dozens of branches from the main loop and make the remaining payload-dispatch logic easier to reason about. Target getting CC below 100 before the next feature lands in this file.
+**Recommendation:** The hash-type normalization dispatch is a natural extraction target — it takes a hash string and a regex, and returns a normalized value and any salt parameters. That logic could live in a `_normalizeHash(hash_regex, hash_)` function. Doing so would collapse the deepest nesting level and reduce the CC of `dictionaryAttack` by roughly half.
 
 ---
 
@@ -100,24 +100,6 @@ The three resume-path branches near the top of the function are a good extractio
 
 ---
 
-### `dictionaryAttack` — hash.py
-
-<FunctionCard fn='dictionaryAttack' file='lib/utils/hash.py' risk='21.58' band='critical' cc='261' nd='8' fo='69' touches='2' />
-
-`dictionaryAttack` is sqlmap's built-in hash cracking function. The source excerpt shows it doing a substantial amount of work in sequence: platform-sensitive multiprocessing initialization (with try/except branches for FreeBSD, ctypes, and `cpu_count` failures), a first pass over `attack_dict` to identify hash types via regex recognition, and then a second nested-loop pass to normalize each hash value before the actual attack — with a large conditional chain distinguishing at least 30 distinct hash types (MD5, SHA variants, bcrypt, PBKDF2, scrypt, Django, WordPress, ASP.NET Identity, and others) to determine the correct normalization and salting strategy.
-
-<MetricBar label='Cyclomatic Complexity' value='261' threshold='30' max='300' />
-
-The CC of 261 is largely attributable to that hash-type dispatch chain — each `elif hash_regex in (HASH.X, ...)` branch is a separate execution path. The nesting depth of 8 reflects the three-level loop structure (hash_regex → user → hash) with conditionals inside. The fan-out of 69 covers the combination of hash algorithm implementations, multiprocessing primitives, logging calls, and encoding utilities.
-
-This function carries the highest activity_risk in the dataset at 21.58 and was touched twice in the last 30 days, last changed 3 days ago — making it the most recently active of the five hotspots.
-
-The external signals show no historical bug-linked commits or reverts on this file, which suggests the structural complexity hasn't caused documented incidents so far. That doesn't reduce the regression risk of the next change.
-
-**Recommendation:** The hash-type normalization dispatch is a natural extraction target — it takes a hash string and a regex, and returns a normalized value and any salt parameters. That logic could live in a `_normalizeHash(hash_regex, hash_)` function. Doing so would collapse the deepest nesting level and reduce the CC of `dictionaryAttack` by roughly half.
-
----
-
 ### `pivotDumpTable` — pivotdumptable.py
 
 <FunctionCard fn='pivotDumpTable' file='lib/utils/pivotdumptable.py' risk='21.51' band='critical' cc='85' nd='8' fo='43' touches='1' />
@@ -129,6 +111,24 @@ With CC 85 and a nesting depth of 8, this function is the least structurally com
 The god-function and long-function patterns here are partly a consequence of the function owning both the pivot-selection strategy and the data-retrieval loop. Those are separable concerns.
 
 **Recommendation:** Extract the pivot-column selection logic — everything from `conf.pivotColumn` branch through the fallback column-scanning loop — into a `_selectPivotColumn(colList, count, blind)` function. This is a well-defined sub-problem with a clear return value, and its extraction would bring the CC of `pivotDumpTable` into a more manageable range.
+
+---
+
+### `checkSqlInjection` — checks.py
+
+<FunctionCard fn='checkSqlInjection' file='lib/controller/checks.py' risk='21.44' band='critical' cc='484' nd='13' fo='104' touches='2' />
+
+It orchestrates sqlmap's entire injection detection loop — iterating over test payloads, handling DBMS fingerprinting heuristics, managing boundary selection for digit-like versus alpha parameters, and dispatching technique-specific probes. The source excerpt alone shows boundary selection logic, two separate heuristic DBMS check calls (`heuristicCheckDbms` and `dialectCheckDbms`), interactive user prompts mid-loop, and per-technique branching — all inside a single `while tests:` loop.
+
+<MetricBar label='Cyclomatic Complexity' value='484' threshold='30' max='500' />
+
+A cyclomatic complexity of 484 means there are 484 independent execution paths through this function — nearly double the next-highest CC in this report. Each one is a distinct test case that, if untested, is a silent regression surface. The max nesting depth of 13 compounds this: reasoning about what state is in scope at the deepest conditional requires tracking 13 levels of context simultaneously. The fan-out of 104 means that in Python — where types are resolved at runtime — this function is directly coupled to over a hundred distinct callees, most of which it cannot verify statically.
+
+It was touched twice in the last 30 days and last changed 4 days ago. That is a live regression risk, not a cleanup item.
+
+The exit-heavy pattern means there are multiple early-return and break paths scattered through those 484 branches, each of which can silently short-circuit detection logic in ways that are hard to cover with tests.
+
+**Recommendation:** Don't attempt a single large refactor. The highest-return first step is to extract the DBMS fingerprinting and reduction logic — the `heuristicCheckDbms` / `dialectCheckDbms` calls and the surrounding `kb.reduceTests` / `kb.extendTests` prompt blocks — into a dedicated function. That alone would remove dozens of branches from the main loop and make the remaining payload-dispatch logic easier to reason about. Target getting CC below 100 before the next feature lands in this file.
 
 ---
 
