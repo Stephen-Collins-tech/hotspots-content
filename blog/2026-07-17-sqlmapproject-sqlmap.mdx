@@ -1,0 +1,181 @@
+---
+title: "sqlmap's core engine carries the highest activity risk — 5 functions to address first"
+titleSeo: "sqlmap code health: injection engine and hash utilities lead refactoring priority in 2026"
+description: "Five god functions across sqlmap's injection detection, blind inference, union execution, pivot dump, and hash-cracking subsystems all sit in the 'fire' quadrant — structurally extreme and touched within the last four days."
+introContent: "Every one of sqlmap's top five structural hotspots is actively changing right now, not sitting in a backlog. The injection-detection function alone carries a cyclomatic complexity of 484 and was touched twice in the last 30 days — that combination makes every commit to it a live regression risk."
+pubDate: 2026-07-17
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "sqlmapproject/sqlmap"
+commit: "9db49d5e34eef29e6f5f765fe318b84a0bfec4c1"
+language: "python"
+hotspots_version: "1.33.0"
+analyzed_at: "2026-07-17T05:37:00Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 21.58
+topFunction: "dictionaryAttack"
+topFile: "lib/utils/hash.py"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 5, long_function: 5, hub_function: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in sqlmap?"
+    answer: "A god function is a single function that owns too many distinct responsibilities — it handles initialization, branching logic, error recovery, external calls, and output formatting all in one place. In sqlmap, all five top hotspots carry this pattern: `checkSqlInjection` alone has a cyclomatic complexity of 484 and calls 104 distinct functions, meaning a single change to injection detection logic touches code paths that span DBMS fingerprinting, user prompting, payload selection, and technique dispatch simultaneously. The blast radius of any change is enormous because there is no clean boundary between concerns. God functions are also nearly impossible to unit-test in isolation — you cannot exercise one responsibility without triggering the others — which means regressions in edge cases go undetected until they appear in production scans."
+  - question: "How do I reduce cyclomatic complexity in Python?"
+    answer: "The most effective technique is extract-method refactoring: identify a coherent cluster of branches that handle a single sub-problem, give it a name, and move it into its own function. A cyclomatic complexity above 15 is a reasonable trigger for considering a split; above 30 it warrants immediate attention; the values seen here — 484, 345, 261 — are in a range where no amount of cleanup short of structural decomposition will make a meaningful difference. For `dictionaryAttack`, the concrete first step today is to extract the hash-type normalization dispatch into a `_normalizeHash` function — that single extraction would likely halve the function's CC by collapsing the large `elif hash_regex in (...)` chain into a single call site. In Python specifically, replacing long `elif` chains over constant sets with a dispatch dictionary (`{HASH.X: handler_fn}`) both reduces branch count and makes adding new hash types a data change rather than a code change."
+  - question: "Is sqlmap actively maintained?"
+    answer: "Yes — the quadrant data is unambiguous on this point. Every one of the 2,940 analyzed functions sits in either the fire or watch quadrant; there are zero debt-quadrant functions, meaning nothing in the analyzed snapshot is both structurally complex and dormant. The top five hotspots were all touched within the last four days: `dictionaryAttack` was touched twice in 30 days and last changed 3 days ago; `checkSqlInjection` was touched twice and last changed 4 days ago; `bisection`, `pivotDumpTable`, and `unionUse` were each touched once and last changed 4 days ago. Active development and high structural complexity are not mutually exclusive — the complexity in these functions reflects years of accumulated support for dozens of database backends and injection techniques, and it is being actively extended."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the sqlmap repository and check out commit `9db49d5` with `git checkout 9db49d5`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` using the Hotspots CLI available at https://github.com/hotspots-dev/hotspots. The same command works on any local git repository without additional configuration — no project-specific setup is required. The results will match the scores reported here for that exact commit."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with how frequently a function has been touched by recent commits. A function that is structurally extreme but hasn't been changed in years carries lower near-term risk than one that is moderately complex and touched every week, because the dormant function is unlikely to introduce a regression this sprint. The fire-quadrant functions at the top of this report score so highly because they combine both dimensions at once: `bisection` has a cyclomatic complexity of 345 and a risk score of 21.57, last changed 4 days ago, meaning the next commit to that file lands in code with 345 independent execution paths. This prioritization is designed to answer 'where should I focus refactoring effort to reduce the probability of introducing a bug in the next two weeks?' rather than 'where is the most complicated code in absolute terms?'"
+---
+
+Across sqlmap's 2,940 analyzed functions, 617 score in the critical band — and the five highest-priority ones are all in the 'fire' quadrant, meaning they are both structurally extreme and receiving commits this week. `dictionaryAttack` in `lib/utils/hash.py` carries the highest risk score in the set at 21.58, but the real outlier is `checkSqlInjection`, whose cyclomatic complexity of 484 is nearly double the next-highest function in this report. sqlmap is the reference open-source SQL injection framework; at this scale, structural risk in the core detection and exploitation engine translates directly to regression exposure for every user running a scan. I would start with `dictionaryAttack` and `bisection` before any other refactoring work.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `dictionaryAttack` | lib/utils/hash.py | 21.6 | 261 | 8 | 69 |
+| `bisection` | lib/techniques/blind/inference.py | 21.6 | 345 | 10 | 124 |
+| `pivotDumpTable` | lib/utils/pivotdumptable.py | 21.5 | 85 | 8 | 43 |
+| `checkSqlInjection` | lib/controller/checks.py | 21.4 | 484 | 13 | 104 |
+| `unionUse` | lib/techniques/union/use.py | 21.4 | 122 | 12 | 64 |
+
+## Large Repo Analysis
+
+sqlmap is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Repository overview
+
+sqlmap analyzed at commit `9db49d5` has 2,940 functions total. 617 sit in the critical band and 680 in the high band — together that is nearly half the codebase above the moderate threshold. More striking is the quadrant split:
+
+<BandChart fire='1297' debt='0' watch='1643' ok='0' />
+
+Every function in this repo is either actively changing or being watched — there are zero debt-quadrant and zero ok-quadrant functions. That means there is no dormant complexity to defer; the structural risk is live across the board.
+
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,long_function:5,god_function:5,hub_function:1' />
+
+All five top hotspots share the same five antipatterns: complex branching, deep nesting, exit-heavy control flow, god-function scope, and excessive length. That consistency is a signal about architectural style in the core engine, not isolated incidents.
+
+---
+
+### `dictionaryAttack` — hash.py
+
+<FunctionCard fn='dictionaryAttack' file='lib/utils/hash.py' risk='21.58' band='critical' cc='261' nd='8' fo='69' touches='2' />
+
+This is the function I would review first — it carries the highest risk score in the dataset. `dictionaryAttack` is sqlmap's built-in hash cracking function. The source excerpt shows it doing a substantial amount of work in sequence: platform-sensitive multiprocessing initialization (with try/except branches for FreeBSD, ctypes, and `cpu_count` failures), a first pass over `attack_dict` to identify hash types via regex recognition, and then a second nested-loop pass to normalize each hash value before the actual attack — with a large conditional chain distinguishing at least 30 distinct hash types (MD5, SHA variants, bcrypt, PBKDF2, scrypt, Django, WordPress, ASP.NET Identity, and others) to determine the correct normalization and salting strategy.
+
+<MetricBar label='Cyclomatic Complexity' value='261' threshold='30' max='300' />
+
+The CC of 261 is largely attributable to that hash-type dispatch chain — each `elif hash_regex in (HASH.X, ...)` branch is a separate execution path. The nesting depth of 8 reflects the three-level loop structure (hash_regex → user → hash) with conditionals inside. The fan-out of 69 covers the combination of hash algorithm implementations, multiprocessing primitives, logging calls, and encoding utilities.
+
+It was touched twice in the last 30 days, last changed 3 days ago — making it the most recently active of the five hotspots.
+
+The external signals show no historical bug-linked commits or reverts on this file, which suggests the structural complexity hasn't caused documented incidents so far. That doesn't reduce the regression risk of the next change.
+
+**Recommendation:** The hash-type normalization dispatch is a natural extraction target — it takes a hash string and a regex, and returns a normalized value and any salt parameters. That logic could live in a `_normalizeHash(hash_regex, hash_)` function. Doing so would collapse the deepest nesting level and reduce the CC of `dictionaryAttack` by roughly half.
+
+---
+
+### `bisection` — inference.py
+
+<FunctionCard fn='bisection' file='lib/techniques/blind/inference.py' risk='21.57' band='critical' cc='345' nd='10' fo='124' touches='1' />
+
+`bisection` implements sqlmap's blind SQL injection character-retrieval algorithm — the function that infers individual characters of a target value by repeatedly asking the database true/false questions. The source excerpt shows it handling charset selection, session resume from partial values (three distinct resume code paths for hex, non-hex, and partial markers), per-DBMS payload rewriting for McKoi and FrontBase, thread-local state management, and predictive inference tagging — all before the actual bisection loop begins.
+
+<MetricBar label='Cyclomatic Complexity' value='345' threshold='30' max='400' />
+<MetricBar label='Fan-Out' value='124' threshold='20' max='130' />
+
+At CC 345 and a fan-out of 124, this is the most structurally complex individual function in the top five by raw path count. The fan-out of 124 in Python means 124 distinct runtime dispatch points — duck typing makes the actual coupling wider than that number suggests, because the types of objects flowing through those calls are resolved only at execution time. The nesting depth of 10 means the deepest conditional is nested inside 10 enclosing control structures.
+
+It was touched once in the last 30 days, last changed 4 days ago. That is a live regression risk.
+
+The three resume-path branches near the top of the function are a good extraction target — they handle a distinct concern (session continuity) that has nothing to do with the bisection algorithm itself. Pulling them into a `_resumePartialValue` helper would reduce both the CC and the nesting depth of the outer function materially, and would make the resume logic independently testable.
+
+**Recommendation:** Extract the charset selection and the three partial-value resume paths into separate helpers before any further changes to the bisection algorithm itself. These are well-bounded sub-problems with clear inputs and outputs, and their extraction would likely cut the function's CC by 30–40 paths.
+
+---
+
+### `pivotDumpTable` — pivotdumptable.py
+
+<FunctionCard fn='pivotDumpTable' file='lib/utils/pivotdumptable.py' risk='21.51' band='critical' cc='85' nd='8' fo='43' touches='1' />
+
+`pivotDumpTable` retrieves table data through a pivot-column strategy — selecting a column with unique values to anchor row-by-row extraction when UNION or error-based techniques aren't available. The source excerpt shows it handling a count query, two distinct early-return paths for empty or invalid counts, pivot column selection (both from explicit configuration and by iterating columns to find one with distinct-value-count equal to row count), and column priority sorting — all before the actual data retrieval loop.
+
+With CC 85 and a nesting depth of 8, this function is the least structurally complex of the five hotspots, but 85 independent paths is still roughly three times the threshold where splitting becomes urgent. The fan-out of 43 reflects its coupling to the query agent, injection primitives, column utilities, and result containers.
+
+The god-function and long-function patterns here are partly a consequence of the function owning both the pivot-selection strategy and the data-retrieval loop. Those are separable concerns.
+
+**Recommendation:** Extract the pivot-column selection logic — everything from `conf.pivotColumn` branch through the fallback column-scanning loop — into a `_selectPivotColumn(colList, count, blind)` function. This is a well-defined sub-problem with a clear return value, and its extraction would bring the CC of `pivotDumpTable` into a more manageable range.
+
+---
+
+### `checkSqlInjection` — checks.py
+
+<FunctionCard fn='checkSqlInjection' file='lib/controller/checks.py' risk='21.44' band='critical' cc='484' nd='13' fo='104' touches='2' />
+
+It orchestrates sqlmap's entire injection detection loop — iterating over test payloads, handling DBMS fingerprinting heuristics, managing boundary selection for digit-like versus alpha parameters, and dispatching technique-specific probes. The source excerpt alone shows boundary selection logic, two separate heuristic DBMS check calls (`heuristicCheckDbms` and `dialectCheckDbms`), interactive user prompts mid-loop, and per-technique branching — all inside a single `while tests:` loop.
+
+<MetricBar label='Cyclomatic Complexity' value='484' threshold='30' max='500' />
+
+A cyclomatic complexity of 484 means there are 484 independent execution paths through this function — nearly double the next-highest CC in this report. Each one is a distinct test case that, if untested, is a silent regression surface. The max nesting depth of 13 compounds this: reasoning about what state is in scope at the deepest conditional requires tracking 13 levels of context simultaneously. The fan-out of 104 means that in Python — where types are resolved at runtime — this function is directly coupled to over a hundred distinct callees, most of which it cannot verify statically.
+
+It was touched twice in the last 30 days and last changed 4 days ago. That is a live regression risk, not a cleanup item.
+
+The exit-heavy pattern means there are multiple early-return and break paths scattered through those 484 branches, each of which can silently short-circuit detection logic in ways that are hard to cover with tests.
+
+**Recommendation:** Don't attempt a single large refactor. The highest-return first step is to extract the DBMS fingerprinting and reduction logic — the `heuristicCheckDbms` / `dialectCheckDbms` calls and the surrounding `kb.reduceTests` / `kb.extendTests` prompt blocks — into a dedicated function. That alone would remove dozens of branches from the main loop and make the remaining payload-dispatch logic easier to reason about. Target getting CC below 100 before the next feature lands in this file.
+
+---
+
+### `unionUse` — use.py
+
+<FunctionCard fn='unionUse' file='lib/techniques/union/use.py' risk='21.38' band='critical' cc='122' nd='12' fo='64' touches='1' />
+
+`unionUse` executes UNION-based SQL injection data extraction. The source excerpt reveals it handling ORDER BY stripping, per-DBMS JSON aggregation query construction (with distinct query formats for MySQL, Oracle, SQLite, PostgreSQL, MSSQL, H2/HSQLDB, and Firebird), a single-shot aggregate attempt, a fallback to chunked JSON aggregation when the single-shot result is null, and then a per-row windowed extraction path for partial UNION queries — each with their own branching logic.
+
+<MetricBar label='Max Nesting Depth' value='12' threshold='4' max='14' />
+
+The nesting depth of 12 is the second highest in the top five and is a direct consequence of the layered fallback strategy: each outer condition wraps a deeper attempt, and the DBMS-specific dispatch adds another nesting level inside each branch. At CC 122, there are 122 paths through a function that is already hard to trace at depth 12 — test coverage of the less common DBMS paths (Firebird, HSQLDB, FrontBase) is almost certainly thin.
+
+The fan-out of 64 in Python means 64 distinct runtime dispatch points across query construction, backend detection, response parsing, and limit-condition handling.
+
+**Recommendation:** The per-DBMS JSON aggregation query construction is the most mechanical and extractable section — it is a pure transformation from an expression and a list of fields to a DBMS-specific query string. Extracting it into a `_buildJsonAggQuery(expression, expressionFields, expressionFieldsList)` function would reduce the nesting depth by at least two levels in the outer function and make each DBMS branch independently testable.
+
+---
+
+## Context from the watch quadrant
+
+Several functions in the watch quadrant are worth noting for completeness. `getOrds` in `lib/core/convert.py` was touched 3 times in the last 30 days with low structural complexity (CC 4) — it bears watching as a frequently modified utility but is not a refactoring priority. `hashDBWrite` in `lib/core/common.py` was also touched 3 times in 30 days; as a write path to the session hash database, any regression there would affect result persistence across all techniques. Neither function warrants a dedicated refactoring effort at this time, but both should be covered by regression tests given their activity level.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/sqlmapproject/sqlmap
+cd sqlmap
+git checkout 9db49d5e34eef29e6f5f765fe318b84a0bfec4c1
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
