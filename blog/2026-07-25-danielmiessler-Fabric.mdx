@@ -1,9 +1,9 @@
 ---
-title: "Hotspots on danielmiessler/Fabric: the 5 functions with the highest activity-weighted risk"
+title: "Fabric's streamlit UI carries the complexity outlier — main hits CC 192"
 description: "A Hotspots analysis of danielmiessler/Fabric at commit d85544c, surfacing the top functions by activity-weighted risk score."
 pubDate: 2026-07-25
 tags: ["oss", "go", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "danielmiessler/Fabric"
 commit: "d85544c88ac0d9c9673b255506df2215e1cce5f0"
 language: "go"
@@ -18,8 +18,7 @@ topPatterns: ["exit_heavy", "god_function", "deeply_nested", "long_function", "c
 patternCounts: {deeply_nested: 7, exit_heavy: 8, god_function: 8, long_function: 5, complex_branching: 3}
 ---
 
-\{/* TODO: one paragraph — what this project is and why it's interesting */\}
-Intro paragraph here.
+Fabric is Daniel Miessler's framework for augmenting human capability with AI, built around a large library of reusable "patterns" and the plumbing — CLI, Go server, Streamlit UI, changelog tooling — that ties them together. The most interesting thing in this snapshot isn't the ranking, it's the gap inside it: the top function has a cyclomatic complexity of 192, and the next-highest structural complexity in the top 5 is 36. Everything else in the table clusters in the 8–36 range. One function is carrying a complexity load more than five times its nearest neighbor.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -37,17 +36,41 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 Fabric is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
 
-### `(fill in)` — (fill in)
+### `main` — scripts/python_ui/streamlit.py
 
-\{/* TODO: insight */\}
+CC 192 on a single function. That's not a typo relative to the rest of this table — it's more than five times the complexity of anything else in the top 5. With ND 12 and FO 66, `main` has absorbed the entire Streamlit UI's control flow: routing between views, wiring up session state, and dispatching to 66 distinct callees from one function body. This is the classic shape of a UI entry point that grew by accretion — every new screen or widget got its own branch instead of its own function.
 
-**Recommendation:** \{/* TODO: action */\}
+**Recommendation:** Extract each major UI view (chat, pattern browser, settings, etc.) into its own function or class, and have `main` do nothing but route between them. Even a mechanical extract-function pass on the largest `if`/`elif` blocks would cut CC substantially.
+
+### `execute_patterns` — scripts/python_ui/streamlit.py
+
+The second hotspot lives in the same file as `main`, and the two functions likely share responsibility for the same UI. At CC 36, ND 5, and FO 19, `execute_patterns` is smaller than `main` but still well past the point where a reader can hold the whole branching structure in their head. Given the name, this function is probably handling pattern selection, execution, and result rendering all in one place — a natural candidate for `long_function` and `complex_branching`.
+
+**Recommendation:** Split pattern execution (calling into Fabric's core) from result rendering (updating the Streamlit UI). Keeping I/O-adjacent logic separate from display logic tends to shrink both halves independently.
+
+### `collectData` — cmd/generate_changelog/internal/changelog/generator.go
+
+This one stands out for a different reason: CC is only 8, but ND is 10 — the deepest nesting of any function in the top 5. Low complexity with high nesting usually means a lot of sequential guard clauses or nested loops rather than many independent branches, which is a narrower and often easier fix than a high-CC function.
+
+**Recommendation:** Flatten the nesting with early returns or by extracting the innermost loop body into a helper. The `deeply_nested` label here is a structural signal, not a complexity one — the fix is mechanical.
+
+### `extract_title_desc` — scripts/readme_updates/update_readme_features.py
+
+CC 33 and FO 17 put this readme-generation helper in the same complexity band as `execute_patterns`, just in a different corner of the repo — a reminder that the risk here isn't confined to the UI. It's likely doing parsing, string extraction, and formatting in one pass.
+
+**Recommendation:** Separate the parsing step (pulling title/description out of source text) from the formatting step (assembling the README section). Each half is easier to test in isolation than the combined function.
+
+### `Init` — internal/cli/flags.go
+
+`Init` inverts the usual pattern: CC is a modest 8, but FO is 37 — the highest fan-out in the top 5 outside of `main`. This function isn't complex on its own terms; it's a coordination point that wires together dozens of other functions, most likely registering every CLI flag and its default. That makes it a structural chokepoint even though it reads as simple line by line.
+
+**Recommendation:** If flag registration keeps growing, group related flags into their own registration functions (e.g. by subcommand or feature area) and have `Init` call a handful of grouped setup functions instead of registering everything directly.
 
 ## Key Takeaways
 
-- \{/* TODO: takeaway 1 */\}
-- \{/* TODO: takeaway 2 */\}
-- \{/* TODO: takeaway 3 */\}
+- The Streamlit UI (`scripts/python_ui/streamlit.py`) holds two of the top five hotspots, and `main` alone accounts for CC 192 — start there before touching anything else in this list.
+- `collectData`'s deep nesting (ND 10) and `Init`'s wide fan-out (FO 37) are both low-CC, structurally-narrow fixes — cheaper wins than the UI refactor.
+- Risk scores across the top 5 are tightly clustered (15.7–16.9) even though CC ranges from 8 to 192, which means recent commit activity — not raw complexity — is doing a lot of the ranking work here.
 
 
 ## Patterns Found
