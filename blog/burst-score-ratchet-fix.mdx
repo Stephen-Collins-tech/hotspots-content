@@ -1,0 +1,36 @@
+---
+title: "I Shipped a Scoring Bug That Made Improvement Impossible — Here's the Fix"
+description: "burst_score was computed over a file's entire commit history, which made it a one-way ratchet in the live risk score. A single bursty period years ago could keep a file stuck at CRITICAL forever, even after every other risk factor improved. Fixed in the next patch release."
+pubDate: 2026-07-26
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "engineering"
+  - "postmortem"
+draft: false
+---
+
+I found a bug in Hotspots' scoring formula that undermines the entire premise of showing a live risk tier: it made CRITICAL a one-way ratchet. A file that had one bursty period of commits — a hotfix wave, an initial-implementation sprint, whatever — years ago could never leave CRITICAL again, no matter how much better the code got. Not because the code was still risky, but because of something I built into the formula and didn't catch until an AI agent doing iterative refactoring against the live score ran straight into it.
+
+## What went wrong
+
+`burst_score` measures whether a file's commits cluster into frantic bursts rather than steady, spread-out changes — the max-to-mean ratio of commits-per-30-day-window across a file's full commit history. It's a genuinely good signal: in my OSV/CVE-linked-file evaluation, it had the largest standardized coefficient of five candidate signals in the composite formula, positive across every leave-one-repo-out fold I tested. I validated it, shipped it, and it did exactly what I designed it to do.
+
+The problem is what "full commit history" means for a live score. Because `burst_score` is computed over every commit a file has ever had, the max term in that ratio never resets. A burst from three years ago sets a ceiling that today's calm, steady work cannot lower — the timestamp series it's computed from doesn't forget. I'd built a signal that was excellent at describing whether a file has ever had a turbulent period, and then wired that same value directly into the score that's supposed to tell you how risky a file is right now.
+
+I didn't notice this by staring at a chart. I noticed it while thinking through what it would take for an AI agent to iteratively refactor a file and watch its risk tier actually respond to the work. The agent could drop complexity, reduce coupling, stabilize churn — every other input to the composite score would move in the right direction — and the file would still sit at CRITICAL, because `burst_score`'s contribution had never budged and structurally couldn't. A score an agent (or a person) can't move by doing the right things isn't a live risk signal. It's a life sentence.
+
+## The fix
+
+I split `burst_score` into two separate uses instead of one overloaded one:
+
+- **The live score** no longer includes `burst_score` at all. `compute_activity_risk` used to add `max(0, burst_score - 1.0) * 0.3` into the composite; that term is gone, and the corresponding `RiskFactors.burst` field is now always `0.0`. The fields themselves — `ScoringWeights.burst`, `ActivityRiskInput.burst_score` — stay in the codebase, unused, so a proper replacement can land without a renaming exercise.
+- **The full-history computation stays exactly as-is**, because it's still a genuinely validated signal — it just isn't the right shape for a number a developer or an agent is supposed to move. It continues to feed offline model training (`cold_start_features`) and will keep feeding future formula refits.
+
+What I didn't do is replace the live-score term with a trailing-window or decayed version in the same patch. That's tempting — and it's the obvious next step — but it needs its own validation pass against the same ground truth before it goes anywhere near a release. Shipping a quick fix for a quick fix's problems is how you end up back here in six months. For now, the live score simply drops the term rather than guessing at a replacement.
+
+This shipped in **v1.33.2** (PR #126). If you've been staring at a file that refuses to leave CRITICAL no matter what you do to it, this is probably why, and it's fixed.
+
+---
+
+_Hotspots highlights structural and activity risk, not "bad code" — findings are a prioritization aid, not a bug predictor. Full editorial policy: [README.md](https://github.com/Stephen-Collins-tech/hotspots-content/blob/main/README.md#editorial-policy)._
