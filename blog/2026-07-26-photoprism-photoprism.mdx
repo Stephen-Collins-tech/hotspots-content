@@ -1,11 +1,11 @@
 ---
-title: "photoprism's search and indexing layer carries the highest activity risk — 5 functions to address first"
+title: "photoprism's search layer carries the highest activity risk — 5 functions to address first"
 titleSeo: "photoprism code health: search and indexing functions dominate refactoring priority in 2026"
 description: "Five critical-band functions in photoprism's search, indexing, vision, and WebDAV layers are both structurally extreme and actively changing, making them live regression risks at commit bf37269."
 introContent: "Five functions in photoprism's search and indexing core are simultaneously the most structurally complex code in the repository and the most actively changing — meaning any engineer shipping changes to photo search, media indexing, or WebDAV access this week is working inside a live regression surface. The top hotspot, `searchPhotos`, carries an activity-weighted risk score of 21.77 against a cyclomatic complexity of 60 and was touched 3 times in the last 30 days alone."
 pubDate: 2026-07-26
 tags: ["oss", "go", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "photoprism/photoprism"
 commit: "bf3726961d0ec1d14e1f94a7c2b1a349ebe9e00d"
 language: "go"
@@ -24,7 +24,7 @@ qaSection:
   - question: "How do I reduce cyclomatic complexity in Go?"
     answer: "The most effective first step is the extract-method refactoring: identify a cohesive block of conditional logic that handles a single sub-concern and move it into a named function with a clear return type. In Go, this often means turning a deeply nested if-else chain into a function that returns an error or a typed result, which also makes the error-path contract explicit. A cyclomatic complexity above 15 is a reasonable threshold to start extracting; above 30, the function almost certainly handles multiple distinct concerns that can be separated without any loss of clarity. For `searchPhotos` specifically, the album-scope resolution block — which validates a UID, hits the cache, deserializes a filter, and conditionally modifies the query — is a self-contained unit that could become a standalone `resolveAlbumScope` function, immediately reducing CC by several points and producing a helper that is independently testable."
   - question: "Is photoprism actively maintained?"
-    answer: "By the commit data, yes — the top 5 hotspots collectively received 11 commits in the last 30 days, with `searchPhotos` and `UserMediaFile` each touched 3 times in that window. Every function in the top 5 has `days_since_changed` of 0, meaning each was modified at or near the time of the analyzed commit. Notably, `UserMediaFile` has 2 distinct authors active in the last 90 days, the highest author count of any function in the top 5. All five functions sit in the fire quadrant — high structural complexity combined with active recent commits — which is a different risk profile than abandoned or dormant code."
+    answer: "By the commit data, yes — the top 5 hotspots collectively received 11 commits in the last 30 days, with `searchPhotos` and `UserMediaFile` each touched 3 times in that window. Every function in the top 5 was modified at or near the time of the analyzed commit. Notably, `UserMediaFile` has 2 distinct authors active in the last 90 days, the highest author count of any function in the top 5. All five functions sit in the fire quadrant — high structural complexity combined with active recent commits — which is a different risk profile than abandoned or dormant code."
   - question: "How do I reproduce this analysis?"
     answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. To reproduce this exact analysis, check out the photoprism repository at commit `bf37269` with `git checkout bf37269`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command runs without modification on any local git repository and requires no project-specific configuration to produce a ranked hotspot report."
   - question: "What does activity-weighted risk mean?"
@@ -75,9 +75,9 @@ This is the primary photo search function and, by the metrics, the highest-prior
 
 The source excerpt confirms what the metrics suggest: `searchPhotos` handles query string parsing, geographic proximity lookups (the "near" feature resolving S2 cell IDs from photo UIDs), dynamic SQL join assembly, album scope resolution including backward-compatibility aliasing, shared-album filter deserialization, and distance-range enforcement — all within a single function body. Each of those concerns branches independently, which is exactly how you accumulate a CC of 60.
 
-The fan-out of 114 is the most operationally significant number here. A change to any one of those 114 callees — a helper that changes its return signature, a filter parser that starts rejecting previously accepted input — can silently alter search behavior. With 3 commits touching this function in the last 30 days and `days_since_changed` at 0, this is not a theoretical risk.
+The fan-out of 114 is the most operationally significant number here. A change to any one of those 114 callees — a helper that changes its return signature, a filter parser that starts rejecting previously accepted input — can silently alter search behavior. With 3 commits touching this function in the last 30 days and the most recent change landing right at the analyzed commit, this is not a theoretical risk.
 
-The file's `bug_fix_fraction` of 0.33 across its 3 recent commits is worth noting: one in three commits to this file has been classified as a bug fix. That does not prove the current code is defective, but it does suggest the search function has needed corrective attention recently.
+One in three of the file's recent commits has been classified as a bug fix, which is worth noting. That does not prove the current code is defective, but it does suggest the search function has needed corrective attention recently.
 
 **Recommendation:** Start decomposing by concern. The album-scope resolution block — which handles UID validation, cache lookup, filter deserialization, and the hidden-photo exclusion join — is a self-contained unit that could become a `resolveAlbumScope` helper returning a scoped query builder. Extracting that alone would reduce the branching depth materially without requiring a full rewrite. Each extracted helper is independently testable and reduces the number of paths through the remaining function body.
 
@@ -92,7 +92,7 @@ The file's `bug_fix_fraction` of 0.33 across its 3 recent commits is worth notin
 
 `UserPhotosGeo` is the geographic variant of the same search pattern, scoped to map/geo results. Its CC of 48 and nesting depth of 11 are only marginally lower than `searchPhotos`, and the structural relationship between the two functions is visible directly in the source: the album-scope resolution block, the "near" proximity lookup, the S2 cell ID assignment, and the distance clamping logic appear in both. The fan-out of 111 is nearly identical to `searchPhotos` as well.
 
-The 2 commits in the last 30 days and `days_since_changed` of 0 confirm this function is actively changing. The file's `bug_fix_fraction` of 0.50 across 2 commits is the highest of any file in the top 5 — half of all recent commits to this file were bug fixes. That history reinforces the case for prioritizing it.
+The 2 commits in the last 30 days, the most recent landing right at the analyzed commit, confirm this function is actively changing. Half of the file's recent commits were classified as bug fixes — the highest bug-fix share of any file in the top 5. That history reinforces the case for prioritizing it.
 
 The structural duplication between `UserPhotosGeo` and `searchPhotos` is itself a risk vector: a fix applied to the album scope logic in one function must be manually mirrored in the other, and the history suggests that has already been necessary.
 
@@ -111,7 +111,7 @@ This function has the highest cyclomatic complexity of any function in the top 5
 
 The Go-specific concern here is the `defer unlock()` pattern visible in the excerpt: a per-hash lock is acquired when a hash collision is possible, and released via defer. With a CC of 97, there are 97 paths through this function — and only some of them reach the lock acquisition point. Any path that panics or returns early before the defer fires correctly needs careful review. The source excerpt also shows a `recover()` is not present in this function (unlike `Start` in `vision.go`), so a panic here would propagate to the caller.
 
-With 3 touches in 30 days, 2 distinct authors active in the last 90 days, and `days_since_changed` of 0, `UserMediaFile` is under active collaborative development. That is the highest author count of any function in the top 5, which means two engineers are independently making changes to a 97-CC function with 214 callees. The blast radius of a merge conflict or a missed invariant here is large.
+With 3 touches in 30 days, 2 distinct authors active in the last 90 days, and the most recent change landing right at the analyzed commit, `UserMediaFile` is under active collaborative development. That is the highest author count of any function in the top 5, which means two engineers are independently making changes to a 97-CC function with 214 callees. The blast radius of a merge conflict or a missed invariant here is large.
 
 **Recommendation:** The skip-file decision logic (nil check, ignore-by-path, ignore-by-type) is a clean early-return cluster that could become a standalone `shouldSkipFile` predicate. The hash-lookup-and-lock block is another extractable unit. Given 2 active authors, establishing those boundaries now reduces the chance of concurrent edits creating subtly incompatible assumptions about function state.
 
@@ -127,7 +127,7 @@ With 3 touches in 30 days, 2 distinct authors active in the last 90 days, and `d
 
 The source excerpt shows the function doing model selection filtering, per-model boolean flag extraction, a search query to fetch candidate photos, a pagination loop, cancellation checking via mutex, and what appears to be face marker tracking (`updateFaces`) — all before the main processing body. The `recover()` at the top is a good defensive practice, but it also signals awareness that something inside this function can panic, which with a nesting depth of 8 and 61 callees is easy to believe.
 
-In Go, worker functions like this one often involve goroutine lifecycle management. The mutex-based cancellation check (`mutex.VisionWorker.Canceled()`) inside the loop, combined with the `defer mutex.VisionWorker.Stop()` at the top, means the function is managing its own concurrency contract. With 2 commits in the last 30 days and `days_since_changed` of 0, any change to the model selection or loop logic risks disrupting that contract.
+In Go, worker functions like this one often involve goroutine lifecycle management. The mutex-based cancellation check (`mutex.VisionWorker.Canceled()`) inside the loop, combined with the `defer mutex.VisionWorker.Stop()` at the top, means the function is managing its own concurrency contract. With 2 commits in the last 30 days and the most recent landing right at the analyzed commit, any change to the model selection or loop logic risks disrupting that contract.
 
 **Recommendation:** The model-flag extraction block (`updateLabels`, `updateNsfw`, `updateCaptions`, `detectFaces`) and the initial photo query setup are stateless setup steps that could be extracted into a `buildVisionRunConfig` helper. This would reduce the nesting depth in the main function and make the worker's concurrency contract easier to audit in isolation from the setup logic.
 
@@ -144,7 +144,7 @@ In Go, worker functions like this one often involve goroutine lifecycle manageme
 
 The source excerpt shows the function nesting a `basicAuth` closure inside the outer handler, then layering header token checks, cache lookups, app-password detection (using `rnd.IsAppPassword`), session validation, username matching, rate-limit reservation, audit logging, and disabled-app-password checks — all within a single handler. The fan-out of 53 reflects that breadth: this function calls into header parsing, cache, session management, rate limiting, audit logging, and config — all to make a single access-control decision.
 
-With `days_since_changed` of 0 and 1 commit in the last 30 days, this function is still being actively modified. Authentication middleware is exactly the kind of code where an exit-heavy, deeply-nested structure creates risk: the 15 execution paths through this function represent 15 distinct authentication outcomes, and each must be tested to confirm that no path inadvertently grants or denies access incorrectly.
+With 1 commit in the last 30 days landing right at the analyzed commit, this function is still being actively modified. Authentication middleware is exactly the kind of code where an exit-heavy, deeply-nested structure creates risk: the 15 execution paths through this function represent 15 distinct authentication outcomes, and each must be tested to confirm that no path inadvertently grants or denies access incorrectly.
 
 **Recommendation:** Extract the token-based session resolution (`WebDAVAuthSession` + username match + rate-limit + audit log) into a named helper that returns a clear enum or typed result — authorized, denied, or fall-through-to-basic-auth. This flattens the nesting in the main handler and makes each authentication pathway independently testable. For authentication code specifically, testability at the individual path level is not optional.
 
