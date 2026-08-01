@@ -5,7 +5,7 @@ description: "Every top-ranked function in ColossalAI scores critical-band activ
 introContent: "I ran Hotspots against hpcaitech/ColossalAI and found that the most urgent structural risk isn't a live fire — it's a slow-burning debt problem. Every one of the top five critical functions has been untouched for months, meaning the next developer who opens any of them will inherit extreme complexity with no recent institutional memory to lean on."
 pubDate: 2026-07-15
 tags: ["oss", "python", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "hpcaitech/ColossalAI"
 commit: "4f9953be335ef371b3848719ddafe596c01ecd37"
 language: "python"
@@ -28,7 +28,7 @@ qaSection:
   - question: "How do I reproduce this analysis?"
     answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. After installing it, check out the analyzed commit with `git checkout 4f9953b` in your local clone of hpcaitech/ColossalAI, then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works against any local git repository without additional configuration — no project-specific setup is required to get the quadrant breakdown and per-function metric cards shown here."
   - question: "What does activity-weighted risk mean?"
-    answer: "Activity-weighted risk is a composite score that multiplies a function's structural complexity — derived from cyclomatic complexity, maximum nesting depth, and fan-out — by a signal based on how frequently the function has been modified in recent commits. The intuition is that a structurally complex function nobody touches for two years is lower near-term risk than a moderately complex function being changed every week, because the dormant function's bugs are at least stable. In ColossalAI's top five, every function has zero recent touches, which is why the scores are driven almost entirely by structural complexity rather than activity — `run_test`'s activity_risk of 18.79 reflects the severity of its structure, not an active development surge. This prioritization helps teams direct refactoring effort toward functions where the combination of complexity and change frequency makes a regression most likely to be introduced right now."
+    answer: "Activity-weighted risk is a composite score that multiplies a function's structural complexity — derived from cyclomatic complexity, maximum nesting depth, and fan-out — by a signal based on how frequently the function has been modified in recent commits. The intuition is that a structurally complex function nobody touches for two years is lower near-term risk than a moderately complex function being changed every week, because the dormant function's bugs are at least stable. In ColossalAI's top five, every function has zero recent touches, which is why the scores are driven almost entirely by structural complexity rather than activity — `run_test`'s activity-weighted risk score of 18.79 reflects the severity of its structure, not an active development surge. This prioritization helps teams direct refactoring effort toward functions where the combination of complexity and change frequency makes a regression most likely to be introduced right now."
 ---
 
 The riskiest function in ColossalAI right now is `run_test` in the distributed reward-evaluation path, and it hasn't been modified in 247 days — yet it carries a cyclomatic complexity of 253, making it one of the most structurally dangerous functions I've encountered in an open-source ML framework. Across 7,897 analyzed functions, 842 score critical-band, and every one of the top five sits in the debt quadrant: high structural complexity, zero recent commits, zero active authors in the last 90 days. I'd start here not because something is on fire, but because the blast radius when any of these functions is next touched is enormous.
@@ -67,18 +67,6 @@ That consistency isn't a coincidence — these are all god functions: large, bra
 
 ---
 
-## Top 5 functions by activity-weighted risk
-
-| Rank | Function | File | Risk | Band | CC | ND | FO | Touches (30d) | Days Since Changed |
-|------|----------|------|------|------|----|----|----|---------------|--------------------|
-| 1 | `run_test` | `applications/ColossalChat/coati/distributed/reward/code_reward/testing_util.py` | 18.79 | critical | 253 | 6 | 60 | 0 | 247 |
-| 2 | `split_module` | `colossalai/fx/passes/split_module.py` | 17.64 | critical | 69 | 5 | 40 | 0 | 412 |
-| 3 | `computeTable` | `colossalai/auto_parallel/checkpoint/ckpt_solver_rotor.c` | 17.45 | critical | 30 | 7 | 18 | 0 | 247 |
-| 4 | `create_masked_lm_predictions` | `examples/tutorial/sequence_parallel/data/datasets/dataset_utils.py` | 17.43 | critical | 102 | 5 | 31 | 0 | 247 |
-| 5 | `new_from_pretrained` | `colossalai/lazy/pretrained.py` | 17.38 | critical | 90 | 5 | 34 | 0 | 317 |
-
----
-
 ### `run_test` — testing_util.py
 
 <FunctionCard fn='run_test' file='applications/ColossalChat/coati/distributed/reward/code_reward/testing_util.py' risk='18.79' band='critical' cc='253' nd='6' fo='60' touches='0' />
@@ -89,7 +77,7 @@ This function sits in ColossalChat's distributed reward pipeline and, based on t
 
 A cyclomatic complexity of 253 means there are 253 independent execution paths through this function. Each path is a required test case to achieve full branch coverage; in practice, most of them are almost certainly untested. The fan-out of 60 means the function directly invokes 60 distinct callees — and in Python, where duck typing defers type resolution to runtime, that number understates the actual coupling. Many of those 60 calls land on dynamically constructed or runtime-imported objects, so the true dependency surface is invisible to static analysis.
 
-The exit-heavy pattern is visible in the excerpt itself: there are early returns scattered across exception handlers, conditional type-dispatch branches, and debug-path exits. Each exit point is a place where results may be silently swallowed or error information partially formed. The file's external signals show a bug_fix_fraction of 0.67 across 3 total commits — two-thirds of the commits to this file were tagged as fixes, which is a historical signal worth noting even though it doesn't prove the current code is defective.
+The exit-heavy pattern is visible in the excerpt itself: there are early returns scattered across exception handlers, conditional type-dispatch branches, and debug-path exits. Each exit point is a place where results may be silently swallowed or error information partially formed. The file's history shows that two-thirds of its 3 total commits were tagged as bug fixes, which is a historical signal worth noting even though it doesn't prove the current code is defective.
 
 This function has not been touched in 247 days and has zero active authors in the last 90 days. The next time someone needs to extend the reward harness — add a new execution mode, handle a new error class, adjust timeout behavior — they will be doing it inside a 253-path function with no recent commit context to orient them.
 
@@ -107,7 +95,7 @@ The source excerpt confirms that `split_module` is adapted from PyTorch's own `t
 
 A cyclomatic complexity of 69 on a graph-partitioning algorithm isn't surprising — graph traversal with partition assignment, cross-partition edge rewiring, and output merging all generate branching — but it is still a strong refactoring signal. The nesting depth of 5 means the innermost logic sits five control-structure levels deep, which makes it genuinely hard to reason about which partition state is valid at any given point. Fan-out of 40 means the function is broadly coupled to torch.fx internals, and because those are resolved through Python's runtime dispatch, a version bump in torch.fx can silently change behavior without any import error.
 
-This function is the most dormant in the top five: 412 days since last modification, zero touches in the last 30 days, zero active authors in the last 90 days. The file has only a single commit in its entire history and a bug_fix_fraction of zero — there's no historical defect signal here, just accumulated structural complexity from a faithful adaptation of an upstream algorithm that was itself designed for generality rather than readability.
+This function is the most dormant in the top five: 412 days since last modification, zero touches in the last 30 days, zero active authors in the last 90 days. The file has only a single commit in its entire history and no commits tagged as bug fixes — there's no historical defect signal here, just accumulated structural complexity from a faithful adaptation of an upstream algorithm that was itself designed for generality rather than readability.
 
 The stale_complex pattern is the key framing: this isn't a crisis, it's structural debt that will become a crisis the next time someone needs to modify partition behavior, add a new merge strategy, or adapt it to a changed torch.fx API. At 412 days of dormancy, institutional knowledge of why specific branches exist has almost certainly left the team.
 
