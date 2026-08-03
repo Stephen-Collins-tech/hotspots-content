@@ -1,0 +1,175 @@
+---
+title: "restic's repository layer carries the highest activity risk"
+titleSeo: "restic code health: repository and filesystem layers lead refactoring priority in 2026"
+description: "Four of restic's five highest-risk functions are actively changing right now, with fan-out scores reaching 50 and nesting depth hitting 7 — concentrated across the index, checker, and VSS filesystem layers."
+introContent: "Four of restic's top five riskiest functions are in the 'fire' quadrant — structurally complex and actively changing as of this analysis. If you're shipping restic code this week, the index rewrite path and the VSS snapshot layer deserve a close look before your next merge."
+pubDate: 2026-08-03
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "restic/restic"
+commit: "a80be1478a4c537f8396e0db2b05120aa78f11e0"
+language: "go"
+hotspots_version: "1.34.0"
+analyzed_at: "2026-08-03T13:20:07Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 15.97
+topFunction: "snapshotPath"
+topFile: "internal/fs/fs_local_vss.go"
+topPatterns: ["exit_heavy", "god_function", "long_function", "complex_branching", "deeply_nested"]
+patternCounts: {deeply_nested: 3, exit_heavy: 10, god_function: 10, long_function: 9, complex_branching: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in restic?"
+    answer: "A god function is one that has accumulated so many responsibilities — and therefore so many callees — that it becomes the load-bearing hub of a subsystem. In structural terms, fan-out is the count of distinct functions directly called from one place; a fan-out of 15 or more is a strong signal that a function is doing too much. In restic, `Rewrite` in the master index has a fan-out of 50, meaning a single function is directly invoking 50 other functions across the repository layer. The practical problem is blast radius: any change to one of those 50 callees creates a potential regression surface in `Rewrite`, and any change to `Rewrite` itself can affect all of them. Testing a god function in isolation is difficult because it requires either mocking a large number of dependencies or accepting that the test is really an integration test in disguise."
+  - question: "How do I reduce fan-out in Go?"
+    answer: "The most effective technique is extract-method decomposition: identify which callees belong to a distinct phase of the function's work — loading, validating, transforming, persisting — and extract each phase into a named function that can be tested independently. A fan-out above 15 warrants splitting; at 50, as seen in `Rewrite`, the decomposition should be treated as an immediate priority rather than a future cleanup item. A concrete first step for `Rewrite` would be to identify the three or four highest-level phases of the index rewrite operation and introduce one coordinator function per phase, leaving the original function as a thin sequencer. That alone can reduce the effective fan-out of the top-level function by 60–70% without changing any external behavior."
+  - question: "Is restic actively maintained?"
+    answer: "Yes — the fire quadrant contains 391 functions, and four of the top five hotspots were last changed 9 days ago. `snapshotPath` and `runCheck` each received 2 touches in the last 30 days; `Rewrite` and `ReadPacks` each received 1. That is consistent with a project under active, ongoing development. The structural debt is real — 315 functions sit in the debt quadrant, including `FindAll` (0 touches in 30 days, last changed 35 days ago), `runForget` (0 touches, last changed 34 days ago), and `decidePackAction` (0 touches, last changed 39 days ago) — but high structural debt and active development are not mutually exclusive. What the data shows is that restic is being actively extended and maintained while carrying a significant inherited complexity load in its core subsystems."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. This analysis was run against commit `a80be14` of restic/restic. After running `git checkout a80be14` in your local clone of the repository, execute `hotspots analyze . --mode snapshot --explain-patterns --force` to reproduce the findings. The same command works on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — by recent commit frequency, so functions that are both hard to understand and actively changing score the highest. A function with very high cyclomatic complexity that hasn't been touched in two years scores lower than a moderately complex function touched every week, because the dormant function poses lower near-term regression risk. This prioritization is designed to help focus refactoring effort where it is most likely to prevent bugs from being introduced right now, not simply where the code looks complicated in the abstract. In restic's case, `snapshotPath` scores 15.97 precisely because it combines a nesting depth of 7 and a fan-out of 24 with 2 touches in the last 30 days — structural complexity actively in motion."
+---
+
+Across restic's 2,049 functions, 259 score in the critical band — and four of the five highest-risk entries are in the 'fire' quadrant, meaning they combine high structural complexity with commits in the last 30 days. `snapshotPath` in `internal/fs/fs_local_vss.go` leads the list with a risk score of 15.97, touched twice in the last 30 days, carrying a fan-out of 24 and a max nesting depth of 7. That is not a cleanup item for later — it is a live regression surface. I would start my review there, then move immediately to `Rewrite` in the master index, which pairs a fan-out of 50 with a risk score of 15.48.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `snapshotPath` | internal/fs/fs_local_vss.go | 16.0 | 5 | 7 | 24 |
+| `Rewrite` | internal/repository/index/master_index.go | 15.5 | 14 | 4 | 50 |
+| `runCheck` | cmd/restic/cmd_check.go | 15.3 | 12 | 4 | 37 |
+| `FindAll` | internal/data/snapshot_find.go | 15.1 | 6 | 7 | 17 |
+| `ReadPacks` | internal/repository/checker.go | 14.7 | 11 | 4 | 30 |
+
+## Large Repo Analysis
+
+restic is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+restic is a Go backup tool with a mature but dense codebase. At 2,049 functions analyzed against commit `a80be14`, the structural picture is sobering: 391 functions sit in the 'fire' quadrant — high complexity and active change happening right now — while another 315 carry significant structural debt that has gone untouched long enough to become a blast-radius hazard when development eventually returns.
+
+<BandChart fire='391' debt='315' watch='626' ok='717' caption='Quadrant distribution across 2,049 functions in restic/restic' />
+
+The dominant antipatterns across the top hotspots tell a consistent story: nearly every function flagged is simultaneously exit-heavy, a god function, and long. That combination means many return paths, wide coupling, and test surfaces that are expensive to cover completely.
+
+<PatternCloud patterns='exit_heavy:10,god_function:10,long_function:9,complex_branching:5,deeply_nested:3' />
+
+---
+
+### `snapshotPath` — fs_local_vss.go
+
+<FunctionCard fn='snapshotPath' file='internal/fs/fs_local_vss.go' risk='15.97' band='critical' cc='5' nd='7' fo='24' touches='2' />
+
+`snapshotPath` lives in restic's Windows Volume Shadow Copy Service (VSS) filesystem implementation. From its name and path, it almost certainly resolves or translates a path within a VSS snapshot — a job that inherently involves a lot of conditional path manipulation and error handling across system boundaries.
+
+The metric that jumps out first is the max nesting depth of 7. In Go, where idiomatic error handling already adds one or two levels of nesting per operation, reaching depth 7 means the innermost logic is buried under a stack of conditionals that is genuinely hard to reason about. The cyclomatic complexity of 5 is modest by itself, but a fan-out of 24 — 24 distinct functions called from one place — means this function is coordinating a wide surface of dependencies. Any change to a callee can ripple back here unpredictably.
+
+The `god_function` and `exit_heavy` patterns compound this: multiple return paths scattered through deeply nested logic make it difficult to assert which paths have test coverage. Two-thirds of the file's three recorded commits are classified as bug-fixing work. That is a historical quality signal worth noting, even though it doesn't prove the current function is defective.
+
+This function was last changed 9 days ago and has been touched twice in the last 30 days, putting it firmly in the fire quadrant.
+
+**Recommendation:** The nesting depth is the most actionable target. I would extract the innermost conditional blocks into named helper functions — each helper handles one decision level and returns an error or result early. That alone should bring the nesting depth below 4 and make the individual exit paths unit-testable in isolation. Given the VSS platform dependency, having explicit tests for each exit path matters more here than almost anywhere else in the codebase.
+
+---
+
+### `Rewrite` — master_index.go
+
+<FunctionCard fn='Rewrite' file='internal/repository/index/master_index.go' risk='15.48' band='critical' cc='14' nd='4' fo='50' touches='1' />
+
+`Rewrite` sits in the master index layer of restic's repository package. The master index is the central catalog of pack files and blobs — the data structure that tells restic what is stored where. A `Rewrite` operation on this structure almost certainly rebuilds or modifies the index in place, coordinating reads, writes, and consistency checks across the full index state.
+
+The fan-out of 50 is the defining number here. Calling 50 distinct functions from one place makes `Rewrite` the most broadly coupled function in this top-five list. In a Go codebase, that kind of fan-out often signals a function that has accumulated responsibilities over time — originally a coordinator, now a load-bearing hub. Any refactoring of a callee needs to account for what `Rewrite` expects from it.
+
+<MetricBar label='Fan-Out' value='50' threshold='15' max='55' />
+
+The cyclomatic complexity of 14 is meaningful on its own — 14 independent execution paths, each of which is a required test case to cover the function's behavior completely. The `complex_branching` and `exit_heavy` patterns confirm that those paths are spread across a branching structure rather than a single linear flow. The `god_function` and `long_function` patterns together suggest this is a function that should be split into multiple smaller operations.
+
+It was last touched 9 days ago and received one commit in the last 30 days. Half of the file's two recorded commits were bug fixes.
+
+**Recommendation:** A fan-out of 50 is the clearest refactoring signal in this entire analysis. I would start by identifying which of those 50 callees belong to distinct phases of the rewrite operation — loading, validating, transforming, persisting — and extract each phase into its own function. This is a classic decompose-long-method refactoring. Even extracting two or three phases would reduce the fan-out meaningfully and make each phase independently testable.
+
+---
+
+### `runCheck` — cmd_check.go
+
+<FunctionCard fn='runCheck' file='cmd/restic/cmd_check.go' risk='15.31' band='critical' cc='12' nd='4' fo='37' touches='2' />
+
+`runCheck` is the entry point for restic's `check` command — the operation that verifies repository integrity. As a command handler, it is responsible for parsing options, orchestrating the check passes, handling errors from multiple subsystems, and reporting results. That scope naturally accumulates complexity over time.
+
+With a cyclomatic complexity of 12 and a fan-out of 37, this function is both branchy and broadly coupled. Twelve independent paths means twelve minimum test cases just to exercise each branch once; in practice, a check command that interacts with user flags and backend state requires significantly more. The `complex_branching` and `exit_heavy` patterns are consistent with a command handler that must respond differently to a range of flag combinations and error conditions.
+
+<MetricBar label='Fan-Out' value='37' threshold='15' max='55' />
+
+The external signals here add useful context. `runCheck` is in a file with 6 total commits, 4 distinct authors in the last 90 days, and a PR review comment density of 1.33 — the highest of any file in this top five. That density suggests reviewers have already flagged concerns in this file during code review. It has been touched twice in the last 30 days and was last changed 9 days ago.
+
+The `selectRandomPacksByPercentage` function in the same file (`cmd_check.go`) is a watch-quadrant function with 2 touches in the last 30 days — indicating that the check command as a whole is under active development across multiple functions simultaneously.
+
+**Recommendation:** The PR review comment density is a signal that the complexity is already causing friction in the review process. I would extract the flag-handling and validation logic into a dedicated options struct with a `validate()` method, separating option parsing from the check orchestration. That would reduce both the cyclomatic complexity and the fan-out, and make the command handler's main flow easier to follow during review.
+
+---
+
+### `FindAll` — snapshot_find.go
+
+<FunctionCard fn='FindAll' file='internal/data/snapshot_find.go' risk='15.11' band='critical' cc='6' nd='7' fo='17' touches='0' />
+
+`FindAll` in `internal/data/snapshot_find.go` is the only debt-quadrant entry in this top five. It has not been touched in 35 days and received zero commits in the last 30 days. This is structural debt sitting dormant — not an active fire — but the blast radius when development does return is significant.
+
+The combination of a max nesting depth of 7 and a fan-out of 17 in a snapshot-finding function is the core concern. Snapshot enumeration in a backup tool typically involves iterating over stored snapshots, applying filters, and resolving references — all operations that naturally branch on multiple conditions. A nesting depth of 7 means the resolution logic is buried under multiple layers of conditional filtering that will be hard to modify correctly without a thorough understanding of the full call stack.
+
+<MetricBar label='Max Nesting Depth' value='7' threshold='4' max='10' />
+
+The `deeply_nested`, `exit_heavy`, and `god_function` patterns all apply here. A cyclomatic complexity of 6 is not alarming in isolation, but paired with depth 7 it suggests the branching is expressed through nesting rather than early returns — which is harder to follow than flat, guard-clause-based Go code. Half of the file's two recorded commits were bug fixes.
+
+**Recommendation:** Before the next development push touches this file, I would refactor the nested filtering logic into a pipeline of smaller predicate functions. In Go, converting deeply nested conditionals to a sequence of early-return guard clauses is often a one-session refactoring that dramatically improves readability. The goal is to get the nesting depth below 4 before new feature work resumes, not after.
+
+---
+
+### `ReadPacks` — checker.go
+
+<FunctionCard fn='ReadPacks' file='internal/repository/checker.go' risk='14.73' band='critical' cc='11' nd='4' fo='30' touches='1' />
+
+`ReadPacks` in `internal/repository/checker.go` is part of restic's integrity checking infrastructure. Reading packs means streaming and validating the raw pack files that store backup data — a concurrency-friendly operation in restic's architecture. Given that this is a checker function in a Go codebase, it almost certainly spawns goroutines or uses channels to parallelize pack verification, which means the error-handling paths carry concurrency risk that the structural metrics alone don't fully capture.
+
+The cyclomatic complexity of 11 and fan-out of 30 paint a picture of a function managing multiple responsibilities: dispatching work, collecting results, handling errors from concurrent operations, and aggregating findings. In Go, error path branching is explicit — every goroutine result, every channel receive, every error check adds a branch. Eleven independent paths in a concurrent verification function means there are likely several distinct failure modes that need to be handled correctly under load.
+
+<MetricBar label='Cyclomatic Complexity' value='11' threshold='10' max='30' />
+
+The file has 4 distinct authors in the last 90 days and a PR review comment density of 0.5 — indicating both shared ownership and some review friction. It was touched once in the last 30 days and last changed 9 days ago, placing it squarely in the fire quadrant alongside `Rewrite` and `runCheck`.
+
+The `complex_branching`, `exit_heavy`, `god_function`, and `long_function` patterns all apply, reinforcing that this function is doing more than one conceptual job.
+
+**Recommendation:** In a concurrent Go function of this complexity, I would first identify whether the goroutine dispatch and result collection can be separated from the error aggregation logic. Extracting a worker function and a result-collection loop into separate named functions reduces both the cyclomatic complexity and the cognitive burden of reasoning about which error paths are reachable from which goroutines. With 4 authors touching this file, the readability payoff of that split is immediate.
+
+---
+
+Beyond the top five, a few other functions are worth keeping on a watch list. `runForget` in `cmd/restic/cmd_forget.go` is a debt-quadrant function with cyclomatic complexity 13 and fan-out 35 that hasn't been touched in 34 days — structurally similar to `runCheck` but currently dormant, representing blast-radius risk rather than live regression risk. `decidePackAction` in `internal/repository/prune.go` carries the highest cyclomatic complexity in the context set at 29, and has been untouched for 39 days; that complexity will be a hazard when the prune logic is next extended. `newVssSnapshot` in `internal/fs/vss_windows.go` rounds out the VSS subsystem picture alongside `snapshotPath`, with its own nesting and fan-out concerns after 39 days of inactivity.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 10 |
+| `god_function` | 10 |
+| `long_function` | 9 |
+| `complex_branching` | 5 |
+| `deeply_nested` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/restic/restic
+cd restic
+git checkout a80be1478a4c537f8396e0db2b05120aa78f11e0
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
