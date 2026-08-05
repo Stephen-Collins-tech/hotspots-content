@@ -1,0 +1,188 @@
+---
+title: "cockroachdb/cockroach: mergejoiner_fullouter.eg.go dominates the top 5 risk list"
+titleSeo: "cockroachdb/cockroach code health: merge join and SST conflict functions lead refactoring priority"
+description: "Three of the five highest-risk functions in cockroachdb/cockroach live in a single generated file — mergejoiner_fullouter.eg.go — exposing a structural debt concentration in the vectorized join engine."
+introContent: "Three of the five highest-risk functions I found in cockroachdb/cockroach live in a single file — mergejoiner_fullouter.eg.go — meaning any future change to the full-outer merge join probe logic carries multiplied blast-radius risk. The other two top entries, in the logic test runner and the storage SST conflict checker, independently reach critical complexity on their own, making this a multi-front structural debt story rather than a single isolated hotspot."
+pubDate: 2026-08-05
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "cockroachdb/cockroach"
+commit: "e3bff5d92ac171e3c45a0eb6cda5356b4182e4ed"
+language: "go"
+hotspots_version: "1.34.0"
+analyzed_at: "2026-08-05T06:37:51Z"
+clone_depth: 25
+hybrid_touch_threshold: 20
+topRisk: 20.2
+topFunction: "processSubtest"
+topFile: "pkg/sql/logictest/logic.go"
+topPatterns: ["exit_heavy", "god_function", "long_function", "complex_branching", "deeply_nested"]
+patternCounts: {exit_heavy: 8, god_function: 7, long_function: 7, complex_branching: 5, deeply_nested: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in cockroach?"
+    answer: "A god function is a single function that has accumulated so many responsibilities — control flow branches, distinct callee dependencies, and state mutations — that it becomes the de facto integration point for an entire subsystem. Fan-out is the count of distinct functions directly called from within that one function; a fan-out of 89 or 115, as seen in `processSubtest` and `CheckSSTConflicts` respectively, means a change to any one of those 89 or 115 callees can silently affect the god function's behavior. The practical problems are threefold: testing requires setting up the full dependency graph rather than a small slice of it, debugging requires tracing through many layers of indirection, and any modification carries a high probability of touching a code path the author didn't intend to affect. In a codebase as large as cockroachdb/cockroach, god functions also tend to become the sole place where certain logic lives, which means they attract further additions over time — compounding the problem with each release cycle."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The most direct technique is the extract-method refactoring: identify cohesive groups of branches — typically one `switch` case or one logical phase — and move them into their own named functions that return `error`. A cyclomatic complexity above 15 is worth questioning during code review; above 30 it should block merge unless the reviewer can explain why the branching is irreducible. For `processSubtest`, with CC 90, a concrete first step is to extract the body of each `switch cmd` case into a dedicated handler function; that alone reduces the CC of the outer dispatcher to roughly the number of command strings, cutting it by more than half in a single refactoring session. For generated code like the `probeBody` variants in `mergejoiner_fullouter.eg.go`, the intervention point is the `execgen` template — extracting shared logic into helper functions that the template calls rather than inlines will reduce each generated function's complexity without requiring manual edits to the `.eg.go` files themselves."
+  - question: "Is cockroach actively maintained?"
+    answer: "Yes — cockroachdb/cockroach is actively maintained, but the top structural hotspots are currently in a dormant phase rather than an active-change phase. None of the five highest-risk functions registered a single commit in the last 30 days, and the most complex one, `CheckSSTConflicts`, was last changed 51 days ago. The fire quadrant — functions that are both complex and actively changing — contains 15 functions in the codebase, including several in `pkg/sql/opt/props/histogram.go` that were touched twice in the last 30 days. High structural debt and active development are not mutually exclusive: cockroach is clearly under active development, and the debt-quadrant hotspots represent complexity that has been stable but will eventually need to absorb new requirements."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. To reproduce this exact analysis, check out cockroachdb/cockroach at commit `e3bff5d` and run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without additional configuration — no hotspots account or API key is required for a local snapshot analysis."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk is a composite score that multiplies a function's structural complexity — derived from cyclomatic complexity, maximum nesting depth, and fan-out — by a signal from recent commit frequency. The intent is to separate functions that are theoretically hard to understand from functions that are hard to understand AND being actively changed right now, since the second category carries near-term regression risk while the first is a backlog item. A function with cyclomatic complexity of 125 that hasn't been touched in 51 days, like `CheckSSTConflicts`, scores the same activity-weighted risk as a simpler function being changed every few days — but for different reasons: one has extreme structural mass, the other has high velocity into complex territory. This prioritization helps teams direct refactoring effort toward the functions most likely to introduce bugs in the current development cycle, rather than simply toward the most complicated code in the abstract."
+---
+
+The most striking finding from this analysis is that three of the five top-ranked functions belong to one file — `pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go` — all sitting dormant in the debt quadrant with cyclomatic complexity of 120 each and maximum nesting depth of 13. All five top functions are in the debt quadrant: none have been touched in at least 50 days, and none registered a single commit in the last 30 days. That dormancy lowers immediate regression risk, but it also means structural debt has been accumulating quietly across some of the most complex code in a codebase with 59,890 total functions — 7,513 of which are already rated critical. I would treat the concentration in `mergejoiner_fullouter.eg.go` as the highest-priority refactoring conversation to have before the next development push into that subsystem.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `processSubtest` | pkg/sql/logictest/logic.go | 20.2 | 90 | 11 | 89 |
+| `CheckSSTConflicts` | pkg/storage/sst.go | 20.2 | 125 | 9 | 115 |
+| `probeBodyLSelfalseRSelfalse` | pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go | 20.2 | 120 | 13 | 61 |
+| `probeBodyLSelfalseRSeltrue` | pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go | 20.2 | 120 | 13 | 61 |
+| `probeBodyLSeltrueRSelfalse` | pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go | 20.2 | 120 | 13 | 61 |
+
+## Large Repo Analysis
+
+cockroach is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 20 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Repository Overview
+
+At commit `e3bff5d`, Hotspots analyzed 59,890 functions across cockroachdb/cockroach and flagged 7,513 as critical — roughly one in eight. The quadrant picture below shows where structural risk is concentrated:
+
+<BandChart fire='15' debt='20334' watch='22' ok='39519' caption='Quadrant distribution across 59,890 functions' />
+
+The overwhelming majority of structural risk sits in the debt quadrant: 20,334 functions that are complex but currently inactive. Only 15 functions are in the fire quadrant — actively changing and structurally complex at the same time. The top 5 hotspots are all debt-quadrant cases, which means the urgency is not about stopping a regression in flight today; it is about understanding what you are inheriting the next time someone opens one of these files.
+
+The antipattern distribution across the top hotspots reinforces that picture:
+
+<PatternCloud patterns='exit_heavy:8,god_function:7,long_function:7,complex_branching:5,deeply_nested:5' />
+
+Every top function carries multiple compounding patterns. That combination — god function scope, deeply nested control flow, and many exit paths — is what pushes cyclomatic complexity into triple digits and makes test coverage exhausting to reason about.
+
+---
+
+## Top 5 Hotspots
+
+| Rank | Function | File | Risk | Band | CC | ND | FO | Last Touched |
+|------|----------|------|------|------|----|----|----|--------------|
+| 1 | `processSubtest` | `pkg/sql/logictest/logic.go` | 20.2 | critical | 90 | 11 | 89 | 50 days ago |
+| 2 | `CheckSSTConflicts` | `pkg/storage/sst.go` | 20.2 | critical | 125 | 9 | 115 | 51 days ago |
+| 3 | `probeBodyLSelfalseRSelfalse` | `mergejoiner_fullouter.eg.go` | 20.17 | critical | 120 | 13 | 61 | 51 days ago |
+| 4 | `probeBodyLSelfalseRSeltrue` | `mergejoiner_fullouter.eg.go` | 20.17 | critical | 120 | 13 | 61 | 51 days ago |
+| 5 | `probeBodyLSeltrueRSelfalse` | `mergejoiner_fullouter.eg.go` | 20.17 | critical | 120 | 13 | 61 | 51 days ago |
+
+---
+
+## The `mergejoiner_fullouter.eg.go` File: Three Functions, One Concentrated Risk
+
+Before going function by function, the file-level concentration deserves its own framing. Three of the five highest-risk functions in the entire 59,890-function codebase live in `pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go`. The `.eg.go` suffix is a CockroachDB convention for code that is machine-generated via `execgen` — a templating tool that expands type-specialized variants. That explains the structural similarity across the three functions: they are the same probe-body logic instantiated for the four combinations of left-selection-vector and right-selection-vector presence (`LSelfalse/RSelfalse`, `LSelfalse/RSeltrue`, `LSeltrue/RSelfalse`). The fourth variant, `probeBodyLSeltrue/RSeltrue`, presumably exists in the same file but did not appear in the top 5 only because the scores are tied at 20.17 and the list is capped.
+
+The practical consequence of this concentration: if someone needs to fix a correctness issue in the full-outer merge join probe logic, they are almost certainly editing all three (or four) of these functions simultaneously — each of which carries a cyclomatic complexity of 120 and a maximum nesting depth of 13.
+
+### `probeBodyLSelfalseRSelfalse` — mergejoiner_fullouter.eg.go
+
+<FunctionCard fn='probeBodyLSelfalseRSelfalse' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.17' band='critical' cc='120' nd='13' fo='61' touches='0' />
+
+This function implements the inner probe loop for a full-outer merge join when neither the left nor the right batch has a selection vector active. The source excerpt shows the structure clearly: an outer loop over equality columns, a `switch` on canonical type family, a nested `switch` on column width, and then deep within — a loop over groups from `nextGroupInCol` that handles unmatched left rows, unmatched right rows, and the element-wise comparison path, with null handling branching at each level.
+
+With a cyclomatic complexity of 120 and a nesting depth of 13, this function has 120 independent execution paths that each represent a required test case for full coverage. That ND of 13 is a strong refactoring signal on its own — at that depth, a reader has to track over a dozen levels of conditional context simultaneously to reason about any single branch. The fan-out of 61 means changes here touch 61 distinct callees, giving the function a wide ripple surface.
+
+The function hasn't been touched in 51 days and had zero commits in the last 30. This is structural debt, not a live regression — but the blast radius when it is next changed is substantial, especially since the same logic must be reproduced correctly across the other three selection-vector variants. The `exit_heavy` pattern means there are multiple return-equivalent paths through the loop (via `continue` and early group advancement), each of which needs its own test assertion.
+
+**Recommendation:** Because this is generated code, the right intervention is upstream in the `execgen` template, not in the `.eg.go` file directly. I would audit the template for opportunities to extract the null-handling and comparison logic into shared helper functions that the generated code calls, rather than inlining everything. That would reduce the per-variant complexity without requiring four parallel edits every time the logic changes.
+
+### `probeBodyLSelfalseRSeltrue` — mergejoiner_fullouter.eg.go
+
+<FunctionCard fn='probeBodyLSelfalseRSeltrue' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.17' band='critical' cc='120' nd='13' fo='61' touches='0' />
+
+This is the selection-vector variant where the left batch has no selection vector but the right batch does. Comparing its source excerpt to `probeBodyLSelfalseRSelfalse`, the difference is narrow but load-bearing: the right-side null check uses `rNulls.NullAt(rSel[curRIdx])` instead of `rNulls.NullAt(curRIdx)`, and the right-side value fetch uses `rKeys.Get(rSel[curRIdx])`. That single index-indirection difference is the entire justification for a separate 120-CC function.
+
+The metrics are identical to the first variant: CC 120, ND 13, fan-out 61, zero touches in 30 days, last changed 51 days ago. The risk profile is the same, and so is the root cause: the template expands the full logic body for each combination rather than parameterizing the index access.
+
+**Recommendation:** This function is the clearest argument for revisiting the `execgen` template strategy for selection-vector handling. If the only difference between variants is how the index is resolved — direct vs. through `sel[]` — a small inline helper or closure that abstracts that resolution would allow a single probe-body implementation instead of four. That change happens once in the template and eliminates three of the five top hotspots in the entire repository in one commit.
+
+### `probeBodyLSeltrueRSelfalse` — mergejoiner_fullouter.eg.go
+
+<FunctionCard fn='probeBodyLSeltrueRSelfalse' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.17' band='critical' cc='120' nd='13' fo='61' touches='0' />
+
+The third variant — left selection vector active, right not — completes the set. Its excerpt shows `lNulls.NullAt(lSel[curLIdx])` on the left side and direct `rNulls.NullAt(curRIdx)` on the right, the mirror image of the previous variant. The metrics are identical across all three.
+
+Taken together, these three functions represent a single logical algorithm that has been specialized into three copies each carrying a complexity score that would be alarming in isolation. The historical signals show no bug-linked commits and no reverts — which suggests the generation strategy has not produced defects that surfaced in the issue tracker, but that is a reflection of test coverage and operational luck as much as code clarity. The `god_function` and `long_function` patterns flag these as functions where the cost of understanding, modifying, and verifying a change is disproportionately high relative to the size of the actual change needed.
+
+**Recommendation:** Before anyone touches join correctness for full-outer joins, I would map all four `probeBody` variants in this file side by side and document exactly which lines differ between them. That diff is the minimal change surface for any future fix. Doing that mapping now — while no change is in flight — costs far less than doing it under pressure during a correctness investigation.
+
+---
+
+## The Stand-Alone Critical Functions
+
+### `processSubtest` — logic.go
+
+<FunctionCard fn='processSubtest' file='pkg/sql/logictest/logic.go' risk='20.2' band='critical' cc='90' nd='11' fo='89' touches='0' />
+
+This function is the command dispatcher at the heart of CockroachDB's SQL logic test runner. The source excerpt shows it scanning a line buffer, parsing each directive (`repeat`, `retry_duration`, `skip_on_retry`, `sleep`, and from the switch structure, many others), and dispatching accordingly. It is textbook god-function territory: a single large `switch` over command strings, with each case containing its own error handling, validation, and state mutation.
+
+<MetricBar label='Cyclomatic Complexity' value='90' threshold='10' max='130' />
+<MetricBar label='Max Nesting Depth' value='11' threshold='4' max='15' />
+<MetricBar label='Fan-Out' value='89' threshold='20' max='120' />
+
+The CC of 90 means 90 independent paths — each test directive type is a path branch, and within each there are further branches for malformed input, missing fields, and parse errors. The ND of 11 is the result of switch → case → validation → inner loop → inner conditional stacking. The fan-out of 89 makes this a hub: it touches nearly 90 distinct downstream functions, which means it is also the place where a test infrastructure change is most likely to have unintended side effects.
+
+The function hasn't been touched in 50 days and had zero commits in the last 30. The external signals show a `bug_fix_fraction` of 0.33 on this file — one in three commits to `logic.go` historically has been a bug fix — which tells me this file has a track record of needing correction. That doesn't mean `processSubtest` is defective now, but it does mean any future change here deserves careful review.
+
+The `exit_heavy` pattern compounds the testing burden: across 90 execution paths and 11 nesting levels, the function has many early-return branches for error conditions, and each represents a path that must be exercised to have meaningful coverage.
+
+**Recommendation:** I would start decomposing this function by extracting each `switch` case into its own handler function — `handleRepeat`, `handleSleep`, `handleRetryDuration`, and so on. Each handler takes the current fields slice and the test state it needs, and returns an error. That alone breaks the god function into testable units and reduces the CC of `processSubtest` itself to roughly the number of distinct commands, probably somewhere around 20–30, which is still high but tractable. The two authors active in the last 90 days should align on this decomposition before the next feature lands in the test runner.
+
+### `CheckSSTConflicts` — sst.go
+
+<FunctionCard fn='CheckSSTConflicts' file='pkg/storage/sst.go' risk='20.2' band='critical' cc='125' nd='9' fo='115' touches='0' />
+
+This function validates an incoming SSTable against the existing engine state, checking for lock conflicts, range key overlaps, and MVCC key shadowing. The source excerpt reveals multiple iterator lifecycles — a non-prefix iterator for the fast path, a range-key iterator for SST range key inspection, and from the function signature, further iteration for the main key comparison loop — each with its own error-handling path and `Close()` call.
+
+<MetricBar label='Cyclomatic Complexity' value='125' threshold='10' max='130' />
+<MetricBar label='Fan-Out' value='115' threshold='20' max='120' />
+
+At CC 125 and fan-out 115, this is the most structurally complex single function in the top 5 by both metrics. The fan-out of 115 means it directly calls 115 distinct functions — iterators, MVCC utilities, key comparison helpers, stats accumulators — making it a genuine integration hub in the storage layer. In Go, this is particularly significant: each iterator that is opened must be closed, and each error path must not leak resources. With 125 cyclomatic paths and 9 nesting levels, the number of iterator-open/close pairs that need to be correctly matched across all error branches is a meaningful correctness surface.
+
+The function hasn't been touched in 51 days, and the external signals are notably clean: zero bug-linked commits, zero reverts, a single total commit, and a single author in the last 90 days. There is no historical defect signal here — this reads as a function that has been written once, carefully, and left alone. The complexity is the product of the problem domain: SST conflict checking genuinely requires handling many key types, timestamp orderings, and conflict categories. But that doesn't make the blast radius smaller when it next needs to change.
+
+The `god_function` and `long_function` patterns are accurate: this function is doing iterator setup, fast-path checking, lock scanning, range key scanning, and point-key conflict resolution all in one body.
+
+**Recommendation:** The most tractable decomposition here is to extract each logical phase into its own function: a `checkLockConflicts` helper, a `checkRangeKeyConflicts` helper, and a `checkPointKeyConflicts` helper, with `CheckSSTConflicts` orchestrating them in sequence. Each extracted helper owns its own iterator lifecycle, which also makes resource-leak analysis tractable by inspection. Given that this file has a single active author in the last 90 days, now — while it's dormant — is the right time to propose that decomposition rather than waiting for a new conflict-detection requirement to force changes into a 125-CC monolith.
+
+---
+
+## A Note on Active Risk Elsewhere
+
+While all five top hotspots are dormant debt, it is worth noting that `pkg/sql/opt/props/histogram.go` is the active risk story right now. The `filter` and `getFilteredBucket` functions in that file are in the fire quadrant — both touched 2 times in the last 30 days, with `filter` carrying a fan-out of 33 and `getFilteredBucket` a cyclomatic complexity of 13. These are not in the top 5 by activity-weighted risk score, but they are the functions where a regression could land today. I would keep them on the watch list alongside the debt-quadrant work.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 8 |
+| `god_function` | 7 |
+| `long_function` | 7 |
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/cockroachdb/cockroach
+cd cockroach
+git checkout e3bff5d92ac171e3c45a0eb6cda5356b4182e4ed
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 20
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
