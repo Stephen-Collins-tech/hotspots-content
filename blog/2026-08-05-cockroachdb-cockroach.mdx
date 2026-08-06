@@ -5,7 +5,7 @@ description: "Three of the five highest-risk functions in cockroachdb/cockroach 
 introContent: "Three of the five highest-risk functions I found in cockroachdb/cockroach live in a single file — mergejoiner_fullouter.eg.go — meaning any future change to the full-outer merge join probe logic carries multiplied blast-radius risk. The other two top entries, in the logic test runner and the storage SST conflict checker, independently reach critical complexity on their own, making this a multi-front structural debt story rather than a single isolated hotspot."
 pubDate: 2026-08-05
 tags: ["oss", "go", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "cockroachdb/cockroach"
 commit: "e3bff5d92ac171e3c45a0eb6cda5356b4182e4ed"
 language: "go"
@@ -65,58 +65,6 @@ Every top function carries multiple compounding patterns. That combination — g
 
 ---
 
-## Top 5 Hotspots
-
-| Rank | Function | File | Risk | Band | CC | ND | FO | Last Touched |
-|------|----------|------|------|------|----|----|----|--------------|
-| 1 | `processSubtest` | `pkg/sql/logictest/logic.go` | 20.2 | critical | 90 | 11 | 89 | 50 days ago |
-| 2 | `CheckSSTConflicts` | `pkg/storage/sst.go` | 20.2 | critical | 125 | 9 | 115 | 51 days ago |
-| 3 | `probeBodyLSelfalseRSelfalse` | `mergejoiner_fullouter.eg.go` | 20.17 | critical | 120 | 13 | 61 | 51 days ago |
-| 4 | `probeBodyLSelfalseRSeltrue` | `mergejoiner_fullouter.eg.go` | 20.17 | critical | 120 | 13 | 61 | 51 days ago |
-| 5 | `probeBodyLSeltrueRSelfalse` | `mergejoiner_fullouter.eg.go` | 20.17 | critical | 120 | 13 | 61 | 51 days ago |
-
----
-
-## The `mergejoiner_fullouter.eg.go` File: Three Functions, One Concentrated Risk
-
-Before going function by function, the file-level concentration deserves its own framing. Three of the five highest-risk functions in the entire 59,890-function codebase live in `pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go`. The `.eg.go` suffix is a CockroachDB convention for code that is machine-generated via `execgen` — a templating tool that expands type-specialized variants. That explains the structural similarity across the three functions: they are the same probe-body logic instantiated for the four combinations of left-selection-vector and right-selection-vector presence (`LSelfalse/RSelfalse`, `LSelfalse/RSeltrue`, `LSeltrue/RSelfalse`). The fourth variant, `probeBodyLSeltrue/RSeltrue`, presumably exists in the same file but did not appear in the top 5 only because the scores are tied at 20.17 and the list is capped.
-
-The practical consequence of this concentration: if someone needs to fix a correctness issue in the full-outer merge join probe logic, they are almost certainly editing all three (or four) of these functions simultaneously — each of which carries a cyclomatic complexity of 120 and a maximum nesting depth of 13.
-
-### `probeBodyLSelfalseRSelfalse` — mergejoiner_fullouter.eg.go
-
-<FunctionCard fn='probeBodyLSelfalseRSelfalse' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.17' band='critical' cc='120' nd='13' fo='61' touches='0' />
-
-This function implements the inner probe loop for a full-outer merge join when neither the left nor the right batch has a selection vector active. The source excerpt shows the structure clearly: an outer loop over equality columns, a `switch` on canonical type family, a nested `switch` on column width, and then deep within — a loop over groups from `nextGroupInCol` that handles unmatched left rows, unmatched right rows, and the element-wise comparison path, with null handling branching at each level.
-
-With a cyclomatic complexity of 120 and a nesting depth of 13, this function has 120 independent execution paths that each represent a required test case for full coverage. That ND of 13 is a strong refactoring signal on its own — at that depth, a reader has to track over a dozen levels of conditional context simultaneously to reason about any single branch. The fan-out of 61 means changes here touch 61 distinct callees, giving the function a wide ripple surface.
-
-The function hasn't been touched in 51 days and had zero commits in the last 30. This is structural debt, not a live regression — but the blast radius when it is next changed is substantial, especially since the same logic must be reproduced correctly across the other three selection-vector variants. The `exit_heavy` pattern means there are multiple return-equivalent paths through the loop (via `continue` and early group advancement), each of which needs its own test assertion.
-
-**Recommendation:** Because this is generated code, the right intervention is upstream in the `execgen` template, not in the `.eg.go` file directly. I would audit the template for opportunities to extract the null-handling and comparison logic into shared helper functions that the generated code calls, rather than inlining everything. That would reduce the per-variant complexity without requiring four parallel edits every time the logic changes.
-
-### `probeBodyLSelfalseRSeltrue` — mergejoiner_fullouter.eg.go
-
-<FunctionCard fn='probeBodyLSelfalseRSeltrue' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.17' band='critical' cc='120' nd='13' fo='61' touches='0' />
-
-This is the selection-vector variant where the left batch has no selection vector but the right batch does. Comparing its source excerpt to `probeBodyLSelfalseRSelfalse`, the difference is narrow but load-bearing: the right-side null check uses `rNulls.NullAt(rSel[curRIdx])` instead of `rNulls.NullAt(curRIdx)`, and the right-side value fetch uses `rKeys.Get(rSel[curRIdx])`. That single index-indirection difference is the entire justification for a separate 120-CC function.
-
-The metrics are identical to the first variant: CC 120, ND 13, fan-out 61, zero touches in 30 days, last changed 51 days ago. The risk profile is the same, and so is the root cause: the template expands the full logic body for each combination rather than parameterizing the index access.
-
-**Recommendation:** This function is the clearest argument for revisiting the `execgen` template strategy for selection-vector handling. If the only difference between variants is how the index is resolved — direct vs. through `sel[]` — a small inline helper or closure that abstracts that resolution would allow a single probe-body implementation instead of four. That change happens once in the template and eliminates three of the five top hotspots in the entire repository in one commit.
-
-### `probeBodyLSeltrueRSelfalse` — mergejoiner_fullouter.eg.go
-
-<FunctionCard fn='probeBodyLSeltrueRSelfalse' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.17' band='critical' cc='120' nd='13' fo='61' touches='0' />
-
-The third variant — left selection vector active, right not — completes the set. Its excerpt shows `lNulls.NullAt(lSel[curLIdx])` on the left side and direct `rNulls.NullAt(curRIdx)` on the right, the mirror image of the previous variant. The metrics are identical across all three.
-
-Taken together, these three functions represent a single logical algorithm that has been specialized into three copies each carrying a complexity score that would be alarming in isolation. The historical signals show no bug-linked commits and no reverts — which suggests the generation strategy has not produced defects that surfaced in the issue tracker, but that is a reflection of test coverage and operational luck as much as code clarity. The `god_function` and `long_function` patterns flag these as functions where the cost of understanding, modifying, and verifying a change is disproportionately high relative to the size of the actual change needed.
-
-**Recommendation:** Before anyone touches join correctness for full-outer joins, I would map all four `probeBody` variants in this file side by side and document exactly which lines differ between them. That diff is the minimal change surface for any future fix. Doing that mapping now — while no change is in flight — costs far less than doing it under pressure during a correctness investigation.
-
----
-
 ## The Stand-Alone Critical Functions
 
 ### `processSubtest` — logic.go
@@ -131,7 +79,7 @@ This function is the command dispatcher at the heart of CockroachDB's SQL logic 
 
 The CC of 90 means 90 independent paths — each test directive type is a path branch, and within each there are further branches for malformed input, missing fields, and parse errors. The ND of 11 is the result of switch → case → validation → inner loop → inner conditional stacking. The fan-out of 89 makes this a hub: it touches nearly 90 distinct downstream functions, which means it is also the place where a test infrastructure change is most likely to have unintended side effects.
 
-The function hasn't been touched in 50 days and had zero commits in the last 30. The external signals show a `bug_fix_fraction` of 0.33 on this file — one in three commits to `logic.go` historically has been a bug fix — which tells me this file has a track record of needing correction. That doesn't mean `processSubtest` is defective now, but it does mean any future change here deserves careful review.
+The function hasn't been touched in 50 days and had zero commits in the last 30. Historically, one in three commits to `logic.go` has been a bug fix, which tells me this file has a track record of needing correction. That doesn't mean `processSubtest` is defective now, but it does mean any future change here deserves careful review.
 
 The `exit_heavy` pattern compounds the testing burden: across 90 execution paths and 11 nesting levels, the function has many early-return branches for error conditions, and each represents a path that must be exercised to have meaningful coverage.
 
@@ -153,6 +101,46 @@ The function hasn't been touched in 51 days, and the external signals are notabl
 The `god_function` and `long_function` patterns are accurate: this function is doing iterator setup, fast-path checking, lock scanning, range key scanning, and point-key conflict resolution all in one body.
 
 **Recommendation:** The most tractable decomposition here is to extract each logical phase into its own function: a `checkLockConflicts` helper, a `checkRangeKeyConflicts` helper, and a `checkPointKeyConflicts` helper, with `CheckSSTConflicts` orchestrating them in sequence. Each extracted helper owns its own iterator lifecycle, which also makes resource-leak analysis tractable by inspection. Given that this file has a single active author in the last 90 days, now — while it's dormant — is the right time to propose that decomposition rather than waiting for a new conflict-detection requirement to force changes into a 125-CC monolith.
+
+---
+
+## The `mergejoiner_fullouter.eg.go` File: Three Functions, One Concentrated Risk
+
+Before going function by function, the file-level concentration deserves its own framing. Three of the five highest-risk functions in the entire 59,890-function codebase live in `pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go`. The `.eg.go` suffix is a CockroachDB convention for code that is machine-generated via `execgen` — a templating tool that expands type-specialized variants. That explains the structural similarity across the three functions: they are the same probe-body logic instantiated for the four combinations of left-selection-vector and right-selection-vector presence (`LSelfalse/RSelfalse`, `LSelfalse/RSeltrue`, `LSeltrue/RSelfalse`). The fourth variant, `probeBodyLSeltrue/RSeltrue`, presumably exists in the same file but did not appear in the top 5 only because the scores are tied at 20.2 and the list is capped.
+
+The practical consequence of this concentration: if someone needs to fix a correctness issue in the full-outer merge join probe logic, they are almost certainly editing all three (or four) of these functions simultaneously — each of which carries a cyclomatic complexity of 120 and a maximum nesting depth of 13.
+
+### `probeBodyLSelfalseRSelfalse` — mergejoiner_fullouter.eg.go
+
+<FunctionCard fn='probeBodyLSelfalseRSelfalse' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.2' band='critical' cc='120' nd='13' fo='61' touches='0' />
+
+This function implements the inner probe loop for a full-outer merge join when neither the left nor the right batch has a selection vector active. The source excerpt shows the structure clearly: an outer loop over equality columns, a `switch` on canonical type family, a nested `switch` on column width, and then deep within — a loop over groups from `nextGroupInCol` that handles unmatched left rows, unmatched right rows, and the element-wise comparison path, with null handling branching at each level.
+
+With a cyclomatic complexity of 120 and a nesting depth of 13, this function has 120 independent execution paths that each represent a required test case for full coverage. That ND of 13 is a strong refactoring signal on its own — at that depth, a reader has to track over a dozen levels of conditional context simultaneously to reason about any single branch. The fan-out of 61 means changes here touch 61 distinct callees, giving the function a wide ripple surface.
+
+The function hasn't been touched in 51 days and had zero commits in the last 30. This is structural debt, not a live regression — but the blast radius when it is next changed is substantial, especially since the same logic must be reproduced correctly across the other three selection-vector variants. The `exit_heavy` pattern means there are multiple return-equivalent paths through the loop (via `continue` and early group advancement), each of which needs its own test assertion.
+
+**Recommendation:** Because this is generated code, the right intervention is upstream in the `execgen` template, not in the `.eg.go` file directly. I would audit the template for opportunities to extract the null-handling and comparison logic into shared helper functions that the generated code calls, rather than inlining everything. That would reduce the per-variant complexity without requiring four parallel edits every time the logic changes.
+
+### `probeBodyLSelfalseRSeltrue` — mergejoiner_fullouter.eg.go
+
+<FunctionCard fn='probeBodyLSelfalseRSeltrue' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.2' band='critical' cc='120' nd='13' fo='61' touches='0' />
+
+This is the selection-vector variant where the left batch has no selection vector but the right batch does. Comparing its source excerpt to `probeBodyLSelfalseRSelfalse`, the difference is narrow but load-bearing: the right-side null check uses `rNulls.NullAt(rSel[curRIdx])` instead of `rNulls.NullAt(curRIdx)`, and the right-side value fetch uses `rKeys.Get(rSel[curRIdx])`. That single index-indirection difference is the entire justification for a separate 120-CC function.
+
+The metrics are identical to the first variant: CC 120, ND 13, fan-out 61, zero touches in 30 days, last changed 51 days ago. The risk profile is the same, and so is the root cause: the template expands the full logic body for each combination rather than parameterizing the index access.
+
+**Recommendation:** This function is the clearest argument for revisiting the `execgen` template strategy for selection-vector handling. If the only difference between variants is how the index is resolved — direct vs. through `sel[]` — a small inline helper or closure that abstracts that resolution would allow a single probe-body implementation instead of four. That change happens once in the template and eliminates three of the five top hotspots in the entire repository in one commit.
+
+### `probeBodyLSeltrueRSelfalse` — mergejoiner_fullouter.eg.go
+
+<FunctionCard fn='probeBodyLSeltrueRSelfalse' file='pkg/sql/colexec/colexecjoin/mergejoiner_fullouter.eg.go' risk='20.2' band='critical' cc='120' nd='13' fo='61' touches='0' />
+
+The third variant — left selection vector active, right not — completes the set. Its excerpt shows `lNulls.NullAt(lSel[curLIdx])` on the left side and direct `rNulls.NullAt(curRIdx)` on the right, the mirror image of the previous variant. The metrics are identical across all three.
+
+Taken together, these three functions represent a single logical algorithm that has been specialized into three copies each carrying a complexity score that would be alarming in isolation. The historical signals show no bug-linked commits and no reverts — which suggests the generation strategy has not produced defects that surfaced in the issue tracker, but that is a reflection of test coverage and operational luck as much as code clarity. The `god_function` and `long_function` patterns flag these as functions where the cost of understanding, modifying, and verifying a change is disproportionately high relative to the size of the actual change needed.
+
+**Recommendation:** Before anyone touches join correctness for full-outer joins, I would map all four `probeBody` variants in this file side by side and document exactly which lines differ between them. That diff is the minimal change surface for any future fix. Doing that mapping now — while no change is in flight — costs far less than doing it under pressure during a correctness investigation.
 
 ---
 
