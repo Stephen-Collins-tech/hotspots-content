@@ -1,0 +1,164 @@
+---
+title: "grafana/loki: engine and distributor carry the highest risk — 5 functions to fix first"
+titleSeo: "grafana/loki code health: engine, distributor, and query pipeline lead refactoring priority"
+description: "Five critical-band functions in loki's query engine, distributor, metastore, and query range layers all scored 'fire' quadrant — structurally complex and touched within the last 24 hours."
+introContent: "Every one of loki's five highest-risk functions landed in the 'fire' quadrant — meaning they are both structurally dense and were committed against yesterday. If your team is shipping code this week, these are the functions most likely to introduce a regression before the next release."
+pubDate: 2026-08-14
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "grafana/loki"
+commit: "38fc69d6ae5f578c1c0c5ca321c3b6048bdda05b"
+language: "go"
+hotspots_version: "1.34.0"
+analyzed_at: "2026-08-14T04:48:50Z"
+clone_depth: 25
+hybrid_touch_threshold: 10
+topRisk: 18.58
+topFunction: "newColumnCompatibilityPipeline"
+topFile: "pkg/engine/internal/executor/compat.go"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 5, long_function: 5, cyclic_hub: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in loki?"
+    answer: "A god function is a single function that has absorbed so many responsibilities — and calls so many other functions — that it becomes the de facto coordination point for a subsystem. In concrete terms, fan-out measures how many distinct functions a given function directly calls; when that number reaches 52 or 84 as it does in `newColumnCompatibilityPipeline` and `PushWithResolver`, a change to almost any dependency in the codebase has a plausible path through that function. In loki's write path, `PushWithResolver` with a fan-out of 84 means that sharding policy, tenant validation, latency simulation, stream hashing, and inflight tracking are all entangled in one place. This makes the function hard to test in isolation — you need to stub or mock a large number of collaborators — and it means that any behavioral change, even in a seemingly unrelated package, may require touching this function to stay consistent."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "Cyclomatic complexity counts the number of independent execution paths through a function; a CC above 15 warrants splitting, and CC above 30 warrants immediate attention — `getPredicateSelectivity` at CC 28 is close to that threshold. The most effective first step in Go is to decompose large type switches into a dispatch table or interface: define an interface with a single method, implement it once per case, and replace the switch with a map lookup or interface dispatch. For `getPredicateSelectivity`, each predicate type (`EqualPredicate`, `InPredicate`, `GreaterThanPredicate`, and so on) would get its own `selectivityEstimator` implementation, immediately reducing the outer function's CC to roughly the number of fallback cases rather than the product of predicate types and statistics branches. In Go specifically, explicit error return branches contribute to CC; extracting statistics-access and range-pruning logic into helper functions that return typed results reduces the number of `if err != nil` branches at the call site."
+  - question: "Is loki actively maintained?"
+    answer: "Based on this snapshot at commit `38fc69d`, yes — and actively in a way that makes structural complexity a near-term concern rather than a long-term one. All five top-risk functions were touched within the last day, with one commit against each in the last 30 days, and the repo shows zero functions in the debt quadrant, meaning there is no corner of the codebase where complex code has been quietly left alone. With 4,359 functions in the 'fire' quadrant — high complexity combined with recent activity — the maintenance signal is unambiguous: this is a large, actively developed project where structural debt is being accumulated at the same pace as features. That is not a criticism of the maintainers; it is a characteristic of fast-moving systems, and it is precisely why the five functions above deserve prioritized review now rather than later."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was produced by the Hotspots CLI, available at github.com/hotspots-dev/hotspots, against grafana/loki at commit `38fc69d`. After running `git checkout 38fc69d` in a local clone of the repo, execute `hotspots analyze . --mode snapshot --explain-patterns --force` to reproduce the same scores. The same command works on any local git repository without additional configuration — no `.hotspotsrc.json` is required for a first run."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk is the headline score in the table above — it combines structural complexity with recent commit frequency. Structural complexity is derived from cyclomatic complexity, maximum nesting depth, and fan-out — a proxy for how hard a function is to understand and how broadly a change to it can ripple. That structural score is then weighted by how often the function has been committed against recently, so a function with high complexity that is actively changing scores much higher than one that is equally complex but has been untouched for months. The practical implication is that a dormant complicated function carries lower near-term regression risk than a moderately complicated function being changed every few days — and this analysis surfaces the latter. All five functions in this report scored critical band with fire-quadrant status, meaning they are both structurally dense and were actively committed against in the last 24 hours, with risk scores ranging from 16.59 (`StatsCollectorMiddleware` and `getPredicateSelectivity`) to 18.58 (`newColumnCompatibilityPipeline`)."
+---
+
+Out of 12,445 functions analyzed in grafana/loki at commit `38fc69d`, 1,361 are in the critical band — and every one of the five highest-scoring functions sits in the 'fire' quadrant: high structural complexity combined with active changes in the last 24 hours. The top-ranked function, `newColumnCompatibilityPipeline`, carries a risk score of 18.58 and was last touched just 1 day ago, making it a live regression risk rather than a backlog item. I would start there, then move to `PushWithResolver` in the distributor, which at a fan-out of 84 is the single most broadly coupled function in this set.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `newColumnCompatibilityPipeline` | pkg/engine/internal/executor/compat.go | 18.6 | 10 | 8 | 52 |
+| `PushWithResolver` | pkg/distributor/distributor.go | 16.7 | 14 | 5 | 84 |
+| `forEachIndexPointer` | pkg/dataobj/metastore/iter.go | 16.6 | 13 | 6 | 22 |
+| `StatsCollectorMiddleware` | pkg/querier/queryrange/stats.go | 16.6 | 23 | 5 | 24 |
+| `getPredicateSelectivity` | pkg/dataobj/sections/logs/row_predicate_order.go | 16.6 | 28 | 5 | 16 |
+
+## Large Repo Analysis
+
+loki is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 10 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## By the numbers
+
+<BandChart fire='4359' debt='0' watch='8086' ok='0' />
+
+Every function in the repo falls into either 'fire' or 'watch' — there is no debt quadrant and no dormant quadrant. That means the structural complexity that exists in loki is uniformly co-located with active commit activity. There is nowhere to hide a complicated function and call it "low priority because nobody is touching it."
+
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,god_function:5,long_function:5,cyclic_hub:1' />
+
+All five antipattern categories appear in every top-five function simultaneously — complex branching, deep nesting, multiple exit paths, broad coupling, and excessive length. That is not a coincidence; it reflects a pattern where each of these functions has grown to absorb responsibilities that belong elsewhere.
+
+---
+
+## Top 5 hotspots
+
+### `newColumnCompatibilityPipeline` — compat.go
+
+<FunctionCard fn='newColumnCompatibilityPipeline' file='pkg/engine/internal/executor/compat.go' risk='18.58' band='critical' cc='10' nd='8' fo='52' touches='1' />
+
+This function lives in the query engine's executor layer and, judging by its name and the source excerpt, is responsible for building an Arrow record-batch transformation pipeline that resolves column name collisions between extracted and structured columns. The excerpt shows it doing quite a lot in one closure: reading a batch, early-returning on zero rows, scanning the schema to classify fields by column type, collecting duplicates, sorting them for determinism, then reconstructing the schema with `_extracted` suffixes. That is a multi-phase transformation encoded as a single anonymous function passed to `newGenericPipeline`.
+
+The headline structural concern here is not cyclomatic complexity (CC 10 is moderate) but max nesting depth of 8 — the deepest in this top-five set. ND 8 means there are control structures nested eight levels deep inside the closure, which is the kind of code where reasoning about what state you are in at any given point requires mentally tracking every enclosing condition simultaneously. Combined with a fan-out of 52 — 52 distinct functions called — this function touches a broad surface of the Arrow schema, semconv, and pipeline APIs. A change to any one of those 52 dependencies can produce unexpected behavior here, and with the function changed just 1 day ago, the blast radius is live.
+
+The exit-heavy pattern is visible in the excerpt: there are at least three early-return paths before the main transformation logic runs. Each exit path is a branch that test coverage must independently exercise. The god-function and long-function patterns are structural consequences of collapsing schema normalization, duplicate detection, and schema reconstruction into one place.
+
+**Recommendation:** Extract the three logical phases — field classification, duplicate detection, and schema reconstruction — into named helper functions. The anonymous closure passed to `newGenericPipeline` should orchestrate those helpers, not implement them inline. This alone would reduce the nesting depth materially and make each phase independently testable.
+
+---
+
+### `PushWithResolver` — distributor.go
+
+<FunctionCard fn='PushWithResolver' file='pkg/distributor/distributor.go' risk='16.71' band='critical' cc='14' nd='5' fo='84' touches='1' />
+
+This is the distributor's primary ingest path, accepting a push request and a stream resolver and orchestrating everything that happens to a log write before it leaves the distributor. The source excerpt shows it managing inflight byte tracking with atomic operations and a high-watermark metric, enforcing a max-inflight-bytes circuit breaker, extracting tenant ID, simulating latency via a deferred call, rejecting empty stream requests, and then building a list of `KeyedStream` values through a pair of nested closures — `maybeShardByRate` and `maybeShardStreams` — that encode time-sharding, rate-sharding, and backfill label logic.
+
+The fan-out of 84 is the single most striking number across all five hotspots. That means this function is a direct caller of 84 distinct functions, which is a god-function in the most literal sense: changing almost anything in the distributor's dependency graph has a plausible path through here. CC 14 is moderate but there are already 14 independent execution paths to test; combined with the nested closure structure, several of those paths exist inside lambdas that the outer function closes over, which makes static analysis and mocking harder.
+
+The file-level external signals show only 1 total commit and a single author in 90 days, with no bug-linked commits or reverts. That tells me this function has not attracted historical defect activity — but given its centrality to the write path and its fan-out of 84, that history could change quickly with any structural refactor nearby.
+
+**Recommendation:** The two closures `maybeShardByRate` and `maybeShardStreams` should be promoted to named methods on `Distributor`. This makes them independently testable and separates sharding policy from the request-processing orchestration. After that extraction, the fan-out of the outer function drops substantially and CC becomes more representative of actual branching rather than closure scope.
+
+---
+
+### `forEachIndexPointer` — iter.go
+
+<FunctionCard fn='forEachIndexPointer' file='pkg/dataobj/metastore/iter.go' risk='16.6' band='critical' cc='13' nd='6' fo='22' touches='1' />
+
+Sitting in the metastore's iterator layer, this function iterates over sections of a `dataobj.Object`, filters by tenant, opens each section, resolves three mandatory columns (path, min timestamp, max timestamp), applies a time-range predicate, and then reads batches of index pointers in a loop — invoking a caller-supplied callback for each row. The source excerpt makes the column-resolution phase explicit: it walks `sec.Columns()` in a loop with four independent `if` checks and a short-circuit break, then validates that none of the three required columns are nil before proceeding.
+
+CC 13 and ND 6 together indicate a function where the happy path is surrounded by a significant number of guard conditions, format checks, and EOF-detection branches. The excerpt shows at least two distinct error-handling patterns for `readErr` — distinguishing `io.EOF` from other errors inside the read loop — which is correct Go idiom but adds to the branch count that tests must cover. The exit-heavy pattern is real: there are early returns on tenant mismatch, on failed section open, on missing mandatory columns, and on non-EOF read errors, in addition to the normal loop termination.
+
+The god-function and long-function designations suggest this function has absorbed responsibility for tenant filtering, column discovery, predicate application, and callback dispatch — four concerns that could each be isolated.
+
+**Recommendation:** Extract the column-resolution loop into a `resolveColumns(sec) (path, minTs, maxTs, error)` helper. The tenant-filter check at the top of the section loop is already a candidate for a predicate function. These two extractions directly reduce ND and CC in the outer function and make the column-resolution logic independently testable against malformed sections.
+
+---
+
+### `StatsCollectorMiddleware` — stats.go
+
+<FunctionCard fn='StatsCollectorMiddleware' file='pkg/querier/queryrange/stats.go' risk='16.59' band='critical' cc='23' nd='5' fo='24' touches='1' />
+
+This middleware sits in the query range layer and intercepts every query response to collect statistics and classify the query type. The source excerpt shows a layered closure structure — a `MiddlewareFunc` wrapping a `HandlerFunc` — with the core logic being a large type switch over six distinct response types: `LokiResponse`, `LokiPromResponse`, `LokiSeriesResponse`, `LokiLabelNamesResponse`, `IndexStatsResponse`, `ShardsResponse`, `DetectedFieldsResponse`, and at least one more visible from the pattern. Each case extracts `responseStats`, `res`, `totalEntries`, and `queryType` differently, and the `LokiPromResponse` branch itself contains a nested type switch over `ResultTypeVector`, `ResultTypeMatrix`, and `ResultTypeScalar`.
+
+CC 23 is the second highest in this set — only `getPredicateSelectivity` is higher. Each case in the outer switch, and each sub-case in the inner switch, is an independent execution path. Two of the cases contain inline `TODO` comments acknowledging that `responseStats` is always nil in those paths, which is a signal that the function's contract is not fully implemented for all response types it must handle. That is worth noting for reviewers: the complexity is partly accounted for by placeholder branches that have not yet been fleshed out, and when they are, CC will climb further.
+
+**Recommendation:** Replace the monolithic type switch with a response-type handler interface or a map of typed handler functions. Each response type gets its own `collectStats` implementation, reducing the outer function to a dispatcher. This directly cuts CC by eliminating all but one branch from `StatsCollectorMiddleware` itself, and it creates natural insertion points for the two `TODO` implementations without touching the dispatcher logic.
+
+---
+
+### `getPredicateSelectivity` — row_predicate_order.go
+
+<FunctionCard fn='getPredicateSelectivity' file='pkg/dataobj/sections/logs/row_predicate_order.go' risk='16.59' band='critical' cc='28' nd='5' fo='16' touches='1' />
+
+This function computes a selectivity score for a query predicate — an estimate of what fraction of rows a given predicate will match — used to order predicates for efficient evaluation. The source excerpt shows a large type switch over predicate types (`EqualPredicate`, `InPredicate`, `GreaterThanPredicate`, and by the length of the function, likely additional types). Each case follows a similar structure: check for nil statistics, optionally apply min/max range pruning, and then calculate a selectivity estimate using cardinality and value-count statistics.
+
+CC 28 is the highest cyclomatic complexity in the top five. Every predicate type introduces at least two paths — one for missing statistics, one for present statistics — and the range-pruning branches add further splits. In the `InPredicate` case, the excerpt shows a `for` loop iterating over predicate values to count how many fall within the column's min-max range, which itself is guarded by nil checks and error checks on `UnmarshalBinary`. The deeply nested structure here is not gratuitous; it reflects genuine statistical estimation logic. But at CC 28, there are 28 paths that a test suite must cover to have confidence in the selectivity estimates — and incorrect selectivity estimates directly affect query performance by choosing a suboptimal predicate evaluation order.
+
+The function was touched 1 day ago, meaning this estimation logic is actively being developed. Any new predicate type added to the switch without a corresponding selectivity path silently falls through, which is a correctness risk that only testing or an exhaustiveness check can catch.
+
+**Recommendation:** Introduce a `PredicateSelectivityEstimator` interface with one implementation per predicate type. Each implementation encapsulates the statistics-access and range-pruning logic for that type. The outer `getPredicateSelectivity` function becomes a dispatcher, and the exhaustiveness of predicate coverage becomes visible at compile time if the switch is over a sealed type or enforced by a linter rule.
+
+---
+
+## What the context functions tell me
+
+The five `context_only` functions — `copy` in `stage.go`, `close` in `stream_selector.go`, `len` in `blockscache.go`, `append` in `column_builder.go`, and `int64` in `value.go` — all fall in the 'watch' quadrant with moderate band scores. They are active (each touched in the last day) but structurally simple, with cyclomatic complexity of 3 across the board. They do not warrant refactoring attention right now, but `len` in `blockscache.go` carries a `cyclic_hub` pattern flag, meaning it sits at a circular dependency point in the bloom shipper's cache layer. Worth keeping an eye on if that package grows.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `cyclic_hub` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/grafana/loki
+cd loki
+git checkout 38fc69d6ae5f578c1c0c5ca321c3b6048bdda05b
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 10
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
