@@ -1,0 +1,164 @@
+---
+title: "harbor's portal and core API carry the highest activity risk — 5 functions to address first"
+titleSeo: "goharbor/harbor code health: portal utils and API handlers lead refactoring priority in 2026"
+description: "Five critical-band functions spanning harbor's Angular portal utilities, member controller, garbage collector, and project API handler are all in the fire quadrant — structurally complex and actively changing right now."
+introContent: "Five functions across harbor's portal layer and Go backend are both structurally complex and actively changing right now, making them live regression risks rather than backlog cleanup items. The most striking finding is a deep-object-comparison utility in shared portal code sitting at an activity_risk of 17.55 alongside a CC-40 error handler — two frontend utilities quietly accumulating structural pressure while the backend's garbage collector and project API handler simultaneously fan out to 34 and 36 distinct callees respectively."
+pubDate: 2026-08-14
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "goharbor/harbor"
+commit: "a7745aad46f51b9b6af48de68eb53e4a5731c083"
+language: "go"
+hotspots_version: "1.34.0"
+analyzed_at: "2026-08-14T13:33:00Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 17.55
+topFunction: "isSameObject"
+topFile: "src/portal/src/app/shared/units/utils.ts"
+topPatterns: ["exit_heavy", "deeply_nested", "god_function", "long_function", "complex_branching"]
+patternCounts: {complex_branching: 1, deeply_nested: 4, exit_heavy: 5, hub_function: 1, god_function: 3, long_function: 3}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in harbor?"
+    answer: "An exit-heavy function has many early-return or early-exit paths scattered throughout its body rather than a single consolidated exit point. Each early return is its own execution path that must be reached and verified by a test — meaning exit-heavy functions impose a disproportionate test-coverage burden relative to their apparent size. In harbor's top five hotspots, all five functions carry the exit_heavy pattern: `errorHandler` alone has roughly forty independent paths ending in a return, each representing a distinct error contract the portal must honour. When a function like `ListProjects` uses early returns to short-circuit anonymous requests or zero-result queries, any change to the ordering of those guards can silently alter behaviour for users in a specific authentication state — exactly the kind of regression that is hard to catch in a code review without running the full test matrix."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The most effective technique is extract-method refactoring: identify each independent decision branch and move it into a named function with a clear contract. For a function like `errorHandler` with a cyclomatic complexity of 40, each error-shape strategy — OCI array, Docker client string, HTTP status code switch — becomes its own function, and the parent function becomes a short dispatcher. A CC above 15 is a reasonable threshold to start extracting; above 30 it warrants immediate attention, and above 40 — as `errorHandler` sits today — it should be treated as a blocking refactor before the next feature lands on top of it. A concrete first step: count the number of `if` guards or `case` clauses at the top level, give each one a name that describes what it is matching, and extract each into a function. That decomposition alone typically cuts the parent function's CC by 60–70% without changing any logic."
+  - question: "Is harbor actively maintained?"
+    answer: "Yes — the quadrant data is unambiguous on this point. Every one of the 8,268 analysed functions falls into either the fire or watch quadrant, meaning there is no dormant code by the structural-plus-activity measure used here. All five top hotspots were touched within the last 7 days: `isSameObject`, `errorHandler`, `Create`, and `sweep` each show days_since_changed of 7 and touches_30d of 1, while `ListProjects` was touched twice in 30 days and last changed 4 days ago, with 2 distinct authors active in the last 90 days. Active maintenance and structural complexity are not mutually exclusive — in fact, the fire quadrant exists precisely because complex functions are being changed frequently, which is when structural debt converts into regression risk. Harbor is clearly under active development; the implication is that the structural issues identified here are live concerns, not historical artefacts."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. This analysis was run against goharbor/harbor at commit `a7745aa` — check out that commit locally with `git checkout a7745aa` and then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without additional configuration, and the `--explain-patterns` flag produces the antipattern annotations visible in this post."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with recent commit frequency to produce a single prioritisation score called activity_risk. A function with very high structural complexity that has not been touched in two years scores lower than a structurally moderate function that is being changed every few days, because the frequently-changed function presents a higher near-term regression risk. In harbor's case, the top activity_risk of 17.55 for `isSameObject` reflects both its CC of 20 and nesting depth of 7 and the fact that it was modified within the last week. This framing is intentional: the goal is to surface where a bug is most likely to be introduced right now, not simply where the code looks the most complicated in the abstract."
+---
+
+Across 8,268 functions in goharbor/harbor at commit `a7745aa`, 554 are rated critical-band — and every single function in the repository sits in either the fire or watch quadrant, meaning nothing here is dormant. The top five hotspots all carry activity_risk scores between 16.24 and 17.55, and all five were touched within the last seven days. I would start with `errorHandler` in `shared.utils.ts` — a cyclomatic complexity of 40 in a single function that centralises all error-message translation for the portal frontend is a live regression risk every time that file is opened. Harbor is a cloud-native container image registry used at enterprise scale; with 2,652 functions in the fire quadrant simultaneously exhibiting structural complexity and recent commit activity, the risk of introducing regressions is distributed across a wide surface right now.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `isSameObject` | src/portal/src/app/shared/units/utils.ts | 17.5 | 20 | 7 | 6 |
+| `errorHandler` | src/portal/src/app/shared/units/shared.utils.ts | 17.1 | 40 | 2 | 4 |
+| `Create` | src/controller/member/controller.go | 16.3 | 8 | 7 | 17 |
+| `sweep` | src/jobservice/job/impl/gc/garbage_collection.go | 16.3 | 5 | 7 | 34 |
+| `ListProjects` | src/server/v2.0/handler/project.go | 16.2 | 8 | 6 | 36 |
+
+## Large Repo Analysis
+
+harbor is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Quadrant and pattern overview
+
+<BandChart fire='2652' debt='0' watch='5616' ok='0' />
+
+Every function in the repository falls into either fire or watch — there is no debt quadrant and no dormant quadrant. That means every structurally complex function is also actively changing. The absence of a debt quadrant removes the usual "I can defer this" argument: anything with high structural complexity is already accumulating risk in the current sprint.
+
+<PatternCloud patterns='exit_heavy:5,deeply_nested:4,god_function:3,long_function:3,complex_branching:1,hub_function:1' />
+
+The antipattern story across the top five is dominated by exit-heavy functions and deep nesting. Every function in this list has multiple early-return paths, and four of the five reach a max nesting depth that makes local reasoning genuinely difficult. Three are flagged as god functions — meaning they orchestrate enough distinct operations that a change to any one dependency can cascade through the function unpredictably.
+
+---
+
+### `isSameObject` — `utils.ts`
+
+<FunctionCard fn='isSameObject' file='src/portal/src/app/shared/units/utils.ts' risk='17.55' band='critical' cc='20' nd='7' fo='6' touches='1' />
+
+`isSameObject` is a recursive deep-equality function in the portal's shared utility layer. The source excerpt makes the structural pressure visible: it branches on null checks, array detection, object detection, and a deliberate loose-equality rule (the `eqeqeq` ESLint suppression comments signal that the equality semantics are intentionally non-standard and therefore easy to break). The recursion into both `isSameObject` and `isSameArrayValue` means any change to the branching logic has to be reasoned about across both call paths simultaneously.
+
+A cyclomatic complexity of 20 means 20 independent execution paths through this function — each one a required test case for full branch coverage. The max nesting depth of 7 is the steepest in the top five, appearing directly from the nested `if`/`for`/`if`/`if` structure visible in the excerpt. The `exit_heavy`, `deeply_nested`, and `complex_branching` patterns are all consistent with what the code shows.
+
+The file has a single author in the last 90 days and one commit in 30 days — it was touched 7 days ago. That single recent change to a function with 20 execution paths and no bug-linked commit history is not a red flag by itself, but it is a prompt to check whether the change was tested against the full branching matrix.
+
+**Recommendation:** Extract the null-guard preamble, the array-path, and the object-path into three named private helpers. That decomposition reduces the effective CC of each piece below 10, eliminates the depth-7 nesting, and makes the loose-equality special case explicit and isolated. If the portal uses Jest or Karma, adding parameterised tests covering the `null`/`undefined`/`array`/`object`/`primitive` combinations before the next change would give the single author a safety net.
+
+---
+
+### `errorHandler` — `shared.utils.ts`
+
+<FunctionCard fn='errorHandler' file='src/portal/src/app/shared/units/shared.utils.ts' risk='17.14' band='critical' cc='40' nd='2' fo='4' touches='1' />
+
+`errorHandler` is the portal's central error-message translation function — it converts whatever shape of error object the frontend receives into a human-readable string. At CC 40 it has the highest cyclomatic complexity in this top-five list. The source excerpt shows why: the function works through at least seven distinct structural guards in sequence, each handling a different error-object shape. There is an OCI-standard path, a JSON-parse-with-try-catch path, a raw string path, a nested `error.error.errors` array path, a Docker client delegation path via `errorHandlerForDockerClient`, a status-code-absent path, and a `switch` statement covering HTTP status codes 400 through 500 with a default. Each branch is a separate contract the function must honour.
+
+The nesting depth is only 2, which is unusually shallow for a CC-40 function — this is the hub_function pattern in practice. The branching is wide rather than deep: a long sequence of `if` guards, each exiting early, rather than a pyramid of nested conditions. The `exit_heavy` and `hub_function` flags are exactly what the code shows. Fan-out is 4, which is modest, but `errorHandlerForDockerClient` is called from at least two of those branches, coupling Docker-specific error handling into the same function that handles OCI errors and HTTP status codes.
+
+CC 40 means 40 test cases for full branch coverage. The file has one author in the last 90 days and was touched 7 days ago. No bug-linked commits and no reverts in the history is reassuring, but the function is a hub: every component in the portal that surfaces error messages routes through here. A subtle change to one branch — say, adjusting how `error.error.message` is unwrapped — could silently affect users who encounter Docker client errors without the author realising.
+
+**Recommendation:** Decompose by error-shape strategy. Each recognisable error shape (OCI standard, Docker client, HTTP status, raw string, unknown) should become its own named helper function. `errorHandler` then becomes a dispatcher that tries each strategy in order and returns the first match. This brings the dispatcher's CC down to the number of strategies (around 6–7) and makes each strategy independently testable. The try-catch around `JSON.parse` should be its own function so the swallowed exception is explicitly documented.
+
+---
+
+### `Create` — `controller.go`
+
+<FunctionCard fn='Create' file='src/controller/member/controller.go' risk='16.3' band='critical' cc='8' nd='7' fo='17' touches='1' />
+
+`Create` in the member controller handles adding a user or group to a project. The source excerpt shows it accepts five distinct ways of identifying the entity to add — by user ID, group ID, username, LDAP group DN, or group name — and each path involves one or more manager calls with their own error handling. In Go, explicit error returns mean every manager call produces an `if err != nil` branch, which stacks nesting depth rapidly. The max nesting depth of 7 is consistent with what the excerpt shows: the outermost condition guard leads into per-identity-type `else if` chains, each containing manager calls, nil checks, and LDAP lookup fallbacks, all nested inside the same function body.
+
+Fan-out of 17 is the most significant structural signal here. The function calls into `projectMgr`, `userManager`, `groupManager`, `usergroup.Mgr`, `auth.SearchAndOnBoardUser`, `auth.SearchAndOnBoardGroup`, and the errors package — plus the member manager call that presumably follows the excerpt. That breadth of coupling means a change to any of those seven-plus dependencies could require a corresponding change here. The `god_function` and `long_function` pattern flags reflect this: `Create` is doing project resolution, user resolution, group resolution, LDAP onboarding, and member record assembly all in one function body.
+
+With one commit in 30 days and a single author in the last 90 days, the function was touched 7 days ago. No bug-linked commits or reverts in the history, but the blast radius of a mistake here is significant — this is the function that gates who can access which project.
+
+**Recommendation:** Extract each identity-resolution path into its own function: `resolveUserMember`, `resolveGroupMember`, `resolveUserByName`, `resolveLDAPGroup`, `resolveGroupByName`. `Create` then becomes a dispatcher: validate the request, call the appropriate resolver, and assemble the member record. This reduces the effective CC and nesting depth of `Create` itself, reduces fan-out to roughly 3–5, and makes each resolution path independently testable in isolation — which matters given the LDAP onboarding path has its own retry-able external dependency.
+
+---
+
+### `sweep` — `garbage_collection.go`
+
+<FunctionCard fn='sweep' file='src/jobservice/job/impl/gc/garbage_collection.go' risk='16.29' band='critical' cc='5' nd='7' fo='34' touches='1' />
+
+`sweep` is the core deletion loop in harbor's garbage collection job. The source excerpt shows it partitions the blob delete set into chunks, spawns goroutines via `errgroup`, and inside each goroutine performs status marking, manifest deletion via the v2 registry API, retry logic, and failure marking — all nested inside the goroutine closure. Fan-out of 34 is the highest in this analysis and reflects that breadth: `gc.blobMgr.UpdateBlobStatus`, `gc.trashedArts`, `v2DeleteManifest`, `retry.Retry`, `ignoreNotFound`, `gc.markDeleteFailed`, `atomic.AddInt64`, `uuid.New`, `errgroup.Group`, `gc.shouldStop`, and more are all called within a single function.
+
+The cyclomatic complexity is only 5, which might seem reassuring, but the nesting depth of 7 tells the real story. The deep nesting comes from goroutine closure → blob loop → manifest check → `deleteTag` branch → retry wrapper → error handler → read-only mode check. Each layer adds a context that must be held in working memory simultaneously. In Go specifically, the goroutine closures inside the `errgroup` create concurrency risk that CC alone cannot capture: error returns from inside `g.Go` closures are collected by errgroup, but `continue` statements inside the loop skip individual blobs silently, and the `skippedBlob` flag (visible in the excerpt) implies some delete failures are tolerated while others are fatal. That distinction is buried seven levels deep.
+
+Fan-out of 34 means any interface change in any of those 34 callees could require a change here. The `god_function` and `long_function` flags are accurate: `sweep` is managing chunking, concurrency, status transitions, manifest deletion, retry policy, and error classification in one body. It was touched 7 days ago with one commit in 30 days. No bug-linked commits or reverts, but garbage collection is a destructive operation — silent blob-skipping bugs here would result in storage leaks or premature deletions without obvious error signals.
+
+**Recommendation:** Extract the per-blob deletion logic — the status mark, manifest delete, retry, and failure recording — into a dedicated `deleteBlob(ctx, blob)` function. `sweep` then manages only chunking, goroutine dispatch, and aggregation. This reduces fan-out in the outer function dramatically, makes the per-blob error contract explicit and testable in isolation, and surfaces the `skippedBlob` vs. fatal-error distinction at the right level of abstraction rather than embedded seven levels deep in a closure.
+
+---
+
+### `ListProjects` — `project.go`
+
+<FunctionCard fn='ListProjects' file='src/server/v2.0/handler/project.go' risk='16.24' band='critical' cc='8' nd='6' fo='36' touches='2' />
+
+`ListProjects` is the v2 API handler that serves project listing requests — and the most recently and most frequently changed function in this top five: 2 touches in the last 30 days, last touched 4 days ago. The external signals add context: `bug_fix_fraction` of 0.5 means half of the 2 commits in the file's history are tagged as bug fixes, and there are 2 distinct authors active in the last 90 days. That is not evidence of a defect in the current code, but it does suggest this function has warranted corrective attention before.
+
+Fan-out of 36 is the highest in the entire top five. The source excerpt shows why: `ListProjects` builds a query, resolves the security context, branches on whether the caller is authenticated, whether they are a system admin, whether they are a local user or robot account, whether the robot has cover-all permissions, and whether they are anonymous — each branch populating `query.Keywords` differently before delegating to `projectCtl.Count` and `projectCtl.List`. Each of those security-context type assertions (`local.SecurityContext`, `robotSec.SecurityContext`) couples the handler directly to the concrete security implementations.
+
+Max nesting depth of 6 comes from the `if secCtx ok → if authenticated → if not admin → if local → if public` chain visible in the excerpt. The `deeply_nested`, `exit_heavy`, `god_function`, and `long_function` patterns are all present. With CC 8, each branch adds a path that must be covered by tests — and given the RBAC implications of any mistake in project visibility filtering, every untested path here is a potential security surface.
+
+**Recommendation:** Extract the query-population logic for each security context type into dedicated functions: `applyMemberFilter`, `applyRobotFilter`, `applyAnonymousFilter`. `ListProjects` then becomes a short dispatcher: build the base query, identify the security context type, apply the appropriate filter, and delegate to the controller. This reduces nesting depth to 2–3, reduces fan-out in the handler itself, and isolates each access-control policy branch so it can be tested without constructing a full HTTP request context. Given the bug-fix history and dual authorship, I would treat this as the highest-priority item for a security-aware review this sprint.
+
+---
+
+## What the context functions tell us
+
+The `context_only` functions from the same commit — `clone` and `setPageSizeToLocalStorage` in `utils.ts`, `parseProjectNameOrID` in `handler/util.go`, `DefaultMgr` in `config.go`, and `string` in `cache/redis/util.go` — all sit in the watch quadrant with moderate activity_risk scores. They are active but low in structural complexity, and none warrants a refactoring section. Worth noting: three of the watch-quadrant functions are in the same `utils.ts` file as `isSameObject`, which means any PR touching that file is operating alongside the CC-20 recursive comparison function. Reviewers should be aware of that proximity.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 5 |
+| `deeply_nested` | 4 |
+| `god_function` | 3 |
+| `long_function` | 3 |
+| `complex_branching` | 1 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/goharbor/harbor
+cd harbor
+git checkout a7745aad46f51b9b6af48de68eb53e4a5731c083
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
