@@ -1,0 +1,180 @@
+---
+title: "ruff's AST checker carries the highest activity risk — 5 functions to address first"
+titleSeo: "astral-sh/ruff code health: AST expression checker leads refactoring priority with CC 552"
+description: "The `expression` function in ruff's AST analyzer scores cyclomatic complexity 552 — 34× the next meaningful threshold — and was touched twice in the last 30 days, making it a live regression risk in an otherwise well-structured codebase."
+introContent: "One function in astral-sh/ruff sits in a completely different complexity category from everything else on the list: `expression` in `analyze/expression.rs` has a cyclomatic complexity of 552, compared to 16 for the fifth-ranked function — a gap of 536 points that puts it in outlier territory by any measure. With 2 commits touching it in the last 30 days and an activity-weighted risk score of 26.01, this isn't a cleanup item sitting in the backlog; it's a live regression surface that is changing right now."
+pubDate: 2026-08-16
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "astral-sh/ruff"
+commit: "b96364cbf66e27df3c87beed5923f561f033b52c"
+language: "rust"
+hotspots_version: "1.34.0"
+analyzed_at: "2026-08-16T03:55:02Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 26.01
+topFunction: "expression"
+topFile: "crates/ruff_linter/src/checkers/ast/analyze/expression.rs"
+topPatterns: ["long_function", "god_function", "complex_branching", "hub_function", "exit_heavy"]
+patternCounts: {complex_branching: 3, deeply_nested: 2, god_function: 4, long_function: 5, cyclic_hub: 2, hub_function: 3, exit_heavy: 3}
+qaSection:
+  - question: "What is a god function and why does it matter in ruff?"
+    answer: "A god function is a single function that accumulates so many responsibilities that it becomes the mandatory pass-through for a large portion of the system's behaviour. In ruff, the clearest example is `expression` in `analyze/expression.rs`: it is the sole entry point for linting every expression node in a Python AST, and it calls 356 distinct other functions to do so. The practical problem is that any change to a rule implementation may require a corresponding guard or condition change inside this one function, and any change to the function itself can alter the behaviour of hundreds of lint rules simultaneously. That coupling makes the function extremely difficult to test in isolation and means a subtle logic error — an off-by-one in a version check, a missing rule guard — can produce incorrect lint output across a wide surface of Python code. Four of the five hotspots in this analysis carry the god function pattern."
+  - question: "How do I reduce cyclomatic complexity in Rust?"
+    answer: "The most effective technique in Rust is extract-method refactoring: pulling each branch arm or logical condition into a named free function or method that takes exactly the inputs it needs. A CC above 15 is a reasonable trigger for considering extraction; above 30, extraction should be treated as a maintenance requirement rather than an option; above 100, the function almost certainly contains multiple separable concerns that have never been formally separated. For `expression` in `analyze/expression.rs`, a concrete first step is to extract the body of each `match` arm into a dedicated function — for example, `analyze_subscript_expr(checker, subscript)` — which immediately partitions the 552 paths into smaller, independently compilable and testable units. In Rust this extraction is relatively clean because the borrow checker enforces that each extracted function receives only the data it actually needs, making hidden coupling visible at compile time."
+  - question: "Is ruff actively maintained?"
+    answer: "The data strongly supports active maintenance. All five top hotspots sit in the fire quadrant, meaning they combine high structural complexity with recent commit activity — and all five were last modified within the past day. The most actively touched function, `private_member_access`, received 2 commits in the last 30 days; `expression` also received 2 commits in the same window. Across 25,737 analyzed functions, 3,786 fall in the fire quadrant, with zero in the debt quadrant — meaning there are no highly complex functions that have been abandoned. Active development and structural complexity are not mutually exclusive: the god-function and hub-function patterns found here are a natural consequence of a linter that has grown to cover a very large rule surface, and the team is clearly continuing to extend it."
+  - question: "How do I reproduce this analysis?"
+    answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. This analysis was run against astral-sh/ruff at commit `b96364c`. To reproduce it, check out that commit with `git checkout b96364c`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from its cyclomatic complexity, maximum nesting depth, and fan-out — with how frequently it has been modified by recent commits. A function with extreme structural complexity that has not been touched in years presents lower near-term regression risk than one with moderate complexity that is being changed every few days, because the dormant function is unlikely to introduce new bugs until someone opens it again. In ruff's case, `expression` scores an activity-weighted risk of 26.01 precisely because it is both structurally extreme (CC 552, fan-out 356) and actively changing (2 commits in the last 30 days) — that combination means a developer is navigating 552 execution paths and 356 callees every time they add or modify a lint rule, right now, not in some hypothetical future. This prioritisation helps teams direct refactoring effort where it most reduces the probability of introducing defects in the current development cycle."
+---
+
+Across 25,737 functions analyzed at commit `b96364c`, ruff has 1,167 functions in the critical band — but one stands apart from all of them. The `expression` function in `crates/ruff_linter/src/checkers/ast/analyze/expression.rs` carries a cyclomatic complexity of 552, against a fifth-place value of 16: a 536-point gap that makes it a qualitatively different problem from the rest of this list. It sits in the fire quadrant — high structural complexity AND 2 commits in the last 30 days — giving it an activity-weighted risk score of 26.01. I'd start there, then work down through `statement`, `private_member_access`, `fmt`, and `os_stat`, all of which are also fire-quadrant functions touched within the last day.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `expression` | crates/ruff_linter/src/checkers/ast/analyze/expression.rs | 26.0 | 552 | 9 | 356 |
+| `statement` | crates/ruff_linter/src/checkers/ast/analyze/statement.rs | 26.0 | 437 | 5 | 281 |
+| `private_member_access` | crates/ruff_linter/src/rules/flake8_self/rules/private_member_access.rs | 22.8 | 29 | 3 | 10 |
+| `fmt` | crates/ruff_formatter/src/format_element/document.rs | 20.8 | 100 | 4 | 15 |
+| `os_stat` | crates/ruff_linter/src/rules/flake8_use_pathlib/rules/os_stat.rs | 20.4 | 16 | 2 | 9 |
+
+## Large Repo Analysis
+
+ruff is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Repository snapshot
+
+At commit `b96364c`, Hotspots analyzed 25,737 functions across the ruff codebase. Every function in the top five sits in the **fire** quadrant — high structural complexity combined with recent commit activity. There are no debt-quadrant entries in this list, which means these aren't dormant architectural problems: they are active regression surfaces.
+
+<BandChart fire='3786' debt='0' watch='21951' ok='0' caption='Quadrant distribution across 25,737 functions' />
+
+<PatternCloud patterns='long_function:5,god_function:4,complex_branching:3,hub_function:3,exit_heavy:3,deeply_nested:2,cyclic_hub:2' />
+
+The dominant antipattern story here is **god functions acting as hub functions**: large, branch-heavy dispatch points that call out to dozens or hundreds of other functions. Four of the five hotspots carry the `god_function` tag, and three carry `hub_function` alongside it — a combination that maximises blast radius when anything changes.
+
+---
+
+## Top 5 hotspots
+
+| Rank | Function | File | Risk | Band | CC | ND | FO | Touches (30d) |
+|------|----------|------|------|------|----|----|----|---------------|
+| 1 | `expression` | `analyze/expression.rs` | 26.01 | critical | 552 | 9 | 356 | 2 |
+| 2 | `statement` | `analyze/statement.rs` | 25.96 | critical | 437 | 5 | 281 | 1 |
+| 3 | `private_member_access` | `flake8_self/rules/private_member_access.rs` | 22.79 | critical | 29 | 3 | 10 | 2 |
+| 4 | `fmt` | `ruff_formatter/src/format_element/document.rs` | 20.80 | critical | 100 | 4 | 15 | 1 |
+| 5 | `os_stat` | `flake8_use_pathlib/rules/os_stat.rs` | 20.36 | critical | 16 | 2 | 9 | 1 |
+
+---
+
+### `expression` — `analyze/expression.rs`
+
+<FunctionCard fn='expression' file='crates/ruff_linter/src/checkers/ast/analyze/expression.rs' risk='26.01' band='critical' cc='552' nd='9' fo='356' touches='2' />
+
+This function is ruff's central dispatch point for linting every expression node in a Python AST. The source excerpt shows one enormous `match` over all expression variants — `Expr::Subscript`, type annotations, union expressions, and more — with each arm branching further on which lint rules are currently enabled. The result is a deeply nested conditional forest: CC 552 means 552 independent execution paths, each a potential bug surface and a required test case to cover fully. At nesting depth 9, the innermost conditions are extremely difficult to reason about in isolation.
+
+<MetricBar label='Cyclomatic Complexity' value='552' threshold='30' max='600' />
+<MetricBar label='Fan-Out (distinct callees)' value='356' threshold='15' max='400' />
+
+The fan-out of 356 is the other alarming number. This function calls 356 distinct other functions — rule implementations scattered across dozens of linting plugins — making it a true **cyclic hub**: changes to any one of those callees may require a corresponding guard or condition change here, and any change _here_ can affect the behaviour of hundreds of rules simultaneously. The `complex_branching`, `deeply_nested`, `god_function`, `long_function`, `cyclic_hub`, and `hub_function` patterns all fire together, the most concentrated antipattern stack in this analysis.
+
+One of the two recent commits to this file was tagged as a bug fix — half of its recent history. That's a small sample, but combined with the structural profile it's reason to take the live-risk framing seriously rather than treating this as cosmetic debt.
+
+The gap between this function (CC 552) and every other function on the list isn't just quantitative — it's categorical. CC 437 in `statement` is already an extreme outlier by any standard; CC 552 is in a different league entirely.
+
+**Recommendation:** The most tractable first step is extraction by expression variant. Each `match` arm currently contains its own rule-dispatch logic; pulling each arm into a dedicated `analyze_subscript_expr`, `analyze_name_expr`, etc. function would partition the 552 paths into smaller, independently testable units and reduce the fan-out to a set of well-named callees rather than 356 anonymous targets. This won't be a quick refactor, but even extracting the three or four largest arms would visibly reduce the CC. In Rust, each arm becomes a free function taking `&Checker` and the specific expression variant, with no lifetime or ownership complications introduced.
+
+---
+
+### `statement` — `analyze/statement.rs`
+
+<FunctionCard fn='statement' file='crates/ruff_linter/src/checkers/ast/analyze/statement.rs' risk='25.96' band='critical' cc='437' nd='5' fo='281' touches='1' />
+
+This is the statement-level counterpart to `expression`: a single function that matches on every `Stmt` variant and dispatches into the appropriate rule implementations. The source excerpt shows the same structural pattern — a large `match` where each arm destructures the AST node and fires a sequence of `checker.is_rule_enabled(Rule::...)` guards before calling the rule function. CC 437 across a single function means 437 paths through statement-level analysis alone.
+
+<MetricBar label='Cyclomatic Complexity' value='437' threshold='30' max='600' />
+
+Nesting depth here is lower at 5 (versus 9 in `expression`), which makes individual arms slightly more readable. But the fan-out of 281 is still extreme, and the same hub-function coupling problem applies: `statement` is a mandatory pass-through for every lint rule operating at the statement level. It was last changed 1 day ago — this is live, active code.
+
+The external signals are notably clean: none of its recent commits are tagged as bug fixes, and there are no reverts. The concern is purely structural. With only 1 author active in the last 90 days, there's concentrated ownership risk on top of the complexity.
+
+**Recommendation:** Apply the same extract-by-variant strategy as `expression`. The `Stmt::FunctionDef` arm alone, visible in the excerpt, already dispatches to a long sequence of FastAPI, pylint, and pycodestyle rules — that arm could become its own `analyze_function_def` function without any change to external behaviour. Prioritising the highest-cardinality arms first will yield the largest per-PR complexity reduction.
+
+---
+
+### `private_member_access` — `private_member_access.rs`
+
+<FunctionCard fn='private_member_access' file='crates/ruff_linter/src/rules/flake8_self/rules/private_member_access.rs' risk='22.79' band='critical' cc='29' nd='3' fo='10' touches='2' />
+
+This function implements the SLF001 rule — detecting inappropriate access to private members (those prefixed with `_`) from outside their defining class. Its CC of 29 is moderate by normal standards, but it lands in the critical band because it was touched twice in the last 30 days, the most frequent of any function on this list, and was last modified 1 day ago.
+
+The source shows a sequence of early-return guards — checking for annotations, dunder/sunder names, ignore-list membership, dunder operator methods, qualified name allowlists, `super()` calls, `self`/`cls`/`mcs` accesses, and class-internal access — before reaching the actual diagnostic emission. This `exit_heavy` pattern isn't inherently wrong for a rule implementation, but every new exception case adds both a path and an exit point, steadily pushing CC upward. The `god_function` and `long_function` tags reflect that this single function is carrying all the exception logic that might otherwise be distributed across smaller predicate helpers.
+
+Two authors have been active on this file in the last 90 days, and no bug-linked commits or reverts appear in the external signals, so the churn looks like active feature development rather than defect correction.
+
+**Recommendation:** Extract each early-return condition into a named predicate — something like `is_exempt_from_private_access_check(...)`. This won't dramatically reduce CC immediately, but it will make each exception case independently testable and lower the cognitive overhead of reading the main function. The context-only data also shows `is_same_class_instance` in the same file is actively changing (2 touches in 30 days, watch quadrant) — these two functions are co-evolving, and any refactoring should treat them as a unit.
+
+---
+
+### `fmt` — `document.rs`
+
+<FunctionCard fn='fmt' file='crates/ruff_formatter/src/format_element/document.rs' risk='20.80' band='critical' cc='100' nd='4' fo='15' touches='1' />
+
+This `fmt` implementation belongs to ruff's IR (intermediate representation) formatter layer. The source excerpt shows it iterating over a sequence of `FormatElement` values and matching on each variant to emit a serialised representation — handling text, tokens, source code slices, line modes, and tag-stack management within a single loop body. CC 100 at nesting depth 4 is a strong structural signal: 100 independent execution paths through what is nominally a `Display`-style formatting function.
+
+<MetricBar label='Cyclomatic Complexity' value='100' threshold='10' max='120' />
+
+The `complex_branching`, `exit_heavy`, `god_function`, `long_function`, and `hub_function` patterns all fire here. The tag-stack management inside the loop is worth particular attention: stateful iteration combined with complex branching across element types is exactly the kind of code where off-by-one errors and missed cases hide. The `#[allow(clippy::enum_glob_use)]` directive visible in the excerpt signals that the author suppressed a lint warning to keep the match arms readable — itself a hint at the match's scope.
+
+The external signals are clean: no bug-linked commits, no reverts. This looks like structural complexity that grew organically as the formatter IR gained more element types, rather than a history of defect-driven patches.
+
+**Recommendation:** The element-matching logic and the tag-stack management are two distinct concerns living in the same loop body. Separating the tag-stack handling into its own helper and routing each `FormatElement` variant to a dedicated `write_*` function would partition the 100 paths into clusters that can be reasoned about and tested in isolation. Flattening the inner `write_escaped` closure into a module-level function would be a low-risk starting point.
+
+---
+
+### `os_stat` — `os_stat.rs`
+
+<FunctionCard fn='os_stat' file='crates/ruff_linter/src/rules/flake8_use_pathlib/rules/os_stat.rs' risk='20.36' band='critical' cc='16' nd='2' fo='9' touches='1' />
+
+This function implements the PTH116 rule, which flags uses of `os.stat()` that could be replaced with `pathlib.Path.stat()` or `Path.lstat()`. The source excerpt shows a clear early-return pattern: the function first validates that the call is actually `os.stat`, then checks `dir_fd`, file descriptor arguments, and argument structure before constructing and emitting a diagnostic with an optional autofix.
+
+CC 16 is moderate — not alarming structurally on its own — but the external signals give this function the most pointed historical context on the list: its one recorded commit was a bug fix. That's a small sample, but it's a meaningful flag alongside the `exit_heavy` and `long_function` patterns: multiple early-return paths increase the chance that a novel argument combination or a new Python version target escapes test coverage and surfaces as a defect.
+
+The activity-weighted risk score of 20.36 placing this function in the critical band despite a CC of only 16 reflects recent commit activity amplifying even moderate structural complexity.
+
+**Recommendation:** The fix-construction logic at the bottom of the function — which slices argument ranges, resolves the `pathlib` import, and assembles the replacement string — is separable from the diagnostic-emission logic above it. Extracting the fix builder into a standalone function would make it independently testable and reduce the exit-path count in the main rule body. Given the 100% bug-fix commit history, adding property-based tests over the argument-combination space (especially around `follow_symlinks` and `dir_fd` interactions) is worth prioritising alongside any structural refactoring.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 5 |
+| `god_function` | 4 |
+| `complex_branching` | 3 |
+| `hub_function` | 3 |
+| `exit_heavy` | 3 |
+| `deeply_nested` | 2 |
+| `cyclic_hub` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/astral-sh/ruff
+cd ruff
+git checkout b96364cbf66e27df3c87beed5923f561f033b52c
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
