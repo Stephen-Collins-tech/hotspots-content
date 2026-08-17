@@ -1,5 +1,5 @@
 ---
-title: "bevyengine/bevy's rendering pipeline carries the highest activity risk — 5 functions to address first"
+title: "bevy: rendering pipeline carries the highest risk — 5 functions to fix first"
 titleSeo: "bevyengine/bevy code health: rendering and glTF loading lead refactoring priority in 2026"
 description: "Five critical-band functions in bevy's rendering, glTF, and tooling layers are both structurally complex and actively changing, with the top hotspot carrying a cyclomatic complexity of 83 and two commits in the last 30 days."
 introContent: "Five functions across bevy's rendering pipeline and asset loading layer are in the 'fire' quadrant right now — structurally complex and receiving commits this week. If your team is shipping rendering or glTF changes against commit 9f4ff89, at least three of these functions are live regression surfaces today."
@@ -31,7 +31,7 @@ qaSection:
     answer: "Activity-weighted risk multiplies structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — by recent commit frequency. A function with cyclomatic complexity 80 that has not been touched in two years scores considerably lower than one with cyclomatic complexity 20 that is committed to every week, because the dormant function poses lower near-term regression risk despite its structural complexity. The prioritization helps focus refactoring effort where it reduces the probability of bugs being introduced right now, rather than simply identifying code that looks complicated in the abstract. In bevy's top five hotspots, the scores range from 16.94 to 20.29 — all critical band — precisely because these functions combine genuine structural complexity with commits that landed in the last two to five days."
 ---
 
-Across 18,642 functions in bevyengine/bevy, 293 are in the critical band — and every single one of the top five hotspots sits in the 'fire' quadrant, meaning high structural complexity combined with active commit churn right now. The top-ranked function by activity-weighted risk, `derive_as_bind_group`, carries a cyclomatic complexity of 83 and was touched twice in the last 30 days, giving it an activity-weighted risk score of 19.43. I'd start there and with `load_gltf` before any rendering sprint this week — these aren't cleanup items deferred to a backlog. They are live regression risks on code that is changing today.
+Across 18,642 functions in bevyengine/bevy, 293 are in the critical band — and every single one of the top five hotspots sits in the 'fire' quadrant, meaning high structural complexity combined with active commit churn right now. The top-ranked function by activity-weighted risk, `load_gltf`, carries a cyclomatic complexity of 69 and a fan-out of 72 — the highest in this dataset — giving it a risk score of 20.29. I'd start there and with `derive_as_bind_group` before any rendering sprint this week — these aren't cleanup items deferred to a backlog. They are live regression risks on code that is changing today.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -63,22 +63,6 @@ Every top hotspot carries the god_function and long_function patterns simultaneo
 
 ---
 
-### `derive_as_bind_group` — as_bind_group.rs
-
-<FunctionCard fn='derive_as_bind_group' file='crates/bevy_render/macros/src/as_bind_group.rs' risk='19.43' band='critical' cc='83' nd='7' fo='21' touches='2' />
-
-This is a procedural macro that derives the `AsBindGroup` trait — the mechanism by which materials declare their GPU resource bindings at compile time. Its job is to parse struct-level and field-level attributes and emit the token stream that wires textures, samplers, uniform buffers, and bindless resource tables into the render pipeline. Based on the source excerpt, it does all of that in a single function body: reads manifest paths, accumulates binding state vectors for both bindless and non-bindless layouts, processes a first attribute pass to detect `#[bindless]` and its nested modifiers (`limit`, `index_table`, `range`, `binding`), then continues into per-field binding logic.
-
-A cyclomatic complexity of 83 means there are 83 independent paths through this macro. Each path corresponds to a different combination of attribute configurations a downstream user might write, and each is a required test case for correctness. The nesting depth of 7 — visible in the excerpt where `parse_nested_meta` calls contain inner `parse_nested_meta` calls — means a reviewer tracing any one path must hold seven levels of context simultaneously. The fan-out of 21 is moderate compared to some functions below, but in a procedural macro context it represents 21 distinct syn/quote API calls whose argument order and type expectations must all be correct for the emitted code to compile.
-
-<MetricBar label='Cyclomatic Complexity' value='83' threshold='30' max='100' />
-
-Two commits have touched this file in the last 30 days, the most recent four days ago. The file's historical commit mix shows about half of its commits have been bug-fix tagged, which is consistent with the complexity: when a macro this branchy gets a new attribute variant, adjacent paths regress.
-
-**Recommendation:** Extract each top-level attribute variant (`#[bindless]`, `#[bind_group_data]`, field-level binding types) into its own parsing function that returns a typed intermediate representation. The main derive function should then orchestrate those parsed results into code generation rather than interleaving parsing and emission. That decomposition alone would reduce CC by routing the 83 paths into smaller, independently testable units — and would make adding the next bindless modifier a matter of touching one self-contained parser rather than extending the monolith.
-
----
-
 ### `load_gltf` — mod.rs
 
 <FunctionCard fn='load_gltf' file='crates/bevy_gltf/src/loader/mod.rs' risk='20.29' band='critical' cc='69' nd='7' fo='72' touches='1' />
@@ -92,6 +76,22 @@ A fan-out of 72 is the highest in this dataset and the sharpest signal here. Thi
 The file was touched once in the last 30 days, five days ago, and its sole recent commit was a bug fix. With 72 call sites and 69 independent paths, even a targeted fix has a wide blast radius.
 
 **Recommendation:** The most tractable first cut is to extract animation loading — everything inside the `#[cfg(feature = "bevy_animation")]` blocks — into a dedicated `load_animations` function. That single extraction removes a large conditional subtree and meaningfully reduces the path count. After that, buffer loading, texture setup, and scene graph traversal are each natural boundaries for further extraction. The goal is for `load_gltf` to read as an orchestration function that delegates to named sub-loaders rather than implementing all of them inline.
+
+---
+
+### `derive_as_bind_group` — as_bind_group.rs
+
+<FunctionCard fn='derive_as_bind_group' file='crates/bevy_render/macros/src/as_bind_group.rs' risk='19.43' band='critical' cc='83' nd='7' fo='21' touches='2' />
+
+This is a procedural macro that derives the `AsBindGroup` trait — the mechanism by which materials declare their GPU resource bindings at compile time. Its job is to parse struct-level and field-level attributes and emit the token stream that wires textures, samplers, uniform buffers, and bindless resource tables into the render pipeline. Based on the source excerpt, it does all of that in a single function body: reads manifest paths, accumulates binding state vectors for both bindless and non-bindless layouts, processes a first attribute pass to detect `#[bindless]` and its nested modifiers (`limit`, `index_table`, `range`, `binding`), then continues into per-field binding logic.
+
+A cyclomatic complexity of 83 means there are 83 independent paths through this macro. Each path corresponds to a different combination of attribute configurations a downstream user might write, and each is a required test case for correctness. The nesting depth of 7 — visible in the excerpt where `parse_nested_meta` calls contain inner `parse_nested_meta` calls — means a reviewer tracing any one path must hold seven levels of context simultaneously. The fan-out of 21 is moderate compared to some functions below, but in a procedural macro context it represents 21 distinct syn/quote API calls whose argument order and type expectations must all be correct for the emitted code to compile.
+
+<MetricBar label='Cyclomatic Complexity' value='83' threshold='30' max='100' />
+
+Two commits have touched this file in the last 30 days, the most recent four days ago. The file's historical commit mix shows about half of its commits have been bug-fix tagged, which is consistent with the complexity: when a macro this branchy gets a new attribute variant, adjacent paths regress.
+
+**Recommendation:** Extract each top-level attribute variant (`#[bindless]`, `#[bind_group_data]`, field-level binding types) into its own parsing function that returns a typed intermediate representation. The main derive function should then orchestrate those parsed results into code generation rather than interleaving parsing and emission. That decomposition alone would reduce CC by routing the 83 paths into smaller, independently testable units — and would make adding the next bindless modifier a matter of touching one self-contained parser rather than extending the monolith.
 
 ---
 
@@ -131,7 +131,7 @@ This is a tooling file rather than a runtime crate, so its blast radius on bevy 
 
 `prepare_lights` is the render-world system that takes extracted light data and writes GPU buffers: it allocates shadow map textures, classifies point and directional lights, enforces per-view limits (with `Local<bool>` warning flags for when maximums are exceeded), manages `RetainedViewEntity` sets for live shadow mapping, and feeds the results into the clusterable object metadata and light meta resources. The signature spans three grouped parameter tuples and seven queries — a layout that reflects how much state this system must coordinate in a single pass.
 
-This function has the highest recent activity of any hotspot here: three commits in the last 30 days, the most recent two days ago, from three distinct authors in the last 90 days. That combination — CC 57, fan-out 46, three recent committers — is the definition of live regression risk. When multiple authors are independently modifying a function with 57 execution paths, the probability that any one change invalidates an assumption held by another is non-trivial. The bug_fix_fraction of 0.67 across its recent commits — two of three commits being bug fixes — reinforces that pattern.
+This function has the highest recent activity of any hotspot here: three commits in the last 30 days, the most recent two days ago, from three distinct authors in the last 90 days. That combination — CC 57, fan-out 46, three recent committers — is the definition of live regression risk. When multiple authors are independently modifying a function with 57 execution paths, the probability that any one change invalidates an assumption held by another is non-trivial. Two of its three recent commits are tagged as bug fixes, which reinforces that pattern.
 
 <MetricBar label='Cyclomatic Complexity' value='57' threshold='30' max='70' />
 
