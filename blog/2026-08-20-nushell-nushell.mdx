@@ -28,10 +28,10 @@ qaSection:
   - question: "How do I reproduce this analysis?"
     answer: "The Hotspots CLI is available at github.com/hotspots-dev/hotspots. To reproduce this exact snapshot, check out the analyzed commit with `git checkout 8e03210` inside a local clone of nushell/nushell, then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without additional configuration — no setup files are required to get a ranked hotspot report."
   - question: "What does activity-weighted risk mean?"
-    answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, maximum nesting depth, and fan-out — with how frequently it has been modified in recent commits. The underlying intuition is that a structurally complex function nobody is touching carries lower near-term regression risk than a moderately complex function being changed every few days, because the dormant function's bugs are already baked into production while the active one is generating new opportunities for mistakes. A function with cyclomatic complexity of 80 that hasn't been modified in two years scores much lower than one with cyclomatic complexity of 24 that was committed to six days ago and carries deep nesting and broad coupling — which is exactly why `parse_source` (activity_risk 32.95, cc 24, nd 6) ranks fifth despite having a lower cyclomatic complexity than the functions above it. This framing helps direct refactoring effort toward where it reduces the probability of introducing bugs right now, not just where the code looks complicated in the abstract."
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, maximum nesting depth, and fan-out — with how frequently it has been modified in recent commits. The underlying intuition is that a structurally complex function nobody is touching carries lower near-term regression risk than a moderately complex function being changed every few days, because the dormant function's bugs are already baked into production while the active one is generating new opportunities for mistakes. A function with cyclomatic complexity of 80 that hasn't been modified in two years scores much lower than one with cyclomatic complexity of 24 that was committed to six days ago and carries deep nesting and broad coupling — which is exactly why `parse_source` (risk score 32.95, cc 24, nd 6) ranks fifth despite having a lower cyclomatic complexity than the functions above it. This framing helps direct refactoring effort toward where it reduces the probability of introducing bugs right now, not just where the code looks complicated in the abstract."
 ---
 
-At commit `8e03210`, nushell's parser layer is where I'd focus first: all five top hotspots are fire-quadrant, combining high structural complexity with recent commit activity — live regression risk, not cleanup backlog. The highest-ranked function, `parse_internal_call`, carries an activity_risk of 37.15, was touched 6 days ago, and sits inside a codebase of 16,842 functions, 655 of which are critical-band. I'd start there precisely because the structural load is extreme and the code is still moving.
+At commit `8e03210`, nushell's parser layer is where I'd focus first: all five top hotspots are fire-quadrant, combining high structural complexity with recent commit activity — live regression risk, not cleanup backlog. The highest-ranked function, `parse_internal_call`, carries an activity-weighted risk score of 37.15, was touched 6 days ago, and sits inside a codebase of 16,842 functions, 655 of which are critical-band. I'd start there precisely because the structural load is extreme and the code is still moving.
 
 The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
@@ -51,7 +51,7 @@ nushell is a large repository. To stay within memory constraints, this analysis 
 
 ## The Parser Is Carrying All the Weight
 
-Of nushell's 16,842 tracked functions, 655 are critical band. What's striking is that the five highest activity_risk scores are all concentrated inside `crates/nu-parser` — and every one is fire-quadrant, meaning structurally heavy and actively modified. That's not a coincidence; the parser is nushell's most semantically complex subsystem, responsible for turning raw text into a typed AST that drives the entire shell's behavior.
+Of nushell's 16,842 tracked functions, 655 are critical band. What's striking is that the five highest activity-weighted risk scores are all concentrated inside `crates/nu-parser` — and every one is fire-quadrant, meaning structurally heavy and actively modified. That's not a coincidence; the parser is nushell's most semantically complex subsystem, responsible for turning raw text into a typed AST that drives the entire shell's behavior.
 
 <BandChart fire='1945' debt='0' watch='14897' ok='0' caption='Quadrant distribution across 16,842 functions — every high-complexity function is actively changing' />
 
@@ -72,7 +72,7 @@ The numbers tell the full story. A cyclomatic complexity of 74 means 74 independ
 <MetricBar label='Fan-Out' value='40' threshold='15' max='50' />
 <MetricBar label='Cyclomatic Complexity' value='74' threshold='10' max='120' />
 
-The function was touched 6 days ago and modified once in the last 30 days, but given its fan-out and branching density, even a single-commit change carries high regression surface. The file's `bug_fix_fraction` of 1.0 on its single recent commit means that touch was a bug fix, not a feature addition — worth noting as supporting context.
+The function was touched 6 days ago and modified once in the last 30 days, but given its fan-out and branching density, even a single-commit change carries high regression surface. That single recent commit was itself a bug fix, not a feature addition — worth noting as supporting context.
 
 My recommendation: start decomposing by separating the keyword special-casing logic (the `SpecialCmd` enum and its dispatch) into its own function, then extract the argument-matching loop into a named helper. Neither extraction requires changing the public API of `parse_internal_call`. The goal in the first pass isn't to eliminate the function — it's to bring the fan-out and CC down enough that each extracted piece can be tested and reasoned about independently.
 
@@ -89,7 +89,7 @@ This function has the highest cyclomatic complexity in the entire top-five list 
 <MetricBar label='Cyclomatic Complexity' value='115' threshold='10' max='120' />
 <MetricBar label='Max Nesting Depth' value='12' threshold='4' max='14' />
 
-It has been touched twice in the last 30 days by 2 authors, and the file's `bug_fix_fraction` is 0.5 — one of the two recent commits was a bug fix. Two authors actively modifying a function this complex within a 30-day window is a meaningful coordination risk in Rust: ownership and borrow-checker interactions inside deeply nested match arms are exactly where a change that compiles cleanly still introduces a logic regression.
+It has been touched twice in the last 30 days by 2 authors, and one of those two recent commits was a bug fix. Two authors actively modifying a function this complex within a 30-day window is a meaningful coordination risk in Rust: ownership and borrow-checker interactions inside deeply nested match arms are exactly where a change that compiles cleanly still introduces a logic regression.
 
 The deferred scope-insertion mechanism (noted in the comment referencing issue #15306) is a good example of why this function resists naive splitting — the invariant spans the entire parse loop. I'd start by extracting the `ParseMode` state machine transitions into a dedicated handler function, leaving the token iteration loop as a thinner orchestrator. That alone would flatten the nesting considerably without touching the deferred-insertion logic.
 
@@ -101,7 +101,7 @@ The deferred scope-insertion mechanism (noted in the comment referencing issue #
 
 `parse_value` is the central value-dispatch function in the expression parser. Given a span and an expected `SyntaxShape`, it routes to the appropriate leaf parser — numbers, floats, integers, durations, datetimes, filesizes, ranges, booleans, null literals, file paths, glob patterns, and more. The source excerpt shows two distinct dispatch layers: a first `match` on the leading byte (`$`, `(`, `{`, `[`, `r#`) for syntactically unambiguous prefixes, followed by a second `match` on the expected shape for everything else.
 
-The `cyclic_hub` and `hub_function` patterns flag what those two dispatch layers imply structurally: with a fan-out of 29, this function is a coordination point for nearly every leaf parser in the expression layer. A cyclomatic complexity of 83 across those branches means the test matrix is enormous — every `SyntaxShape` variant crossed with every leading-byte combination is a distinct path.
+Those two dispatch layers are a coordination point in their own right: with a fan-out of 29, this function calls into nearly every leaf parser in the expression layer. A cyclomatic complexity of 83 across those branches means the test matrix is enormous — every `SyntaxShape` variant crossed with every leading-byte combination is a distinct path.
 
 <MetricBar label='Fan-Out' value='29' threshold='15' max='50' />
 
