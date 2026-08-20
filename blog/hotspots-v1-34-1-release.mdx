@@ -1,0 +1,44 @@
+---
+title: "hotspots v1.34.1: a parser hang, a coupling regression, and a hedge I owed the docs"
+description: "Three small PRs, one release: a verified fix for a tree-sitter GLR hang, a corrected --skip-touch-metrics regression, and hedged --explain phrasing for unvalidated prescriptions."
+pubDate: 2026-08-20
+author: "Stephen Collins"
+tags: ["release-notes", "hotspots", "rust", "parsing", "performance"]
+ogImage: "/og.png"
+summary: "v1.34.1 ships a verified fix for a C-parser GLR hang, restores validated full-history directed-coupling behavior while actually respecting --skip-touch-metrics, and closes out a promotion-brief compliance gap in --explain phrasing."
+introContent: "Three merged PRs, one patch release: a real repro against llvm-project, a performance fix that almost undid a validated research finding, and a docs gap I caught before merging."
+---
+
+I released v1.34.1 of [hotspots](https://github.com/Stephen-Collins-tech/hotspots) yesterday, and none of the three PRs in it are big on their own. What's worth writing up is how each one changed shape between "opened" and "merged" — the C-parser fix went from unverified to tested against a real pathological corpus, the coupling fix went from "technically closes the issue" to "actually does what the issue asked," and the `--explain` wording change went from "matches the brief" to "matches the brief including the part I almost skipped."
+
+## PR #129 — the C-parser GLR hang
+
+`tree-sitter-c`'s GLR error recovery can blow up in time and memory when C++ syntax — templates, namespaces, `class` — leaks into a `.h` file that hotspots parses with the C grammar, because hotspots doesn't ship a C++ grammar. The fix itself was already in place going into this session: a 5-second cancellation timeout on the parse via `parse_with_options` and a `progress_callback`. What wasn't in place was proof it worked.
+
+The original PR admitted it had never been verified against a real pathological file — bisection on the original bug report was inconclusive. So I ran the actual repro: a shallow, sparse clone of `llvm-project`'s `clang/lib`, 574 headers of exactly the kind of C++-in-.h mess that triggers the GLR blowup. Analysis completed in about 17 minutes with peak RSS around 4.8GB, flat rather than climbing — no hang, no runaway memory growth.
+
+I also built a small synthetic zoo to guard the code path going forward: `cpp_syntax_leak.h` (repeated namespace/class/template blocks) and `deep_nested_chain.h` (a single 2000-deep chain of ambiguous tokens with no resync point), plus a Rust test asserting each parses within 8 seconds — comfortably inside the 5-second internal cap. I documented an honest caveat in the test file itself: neither fixture reproduces the original unbounded blowup, which nobody, including the original author, ever isolated. They're regression guards against future slowdowns in this path, not proof the original bug is covered.
+
+## PR #131 — the coupling walk that ate 580K commits
+
+This one surfaced by accident while I was reproducing #129 against `clang/lib`. Issue #130 reported that `directed_coupling`'s `git log` walk was costing roughly 580K commits' worth of time on `llvm-project` — *despite* `--skip-touch-metrics` being passed. The ask was simple: gate the walk behind that flag, or explain why it isn't gated.
+
+The PR as originally opened didn't do that. It capped `load_commits` at a hard 730-day window (`DC_HISTORY_CAP_DAYS`) via `--since`, applied unconditionally to both directed-coupling variants. Two problems. First, it sidestepped the actual ask — `--skip-touch-metrics` still didn't gate anything, the walk was just cheaper. Second, and worse, it silently overrode a validated research finding: F39, "Recency-windowed DC — holdout validated," promoted back in v1.23.0, which deliberately left the `dc_full` variant on full history for stable repos. The 730-day cap undid that design without going through this repo's research-promotion process.
+
+I rewrote the fix to gate `snapshot.populate_directed_coupling(...)` behind `!skip_touch_metrics` in `analyze.rs`, mirroring the existing pattern for touch metrics and branch recency, and reverted `coupling.rs` to its original unbounded walk — restoring F39's validated behavior for anyone not passing the flag. Re-running the `clang/lib` repro with `--skip-touch-metrics --skip-gate` dropped runtime from 16m39s to 8m8s, and the "directed coupling loading N commits" warning stopped appearing entirely — confirming the walk is now actually skipped, not just cheaper.
+
+## PR #132 — hedging what the data doesn't support
+
+This came out of promotion-tracker item META-12. Four independent research tests — F85, F87, and F97 observational, F103 interventional — found no outcome benefit from acting on the `authors_90d` (ownership) and `directed_coupling` (coupling) prescriptions in `--explain`, unlike the F84-validated `complexity_reduction` phrasing. The brief called for rewording those two from directive to descriptive language.
+
+The five string replacements matched the brief's table byte-for-byte, scoped correctly to `phrases.rs`. But acceptance criterion #4 required a one-line changelog entry linking back to META-12/F103, and it was missing — not flagged as a blocker, which this repo's CLAUDE.md explicitly requires when a criterion can't be met. I added the entry to `docs/REFERENCE.md`'s Scoring Changelog section, linking back to the META-12 and F103 writeups, verified build and tests, and merged.
+
+## Shipping it
+
+All three PRs squash-merged cleanly to `main` — no file overlap, no conflicts. I triggered the patch-level release workflow since everything here was a bug fix or a wording correction, not a feature. Three merges landing within seconds of each other did trigger a race in the separate changelog-update automation — two of three pushes hit non-fast-forward rejections — but a later run caught up, so nothing was lost. The rest of the pipeline (version bump, tag, macOS/Linux/Windows binaries, crates.io, npm, PyPI across three platforms, Homebrew) went out clean.
+
+[v1.34.1](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v1.34.1) is live now.
+
+```bash
+hotspots analyze . --format json
+```
