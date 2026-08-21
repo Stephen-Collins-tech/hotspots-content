@@ -1,0 +1,176 @@
+---
+title: "polars' query engine carries the highest activity risk — 5 functions to address first"
+titleSeo: "pola-rs/polars code health: query planner and IR lowering lead refactoring priority"
+description: "Five critical-band functions in polars' streaming physical planner, projection optimizer, and cloud I/O layer are both structurally complex and actively changing, making them live regression risks as of commit 9547025."
+introContent: "Five functions sitting at the intersection of extreme structural complexity and recent commit activity are the most urgent review targets in pola-rs/polars right now — not because the code is bad, but because the math on regression risk is hard to argue with when cyclomatic complexity reaches 215 and the function was touched two days ago."
+pubDate: 2026-08-21
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "pola-rs/polars"
+commit: "954702563262a7974014e59e79174ba018061914"
+language: "rust"
+hotspots_version: "1.34.1"
+analyzed_at: "2026-08-21T03:59:13Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 21.18
+topFunction: "lower_ir"
+topFile: "crates/polars-stream/src/physical_plan/lower_ir.rs"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 5, deeply_nested: 4, exit_heavy: 5, god_function: 5, long_function: 5, hub_function: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in polars?"
+    answer: "A god function is a single function that has accumulated so many responsibilities — branching logic, coordination of external calls, state management — that it becomes the mandatory path through which a disproportionate share of the system's behavior flows. In polars, all five top hotspots carry this pattern: `lower_ir` translates every logical IR node type, `to_alp_impl` converts every DSL plan variant, and `pushdown` handles projection optimization for every node in the query graph. The practical problem is blast radius: a change to a god function can alter behavior across many unrelated features simultaneously, and the function is too large and branchy for any single reviewer to hold in their head. With fan-out values between 18 and 69, a change to one of these functions can ripple into dozens of callees in ways that are not visible from the call site."
+  - question: "How do I reduce cyclomatic complexity in Rust?"
+    answer: "The most effective first step in Rust is extract-method refactoring: identify self-contained match arms or conditional blocks and move them to private module-level functions or trait method implementations. A cyclomatic complexity above 30 is a strong signal to start extracting; above 100 warrants treating it as a structural emergency. For `pushdown` specifically — at CC 215 — the inline macro definitions and nested helper functions are the lowest-friction extraction targets, since they already have implied boundaries. After extraction, each sub-function can carry its own borrow-checker constraints without competing with the parent function's lifetime scope, which often simplifies both the ownership model and the test surface simultaneously."
+  - question: "Is polars actively maintained?"
+    answer: "Yes — the quadrant distribution makes that clear. All 3,124 functions in the fire quadrant combine structural complexity with recent commit activity; there are zero functions in the 'debt' quadrant, which would indicate complex code that nobody is touching. The five top hotspots were each modified within the last two days: `lower_ir` and `pushdown` show days_since_changed of 2, `to_alp_impl` shows 0 days since last change — it was modified on the day of this analysis — and each of the five has at least 1 touch in the last 30 days. Active maintenance and high structural complexity are not mutually exclusive: the complexity in these functions is largely a consequence of the scope of what polars does, not of neglect."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone pola-rs/polars and check out commit `9547025`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` using the Hotspots CLI available at github.com/gethotspots/hotspots. The command works on any local git repository without additional configuration — it reads the git history and source structure directly from the working directory."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with how frequently the function has been changed in recent commits. A function with a cyclomatic complexity of 80 that has not been touched in two years carries much lower near-term regression risk than one with a cyclomatic complexity of 30 that is being modified every few days, because the dormant function is unlikely to introduce new bugs this sprint. The score prioritizes where refactoring effort reduces the probability of bugs being introduced right now, not just where the code looks complicated in the abstract. In polars' top five, the combination of complexity scores in the 65–215 range with commits landing in the last two days is what pushes these functions to the top of the review queue."
+---
+
+At commit 9547025, polars has 21,718 analyzed functions, 937 of which are in the critical band — and all five of the top hotspots are in the 'fire' quadrant, meaning they are both structurally complex and actively changing right now. The top-ranked function, `lower_ir`, carries an activity_risk of 21.18 against a cyclomatic complexity of 80 and was last modified two days ago. I would start there, but the projection-pushdown optimizer's `pushdown` function — with a cyclomatic complexity of 215 — is the single most structurally demanding function in this set and deserves immediate parallel attention.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `lower_ir` | crates/polars-stream/src/physical_plan/lower_ir.rs | 21.2 | 80 | 9 | 65 |
+| `f` | py-polars/src/polars/io/cloud/credential_provider/_builder.py | 21.0 | 65 | 4 | 18 |
+| `to_alp_impl` | crates/polars-plan/src/plans/conversion/dsl_to_ir/mod.rs | 19.7 | 74 | 6 | 62 |
+| `pushdown` | crates/polars-plan/src/plans/optimizer/projection_pushdown/mod.rs | 19.6 | 215 | 6 | 69 |
+| `_to_dataset_scan_impl` | py-polars/src/polars/io/iceberg/_dataset.py | 19.1 | 73 | 6 | 37 |
+
+## Large Repo Analysis
+
+polars is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+## Quadrant and Pattern Overview
+
+<BandChart fire='3124' debt='0' watch='18594' ok='0' />
+
+Every function Hotspots flagged lands in either 'fire' or 'watch' — there is no dormant structural debt in this snapshot. That means the complexity described below is not a backlog problem; it is a live shipping risk. The five critical functions share a consistent set of antipatterns:
+
+<PatternCloud patterns='complex_branching:5,exit_heavy:5,god_function:5,long_function:5,deeply_nested:4,hub_function:1' />
+
+All five are flagged as god functions and long functions, all five exhibit complex branching with multiple exit paths, and four of the five reach nesting depths that make local reasoning hard. The branching and exit-heavy patterns together mean that any given change exercises only a fraction of the possible execution paths — a direct burden on test coverage.
+
+---
+
+### `lower_ir` — lower_ir.rs
+
+<FunctionCard fn='lower_ir' file='crates/polars-stream/src/physical_plan/lower_ir.rs' risk='21.18' band='critical' cc='80' nd='9' fo='65' touches='1' />
+
+`lower_ir` converts logical intermediate representation (IR) nodes into physical streaming execution nodes. The excerpt shows it annotated with `#[recursive::recursive]`, using a local `lower_ir!` macro to simplify recursive self-calls, and dispatching across a large match on `IR` node variants — `SimpleProjection`, `Select`, `HStack`, `Slice`, and more. Each branch translates one logical plan variant into a physical streaming counterpart, threading mutable arenas, caches, and context across every call.
+
+The numbers are serious. A cyclomatic complexity of 80 means 80 independent execution paths, each a required test case and a potential regression surface. Max nesting depth of 9 pushes well past the threshold where a reader must mentally track multiple levels of control flow simultaneously — the excerpt alone shows a nested macro call inside a conditional inside a match arm, which is typical of how that depth accumulates here. Fan-out of 65 means this single function calls 65 distinct functions, so a change to any one of those callees can propagate effects back through `lower_ir` in non-obvious ways.
+
+The `#[allow(clippy::too_many_arguments)]` suppression on a 9-argument function signals that the function's surface area has grown beyond what the language's own linting considers healthy. In Rust, mutable references to multiple arenas passed alongside a context struct (`StreamingLowerIRContext`) mean ownership and aliasing rules are doing real work here — structural complexity that CC alone understates.
+
+The `pr_review_comment_density` of 5.0 on a file with only one total commit is the highest review comment density in the top five. That one commit attracted significant reviewer attention, consistent with a function this complex.
+
+**Recommendation:** The match arms over IR variants are the natural decomposition boundary. Each variant arm (`SimpleProjection`, `Select`, `HStack`, etc.) could become its own `lower_ir_<variant>` function, reducing the central function to a dispatch table and bringing CC to a manageable level. That also isolates test cases to individual IR node types rather than requiring end-to-end plan execution to exercise a single branch.
+
+---
+
+### `f` — _builder.py
+
+<FunctionCard fn='f' file='py-polars/src/polars/io/cloud/credential_provider/_builder.py' risk='21.02' band='critical' cc='65' nd='4' fo='18' touches='1' />
+
+`f` is a locally-defined closure inside the credential provider builder — the logic that decides which cloud credential provider to return, or whether to return one at all, based on the caller's `credential_provider` argument, the detected cloud scheme (Azure, AWS, GCP), and any `storage_options` key-value pairs. It is effectively the entire decision engine for auto-selecting credentials, compressed into a single function.
+
+A cyclomatic complexity of 65 in Python credential-selection logic means 65 paths through cloud provider detection, storage option parsing, and provider instantiation. The excerpt shows the function checking for `None`, for an already-initialized `CredentialProviderBuilder`, for the literal string `"auto"`, for a `DEFAULT_CREDENTIAL_PROVIDER`, for the path scheme, and then branching across Azure, AWS, and GCP cloud families — with nested iteration over `storage_options` keys inside the Azure branch. Every early return is a potential path a test suite never reaches.
+
+The `hub_function` pattern is the distinctive flag here. With fan-out of 18, this function imports and calls helpers from across the cloud I/O subsystem (`_first_scan_path`, `_get_path_scheme`, `_is_aws_cloud`, `_is_azure_cloud`, `_is_gcp_cloud`, plus provider constructors) — it is the hub through which all credential resolution flows. Adding a new cloud provider will require surgery here.
+
+The file-level `bug_fix_fraction` of 1.0 means every commit recorded against this file has been classified as a bug fix. With only one total commit that is a small sample, but the only recorded change to this file was corrective.
+
+**Recommendation:** The cloud-family branches (`_is_azure_cloud`, `_is_aws_cloud`, `_is_gcp_cloud`) are the clearest extraction targets — each deserves its own `_build_azure_credential`, `_build_aws_credential`, `_build_gcp_credential` function. That moves the per-provider `storage_options` parsing logic out of the hub and into testable, isolated units. The top-level `f` then becomes a scheme router with no embedded business logic of its own.
+
+---
+
+### `to_alp_impl` — mod.rs
+
+<FunctionCard fn='to_alp_impl' file='crates/polars-plan/src/plans/conversion/dsl_to_ir/mod.rs' risk='19.74' band='critical' cc='74' nd='6' fo='62' touches='2' />
+
+The doc comment in the excerpt is explicit: `to_alp_impl` converts a `DslPlan` (the user-facing DSL representation) into IR nodes, adding expressions and sub-plans to their respective arenas as it recurses, and returning the root node. It is the boundary function between what users write and what the optimizer sees — every scan, union, join, projection, and Python-backed plan must pass through it.
+
+`to_alp_impl` was touched twice in the last 30 days and last modified 0 days ago — it is changing today. A cyclomatic complexity of 74, nesting depth of 6, and fan-out of 62 on a function being actively edited is the definition of live regression risk. The excerpt shows a match over `DslPlan` variants that includes feature-gated arms (`#[cfg(feature = "python")]`), concurrent metadata fetching via `ASYNC.block_in_place_on`, and recursive self-calls through `to_alp_impl(lp, ctxt)`. The `#[recursive]` attribute indicates the recursion depth can be significant enough to require stack management.
+
+Two authors have touched this file in the last 90 days and the `pr_review_comment_density` is 1.5, suggesting active collaboration on a function where shared mental models are already difficult to maintain at CC 74.
+
+<MetricBar label='Cyclomatic Complexity' value='74' threshold='30' max='100' />
+
+**Recommendation:** The match arms over `DslPlan` variants are the natural split. Each plan type (`Scan`, `Union`, `PythonScan`, `Join`, etc.) should have its own `to_alp_<variant>` conversion function accepting the relevant fields and the `DslConversionContext`. The central `to_alp_impl` becomes a thin dispatcher. Feature-gated variants (`#[cfg(feature = "python")]`) are also easier to isolate in testing when they live in their own functions rather than inside the full conversion pipeline.
+
+---
+
+### `pushdown` — mod.rs
+
+<FunctionCard fn='pushdown' file='crates/polars-plan/src/plans/optimizer/projection_pushdown/mod.rs' risk='19.61' band='critical' cc='215' nd='6' fo='69' touches='2' />
+
+`pushdown` is the workhorse of the projection pushdown optimizer — the pass that eliminates unnecessary column reads by pushing column-selection requirements down toward the data sources. Based on the excerpt, it operates as a visitor method on IR nodes, using edge-based graph traversal to determine which projections can be safely pushed through each node type.
+
+Cyclomatic complexity of 215 is the figure that dominates this analysis. That is not a typo. 215 independent execution paths through a single function makes exhaustive path testing impractical — the combinatorics are prohibitive. The excerpt shows why: inline function definitions (`unlink_current_node`), multiple macros defined inside the function body (`unlink_current_node_and_return!`, `projected_names_subset_or_return!`, `pushdown_with_added_names`), and a large match or conditional chain over IR node types below the excerpt. Each macro invocation hides additional branching that contributes to the true complexity.
+
+<MetricBar label='Cyclomatic Complexity' value='215' threshold='30' max='250' />
+
+Fan-out of 69 is the highest in the top five. In Rust, that breadth of coupling means lifetime and borrow constraints from many different types must all be satisfied simultaneously — any refactoring must respect ownership rules that the current monolithic structure may be implicitly relying on.
+
+Two authors, two touches in 30 days, last modified two days ago. This is not structural debt waiting for a future sprint — it is a 215-CC function being actively changed right now.
+
+**Recommendation:** The inline macro definitions and nested function declarations are the first thing to extract — moving `unlink_current_node` and `pushdown_with_added_names` out of the function body and into module-level private functions immediately reduces local cognitive load and makes them independently testable. After that, the per-IR-node projection logic should be extracted into a `ProjectionPushdown` trait impl per node type, following the visitor pattern the code already hints at.
+
+---
+
+### `_to_dataset_scan_impl` — _dataset.py
+
+<FunctionCard fn='_to_dataset_scan_impl' file='py-polars/src/polars/io/iceberg/_dataset.py' risk='19.12' band='critical' cc='73' nd='6' fo='37' touches='1' />
+
+`_to_dataset_scan_impl` handles the translation of an Iceberg dataset scan request into either a native Iceberg scan or a PyIceberg-backed scan — or `None` if the scan cannot proceed. Based on the excerpt, it manages snapshot resolution, schema ID lookup, PyArrow predicate conversion, PyIceberg filter construction, and verbose diagnostic logging across all of those steps.
+
+A cyclomatic complexity of 73 in a function that touches snapshot metadata, schema versioning, and predicate pushdown against an external catalog reflects how many things can go differently: the snapshot may not exist, the schema ID may be missing, the PyArrow predicate may not convert, the `use_metadata_statistics` and `use_pyiceberg_filter` flags may be in any combination. The nesting depth of 6 is visible in the excerpt — conditionals nest inside snapshot existence checks, which nest inside predicate conversion logic, which nest inside verbosity guards.
+
+Fan-out of 37 means this function calls into PyIceberg internals, PyArrow schema conversion, Polars internal utilities, and logging helpers. PyIceberg in particular is an external dependency — any API change there requires changes here.
+
+The `bug_fix_fraction` of 1.0 on a single commit matches the pattern seen in the credential provider file: the only recorded change was corrective. Two separate I/O-layer files showing the same pattern is worth noting as historical context, even with a small sample.
+
+**Recommendation:** Snapshot resolution (ID → schema ID → `iceberg_schema`) and predicate conversion (`pyarrow_predicate` → `iceberg_table_filter`) are the clearest extraction candidates — each is a self-contained concern with its own failure modes. Pulling them into `_resolve_snapshot_schema` and `_build_iceberg_filter` functions reduces the main function's branching and makes the PyIceberg-specific logic easier to stub in tests.
+
+---
+
+## Context: Watch-Quadrant Signals
+
+Several context-only functions are worth a brief mention. `parse_into_list_of_expressions` in `py-polars/src/polars/_utils/parse/expr.py`, `rechunk` in `series.py`, and `len` in `group_by.py` are all 'watch'-quadrant — active in recent commits but low structural complexity, so none are refactoring priorities. Their activity means they share the same recent commit windows as the critical functions above. If a change to a critical function adjusts expression semantics, the expression-parsing and aggregation helpers are worth a cross-check.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `deeply_nested` | 4 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/pola-rs/polars
+cd polars
+git checkout 954702563262a7974014e59e79174ba018061914
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
