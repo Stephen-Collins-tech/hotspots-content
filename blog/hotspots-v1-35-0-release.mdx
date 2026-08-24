@@ -1,0 +1,56 @@
+---
+title: "hotspots v1.35.0: the CLI can finally tell you it's out of date"
+description: "A new hotspots upgrade command plus a passive, rate-limited notice on every run — check-and-report only, no self-install, no network call on most invocations."
+pubDate: 2026-08-24
+author: "Stephen Collins"
+tags: ["release-notes", "hotspots", "rust", "cli", "dx"]
+ogImage: "/og.png"
+summary: "v1.35.0 adds hotspots upgrade, a version-check subcommand that suggests the right install command for however you got the binary (cargo, npm, brew, or the curl installer), plus a passive once-a-day notice that prints before any other command output when you're behind."
+introContent: "One feature, three rounds of scope-narrowing: I asked for a self-updating CLI, got talked down to check-and-report, then had that check moved from an explicit subcommand to something that runs on every invocation without hammering GitHub's API."
+---
+
+I shipped [v1.35.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v1.35.0) of [hotspots](https://github.com/Stephen-Collins-tech/hotspots) today. Unlike the last release, this one wasn't a set of independent bug fixes — it was a single feature that went through three distinct rounds of scoping before I wrote a line of code, each one narrowing what "add an upgrade command" actually meant.
+
+## Round one: what does "upgrade" even mean here?
+
+hotspots ships through four different channels — crates.io, npm (with per-platform optional dependency packages), a Homebrew tap, and a raw `curl | sh` installer that hits GitHub Releases directly. A single binary has no reliable way to know which of those put it on disk, and "upgrade" could mean anything from "print a suggestion" to "download and replace yourself in place."
+
+I asked before writing anything: should this self-update the binary, or just check and tell you what to run? The answer was check-and-report — no self-replacement, no shelling out to install commands automatically. That constraint shaped everything downstream: no `self_update`-style binary-swap logic, no subprocess execution of the suggested command, just a version comparison and a printed string.
+
+## `hotspots upgrade`: detecting install method from the running path
+
+The subcommand itself is small. It hits GitHub's `/releases/latest` API, compares the tag against the compiled-in `HOTSPOTS_VERSION`, and prints one of three messages depending on whether you're behind, current, or somehow ahead of the latest tag (a real case — dirty git-describe builds report a version string with a commit suffix).
+
+The interesting part is `upgrade_command()`: rather than printing a generic "go check GitHub," it inspects `std::env::current_exe()` for path fragments — `/.cargo/`, `node_modules` or `.nvm`, `Cellar` or `homebrew` — and matches each against the actual upgrade command for that install method. Falls through to the curl installer otherwise, which I verified against `install.sh` is a genuine upgrade path, not a no-op reinstall — it detects your currently-installed version via `hotspots --version`, diffs against latest, and only proceeds on confirmation.
+
+I converted the original if/else chain to a `match` with guards and hoisted every URL and command string into named constants at the top of the file during review — small stuff, but it's the kind of thing that's cheap to fix before merge and annoying to fix after.
+
+## Round two: "this needs to run whenever hotspots is run"
+
+Once `hotspots upgrade` worked, the ask changed: the check shouldn't require remembering to run a specific subcommand — it should surface automatically. That's a materially bigger commitment than an opt-in subcommand, because it means every `hotspots analyze`, every `hotspots diff`, every CI invocation now potentially does something it wasn't doing before.
+
+I split this into two questions before touching code: does "runs whenever hotspots is run" mean auto-installing on every invocation, or just a passive notice? And separately — is the notice itself supposed to hit the network every single time? Both answers came back conservative: passive notice only, still no auto-install, and it needed to be cheap enough not to matter for CI runs or offline machines.
+
+## The cache: one real check per day, everything else reads a file
+
+The design that came out of that: `maybe_print_update_notice()` runs unconditionally at the top of `main()`, before command dispatch, for every subcommand except `upgrade` itself. It reads `~/.hotspots/update_check.json` — `{last_checked_unix, latest_version}` — and only makes a live GitHub request if more than 24 hours have passed. Every other invocation is a file read and a string comparison, nothing more.
+
+Failure modes matter more here than in the explicit subcommand, because this path is now unconditional. A `ureq::AgentBuilder` with a 1.5-second timeout bounds how long a hung network call can add to an offline or sandboxed run, and every fallible step — the HTTP request, the cache read, the cache write — degrades to silently doing nothing rather than propagating an error. The command you actually ran should never fail because a version check couldn't reach GitHub.
+
+The other constraint was stdout hygiene: hotspots supports `--format json` and other machine-readable outputs that scripts parse directly, so the notice prints to stderr only. I confirmed this by piping `--mode snapshot --format json` through separate stdout/stderr captures — the notice showed up in stderr, stdout stayed valid, parseable JSON with nothing prepended.
+
+## Verifying it end to end
+
+Before merging I built a throwaway `HOME` directory and drove the binary against it directly (not through `cargo run`, which pulls in the real `rustup`-managed `HOME` and breaks in unrelated ways): first run with an empty cache directory triggers a live check and writes the cache silently since the version was current; a second run immediately after reuses the cache with no network call; overwriting the cache with a fabricated newer version made the notice print as the literal first line of output, ahead of the config-loading and analysis progress lines that normally come first.
+
+## Shipping it
+
+Everything landed in one PR — seven files across the feature and its two review-driven refactors, four commits, all passing `cargo fmt`, `clippy -D warnings`, and the full workspace test suite (574 tests across the workspace) at each step. I triggered a minor bump, 1.34.1 → 1.35.0, since this adds new user-facing surface rather than fixing a bug. The pipeline built and published clean across every channel — Linux, macOS ARM64, and Windows binaries, crates.io, npm, three-platform PyPI wheels, the GitHub Release, and the Homebrew tap — with only cosmetic Node.js-20-deprecation warnings from GitHub's own runners along the way.
+
+Along the way I also found and fixed something unrelated: the `Update Changelog` workflow's `RELEASE_PAT` had gone stale, so the automated changelog commit for the previous release was silently failing checkout with `terminal prompts disabled`. Rotated the token, confirmed it needs `contents: read/write` scoped to this repo — nothing broader, since it only pushes commits and tags, never creates releases or touches other repos — and the changelog automation is healthy again as of this release.
+
+[v1.35.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v1.35.0) is live now.
+
+```bash
+hotspots upgrade
+```
