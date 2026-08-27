@@ -1,0 +1,165 @@
+---
+title: "eleventy's template and plugin layer carries the most structural debt"
+titleSeo: "eleventy technical debt: template engine and plugin functions lead refactoring priority in 11ty/eleventy"
+description: "All five of eleventy's top-ranked functions sit in the debt quadrant — structurally critical, untouched for months, and carrying complex branching, god-function coupling, and extreme fan-out that will bite the next developer who opens them."
+introContent: "Every one of eleventy's top five riskiest functions is structural debt, not active churn — the most dormant hasn't been touched in 203 days, yet it carries 18 independent execution paths through date-parsing logic that has historically attracted 21 bug-linked commits. That combination of complexity and stillness is what makes these functions a blast-radius risk rather than an emergency."
+pubDate: 2026-08-27
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: false
+repo: "11ty/eleventy"
+commit: "d2270d5dd9af5d5cb5bb0150731eb612bcbd635b"
+language: "javascript"
+hotspots_version: "1.35.1"
+analyzed_at: "2026-08-27T14:20:49Z"
+clone_depth: 100
+topRisk: 15.25
+topFunction: "_getInstance"
+topFile: "src/Engines/JavaScript.js"
+topPatterns: ["exit_heavy", "long_function", "complex_branching", "god_function", "deeply_nested"]
+patternCounts: {complex_branching: 3, deeply_nested: 1, exit_heavy: 5, god_function: 3, long_function: 4, stale_complex: 1}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in eleventy?"
+    answer: "An exit-heavy function has multiple return or throw statements scattered across its body rather than a single exit point at the end. Each exit path represents a distinct execution scenario that needs its own test case — if any path lacks coverage, bugs in that branch can go undetected. In eleventy's top five hotspots, all five functions are flagged as exit-heavy, and the worst offender, `getMappedDate`, has at least eight distinct exits corresponding to different date-source types. For a function that is also 203 days dormant and carries a cyclomatic complexity of 18, the risk is that a future change to one path inadvertently breaks another that nobody is currently exercising in tests."
+  - question: "How do I reduce fan-out in JavaScript?"
+    answer: "Fan-out is the count of distinct functions a given function directly calls — above 15 it's a strong signal that a function is doing too many things at once, and above 30 it's a serious refactoring target. The primary technique is extract-method: identify clusters of callees that serve a single sub-responsibility and move them into a named helper, reducing the host function's callee count by however many were extracted. For `RenderPlugin` in `src/Plugins/RenderPlugin.js`, which has a fan-out of 36, I would start by moving each engine's tag implementation into its own module file — that single step would likely cut the fan-out in half without changing any runtime behaviour. A concrete rule of thumb: fan-out above 15 warrants review, and above 25 warrants immediate decomposition."
+  - question: "Is eleventy actively maintained?"
+    answer: "The quadrant data suggests the project is in an active but structurally careful phase of development. Zero functions are in the fire quadrant, meaning no complex code is being rapidly changed right now. The functions that are being touched — `initServerInstance` in `src/Serve.js` (1 touch in the last 30 days, last changed 0 days ago) and `getFrontMatterParsingOptions` in `src/TemplateContent.js` (1 touch in the last 30 days, last changed 5 days ago) — are low-complexity watch-quadrant functions, which is a healthy pattern. The debt picture is real: `getMappedDate` hasn't been changed in 203 days despite carrying a cyclomatic complexity of 18, and `_getInstance` hasn't been touched in 82 days with a CC of 28. Active maintenance and accumulated structural debt are not mutually exclusive — eleventy shows both at once."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run against `11ty/eleventy` at commit `d2270d5` using the Hotspots CLI, available at github.com/hotspots-dev/hotspots. After checking out that commit with `git checkout d2270d5`, run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity — derived from cyclomatic complexity, nesting depth, and fan-out — with recent commit frequency, so that functions which are both hard to understand and actively changing score the highest. A function with extreme complexity that hasn't been touched in two years scores lower than one with moderate complexity touched ten times in the last month, because the dormant function carries less near-term regression risk even if it looks more alarming in isolation. In eleventy's case, all five top hotspots are in the debt quadrant with zero touches in the last 30 days, so their scores are driven entirely by structural complexity — which is exactly why framing them as a blast-radius risk rather than an emergency is the right call."
+---
+
+The most striking finding from this snapshot of `11ty/eleventy` at commit `d2270d5` is that the risk is entirely in the debt quadrant — zero functions are in fire, meaning nothing is actively regressing right now, but 187 functions are carrying high structural complexity with no recent attention. Across 1,655 total functions, 55 are rated critical. The function I would address first, `getMappedDate` in `src/Template.js`, hasn't been modified in 203 days and has collected 21 bug-linked commits at the file level over its lifetime — a combination that signals high blast radius the moment anyone has to touch it. I would treat all five top hotspots as overdue refactoring work to schedule before the next feature push into these files.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `_getInstance` | src/Engines/JavaScript.js | 15.3 | 28 | 6 | 4 |
+| `exec` | cmd.cjs | 15.1 | 27 | 4 | 27 |
+| `getMappedDate` | src/Template.js | 13.4 | 18 | 4 | 7 |
+| `I18nPlugin` | src/Plugins/I18nPlugin.js | 13.3 | 19 | 3 | 15 |
+| `RenderPlugin` | src/Plugins/RenderPlugin.js | 13.0 | 9 | 3 | 36 |
+
+## Quadrant Overview
+
+<BandChart fire='0' debt='187' watch='4' ok='1464' caption='Risk quadrant distribution across 1,655 functions' />
+
+The quadrant picture tells a clear story: eleventy is in a maintenance-stable state right now — no fire-quadrant functions means no complex code is being actively churned — but 187 functions have accumulated structural debt that will demand attention eventually. The four watch-quadrant functions (including `initServerInstance` in `src/Serve.js`, touched once in the last 30 days, and `getFrontMatterParsingOptions` in `src/TemplateContent.js`, last changed 5 days ago) show where active development is actually happening. Both are low-complexity functions, so the current development surface carries modest structural risk. The debt is sitting quietly in the template engine, CLI layer, and plugin subsystems.
+
+<PatternCloud patterns='exit_heavy:5,long_function:4,complex_branching:3,god_function:3,deeply_nested:1,stale_complex:1' />
+
+Exit-heavy and long-function patterns dominate — all five top hotspots have multiple return paths, and four are flagged as long functions. That combination makes test coverage hard: each exit path is a test case that may or may not exist, and long functions resist unit testing because there is no clean seam at which to inject or assert. The three god-function flags compound this: broad coupling means refactoring any one of these functions carries ripple risk into everything it calls.
+
+---
+
+### `_getInstance` — `src/Engines/JavaScript.js`
+
+<FunctionCard fn='_getInstance' file='src/Engines/JavaScript.js' risk='15.25' band='critical' cc='28' nd='6' fo='4' touches='0' />
+
+`_getInstance` normalises whatever a `.11ty.js` template file exports — a string, a Buffer, a Promise, a plain function, a class with prototype properties, or a class with instance properties — into a consistent object shape with `render` and optionally `data`. That sounds straightforward until you look at the numbers: a cyclomatic complexity of 28 means 28 independent execution paths, and a maximum nesting depth of 6 means some of those paths run six control-structure levels deep. It hasn't been touched in 82 days.
+
+The source makes the branching concrete. The function opens by checking whether the module is an ESM default export, then fans into a chain of type guards: string-or-Buffer-or-Promise gets one treatment, a function with prototype `data` or `render` gets another, a function whose `.toString()` starts with `"class "` gets a third path that instantiates the class just to inspect its instance properties (an approach the code itself flags with `// JavaScript lol`), and a plain object with `data` or `render` gets a fourth. Each top-level branch has its own internal conditionals around missing `render` or `data` properties — that's where the nesting depth accumulates. The `deeply_nested` and `exit_heavy` pattern flags are both earned here.
+
+The file-level signals add context without proving defect: 13 bug-linked commits and a 50% bug-fix fraction on this file over its history suggest the JavaScript template engine has needed correction before. The current function complexity is a structural explanation for why that might happen again.
+
+<MetricBar label='Cyclomatic Complexity' value='28' threshold='10' max='50' />
+<MetricBar label='Max Nesting Depth' value='6' threshold='4' max='10' />
+
+**Recommendation:** The class-detection path — the one that calls `mod.toString()` to infer whether a function is a class — is the most unusual and fragile branch. I would extract it into a named helper (`isClassTemplate` or similar) with its own tests. That alone would reduce CC by roughly a third and bring nesting depth down to a more manageable level. The broader target is splitting `_getInstance` into one function per module-export shape, each testable in isolation.
+
+---
+
+### `exec` — `cmd.cjs`
+
+<FunctionCard fn='exec' file='cmd.cjs' risk='15.09' band='critical' cc='27' nd='4' fo='27' touches='0' />
+
+`exec` is the CLI entry point — the function that fires when you run `npx @11ty/eleventy` from a terminal. It parses `process.argv`, sets up error handlers, conditionally enables the Node compile cache, then branches across every supported CLI mode: version, help, serve, watch, build, dry-run, incremental, and more. Its cyclomatic complexity of 27 reflects that decision tree. The fan-out of 27 is the number that concerns me most: this single function calls 27 distinct functions, making it a textbook god function. It hasn't been changed in 70 days.
+
+The source confirms the picture. Dynamic `import()` calls are scattered throughout — `DebugLogUtil`, `ErrorHandler`, `EnvironmentVars`, `ConsoleLogger`, `Core`, and more are all pulled in lazily at runtime. That's a reasonable pattern for a CLI startup function trying to stay fast, but it also means static analysis (including fan-out metrics) likely *undercounts* the true coupling here, since JavaScript dynamic imports can resolve to modules that aren't visible at parse time. The three process-level event handlers (`unhandledRejection`, `uncaughtException`, `rejectionHandled`) wired up inline add further exit-path complexity.
+
+The external signals are worth noting: two-thirds of the commits to this file (a bug-fix fraction of 0.67) have been bug fixes, across 6 total commits. That's a small sample, but it suggests this file has required correction more often than it has been extended.
+
+<MetricBar label='Fan-Out (distinct callees)' value='27' threshold='10' max='40' />
+
+**Recommendation:** The argument-parsing block and the mode-dispatch block are natural extraction targets. Pulling `parseArgv` into its own function and `dispatchMode` into another would cut `exec`'s CC by more than half and make each piece independently testable. The process-level event handler wiring could move into a dedicated `registerProcessHandlers` helper. None of these extractions change runtime behaviour — they just create seams for testing.
+
+---
+
+### `getMappedDate` — `src/Template.js`
+
+<FunctionCard fn='getMappedDate' file='src/Template.js' risk='13.45' band='critical' cc='18' nd='4' fo='7' touches='0' />
+
+This is the function I'd put at the top of any refactoring queue. `getMappedDate` resolves a template's date from whatever source is available: custom date-parsing callbacks registered by the user, a Luxon `DateTime` instance, a JavaScript `Date`, a special string keyword (`"git last modified"`, `"last modified"`, `"git created"`, `"created"`), an ISO string parsed by Luxon, or a date embedded in the file path by regex. It hasn't been touched in **203 days** — the longest dormancy in this top five — and it carries a cyclomatic complexity of 18.
+
+The `stale_complex` pattern flag is the right label. The function is marked `async` because two of its branches shell out to git for timestamps, introducing async error surfaces that don't exist in the other branches. The source shows the branching chain explicitly: it loops over custom date parsers first, then type-checks the result with a sequence of `instanceof` and `constructor.name` guards before falling through to string keyword matching. The `exit_heavy` and `long_function` patterns both apply, and the fan-out of 7 reflects calls to git utilities, Luxon conversion helpers, and file-stat methods across several branches.
+
+The file-level external signals here are the most significant of any function in this analysis: 21 bug-linked commits and a PR review comment density of 5.0 on `src/Template.js`. That's historical signal, not proof of a current defect, but it does suggest this file has attracted disproportionate scrutiny and correction over time. With 203 days of dormancy on a CC-18 function in a file with that history, the blast radius when someone next touches it is real.
+
+<MetricBar label='Cyclomatic Complexity' value='18' threshold='10' max='30' />
+<MetricBar label='Days Since Last Change' value='203' threshold='90' max='365' />
+
+**Recommendation:** Each date-source type should be its own named resolver — `resolveLuxonDate`, `resolveGitDate`, `resolveKeywordDate`, `resolveISODate` — with `getMappedDate` reduced to an orchestrator that tries each in sequence. That decomposition would bring CC down to single digits for each piece and make the git-async branches testable without exercising the full resolution chain.
+
+---
+
+### `I18nPlugin` — `src/Plugins/I18nPlugin.js`
+
+<FunctionCard fn='I18nPlugin' file='src/Plugins/I18nPlugin.js' risk='13.32' band='critical' cc='19' nd='3' fo='15' touches='0' />
+
+`I18nPlugin` is the registration function for eleventy's built-in internationalisation plugin. When a user adds it to their `.eleventy.js` config, this function wires up event listeners, global data, filters, and URL-normalisation logic for locale-aware URL generation. Its cyclomatic complexity of 19 and fan-out of 15 reflect that it's doing a lot of registration work in one place — a classic god-function shape. It hasn't been touched in 77 days.
+
+The source shows the structure: the function sets defaults, validates that `defaultLanguage` is provided, attaches listeners for `buildawesome.extensionmap` and `buildawesome.contentmap` build events (where the actual locale URL map is computed), registers computed global data for `page.lang`, and then defines and registers two filters (`locale_url` and `locale_links`) whose implementations reference the content maps captured in closure. Each filter has its own branching logic — the `locale_url` filter alone walks a `localeUrlsMap` looking for URL matches, then tries prepending the language code, then falls back to checking `urlToInputPath` — which is where the CC of 19 accumulates despite a nesting depth of only 3.
+
+The `exit_heavy`, `god_function`, and `long_function` pattern flags are all accurate. The file-level signal is notable in a different way: a bug-fix fraction of 1.0 across 2 commits means every commit to this file has been a bug fix. Small sample, but worth keeping in mind.
+
+<MetricBar label='Fan-Out (distinct callees)' value='15' threshold='10' max='25' />
+
+**Recommendation:** The filter implementations — particularly the `locale_url` logic — should be extracted into separately testable functions outside the plugin registration wrapper. Right now, testing the URL normalisation logic requires standing up an entire plugin registration context. Extracting `resolveLocaleUrl(url, langCode, contentMaps, options)` as a pure function would make it unit-testable and reduce `I18nPlugin`'s own complexity significantly.
+
+---
+
+### `RenderPlugin` — `src/Plugins/RenderPlugin.js`
+
+<FunctionCard fn='RenderPlugin' file='src/Plugins/RenderPlugin.js' risk='13.05' band='critical' cc='9' nd='3' fo='36' touches='0' />
+
+`RenderPlugin` is the registration function for eleventy's render shortcodes (`renderTemplate`, `renderFile`, `renderContent`), which allow templates to render other templates inline. Its cyclomatic complexity of 9 is the lowest of the five hotspots — moderate on its own — but its fan-out of 36 is the highest in this entire analysis. Thirty-six distinct callees means this function touches more of the codebase than any other function in the top five. It hasn't been changed in 76 days.
+
+The source explains where the fan-out comes from. `RenderPlugin` registers behaviour for three different template engines — Liquid, Nunjucks, and JavaScript — each requiring its own tag parser and renderer implementation defined inline within the plugin function. Each engine integration calls into that engine's specific API, into eleventy's own template rendering pipeline, and into configuration objects, accumulating callees rapidly. The Liquid tag implementation alone defines `parse` and `render` methods that call into `liquidEngine.parser`, `Liquid.parseArgumentsBuiltin`, `liquidEngine.evalValue`, and several context accessors. Multiply that across three engines and a filter registration, and 36 fan-out is the predictable result.
+
+In JavaScript, dynamic property access and async callback chains can further obscure dependencies that static analysis doesn't capture, so 36 may be a floor rather than a ceiling for the true coupling here. The god-function, long-function, and exit-heavy patterns are all present. At fan-out 36, a change to any of those 36 callee interfaces — an engine API update, a template config change, a context shape change — is a potential breakage site in this function.
+
+<MetricBar label='Fan-Out (distinct callees)' value='36' threshold='15' max='40' />
+
+**Recommendation:** Each engine's tag and filter implementation should live in its own module — `LiquidRenderTag.js`, `NunjucksRenderTag.js` — and be imported into `RenderPlugin` rather than defined inline. That decomposition would drop `RenderPlugin`'s fan-out dramatically and make each engine integration independently testable, leaving the function as a thin orchestrator composing smaller, verifiable pieces.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 5 |
+| `long_function` | 4 |
+| `complex_branching` | 3 |
+| `god_function` | 3 |
+| `deeply_nested` | 1 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/11ty/eleventy
+cd eleventy
+git checkout d2270d5dd9af5d5cb5bb0150731eb612bcbd635b
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
