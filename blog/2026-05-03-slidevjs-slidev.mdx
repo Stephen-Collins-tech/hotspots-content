@@ -1,50 +1,100 @@
 ---
-title: "slidevjs/slidev code health: no function data returned for commit 36f8a89"
-titleSeo: "slidevjs/slidev code health: what an empty hotspots scan tells you about analysis setup"
-description: "A hotspots scan of slidevjs/slidev at commit 36f8a89 returned zero functions, indicating a configuration or scoping issue rather than a clean bill of health."
-introContent: "A hotspots scan of slidev came back empty — not because the codebase is risk-free, but because the analysis needs a configuration fix before it can surface real findings."
+title: "Slidev's export and Vite loader paths lead a 5-function risk list to fix first"
+titleSeo: "Slidev code health: exportSlides and createSlidesLoader lead refactoring priority"
+description: "In slidevjs/slidev, the highest activity-weighted risk sits in the Vite slide loader and PDF/PNG export pipeline, where high fan-out functions are being actively modified."
+introContent: "I looked at where slidev's structural complexity and recent commit activity overlap, and the answer isn't the parser or the theming code — it's the Vite slide loader and the export pipeline, both getting touched right now while carrying fan-out counts north of 60."
 pubDate: 2026-05-03
 tags: ["oss", "typescript", "refactoring", "code-health"]
 draft: false
 repo: "slidevjs/slidev"
 commit: "36f8a896618cc243be82577b77658d7ed1b122a5"
 language: "typescript"
-hotspots_version: "1.16.1"
-analyzed_at: "2026-05-03T01:38:39Z"
-clone_depth: 25
-hybrid_touch_threshold: 5
+hotspots_version: "1.35.3"
+analyzed_at: "2026-08-30T12:11:25Z"
+clone_depth: 200
+topRisk: 16.89
+topFunction: "runJavaScript"
+topFile: "packages/client/setup/code-runners.ts"
+topPatterns: ["god_function", "complex_branching", "long_function", "deeply_nested", "exit_heavy"]
+patternCounts: {complex_branching: 8, deeply_nested: 7, exit_heavy: 7, god_function: 10, long_function: 8}
 qaSection:
-  - question: "What does an empty hotspots scan result mean for slidev?"
-    answer: "An empty result — zero total functions, no hotspots, no band data — means the analysis tool did not find any functions to score, most likely because the source paths were not correctly configured. It does not mean the codebase has no structural risk. Fixing the scan configuration and re-running against the correct package directories is the immediate next step."
-  - question: "How do I reduce cyclomatic complexity in TypeScript?"
-    answer: "Extract deeply nested conditional branches into named helper functions, and replace multi-branch switch or if-else chains with lookup tables or strategy objects to reduce the number of independent execution paths through a single function."
+  - question: "What is fan-out and why does it matter in slidev?"
+    answer: "Fan-out is the count of distinct functions a given function directly calls — it's a measure of coupling, not complexity of logic. In slidev, `exportSlides` has a fan-out of 118, the highest value in this dataset, meaning a single function in the export command orchestrates well over a hundred other functions across browser launch, page navigation, and format-specific rendering. High fan-out makes a function hard to test in isolation and means changes ripple across a wide dependency surface — `createSlidesLoader` at fan-out 61 shows the same pattern in the Vite loader layer."
+  - question: "How do I reduce fan-out in TypeScript?"
+    answer: "The core technique is extract-method: pull cohesive groups of calls out into named helper functions so the parent function delegates instead of orchestrating everything directly. For `exportSlides`, I'd start by separating the four format-specific branches (`genPagePdf`, `genPagePng`, `genPageMd`, `genPagePptx`) from the shared browser-lifecycle code (launch, context, page, progress) — that alone would cut the fan-out attributed to the top-level function roughly in half. As a rule of thumb, fan-out above 30 in a single function is a strong signal it's doing orchestration work that belongs in a dedicated coordinator or command object."
   - question: "Is slidev actively maintained?"
-    answer: "The current scan at commit 36f8a89 returned no function-level activity data, so no conclusion about maintenance activity can be drawn from this dataset. Re-running with a correct configuration will reveal which functions carry recent commit activity and which represent dormant structural debt."
+    answer: "Yes — four of the five top hotspots are in the fire quadrant, meaning they're both structurally complex and under active edit: `createSlidesLoader` and `parseTimeString` were each touched once in the last 30 days, `exportSlides` twice with a last-change date of zero days ago, and `render` in VClicks.ts twice. That said, `runJavaScript`, the single highest-risk function overall, hasn't been touched in 59 days, and dormant debt like `resolveShikiOptions` (113 days untouched, cyclomatic complexity 31) shows real structural complexity sitting alongside the active work. Active development and accumulated structural debt coexist here, which is normal for a project of this size rather than a red flag."
   - question: "How do I reproduce this analysis?"
-    answer: "Install the hotspots CLI, point it at the slidevjs/slidev repository at commit 36f8a89, ensure your `.hotspotsrc.json` includes the correct TypeScript source globs, and run `hotspots analyze` to generate the scored function list."
+    answer: "The hotspots CLI is open source on GitHub — I ran this against slidevjs/slidev at commit 36f8a89. After `git checkout 36f8a89`, run `hotspots analyze . --mode snapshot --explain-patterns --force`, and the same command works unmodified on any local git repository."
   - question: "What does activity-weighted risk mean?"
-    answer: "Complexity × recent commit frequency — functions that are hard to understand AND actively changing are the highest priority for refactoring."
+    answer: "Activity-weighted risk multiplies structural complexity — cyclomatic complexity times nesting depth times fan-out — by recent commit frequency, so functions that are both hard to understand and actively changing score highest. A function with high complexity that hasn't been touched in months, like `runJavaScript` at 59 days dormant, still scores high on structural grounds but carries less near-term regression risk than a function like `exportSlides`, which combines a fan-out of 118 with a change made on the day of this analysis. The goal is to point review effort at code where a mistake is most likely to land soon, not just where the code looks complicated in the abstract."
 ---
 
-The hotspots scan of slidevjs/slidev at commit 36f8a89 returned zero total functions and no ranked hotspots — a result that signals a tooling or configuration gap, not an absence of structural risk. Slidev is a TypeScript-based presentation framework with a monorepo structure spanning multiple packages; a properly scoped scan would be expected to surface functions across its compiler, parser, and server layers. Before drawing any conclusions about code health, the scan configuration needs to be verified to ensure the correct source paths are being targeted.
+Across 812 analyzed functions in slidevjs/slidev, 61 land in the critical band and 61 sit in the fire quadrant — complex code that's also under active edit. The top hotspot by raw score, `runJavaScript` in code-runners.ts, is structural debt sitting untouched for 59 days with a nesting depth of 8, but the more urgent story is right behind it: `createSlidesLoader` (activity-weighted risk 16.4, fan-out 61, touched once in the last 30 days) and `exportSlides` (activity-weighted risk 15.86, fan-out 118, touched twice, last changed the same day as this analysis). I'd start review there — a fan-out of 118 means a single function is coupled to more than a hundred other functions, and it's actively changing.
 
-## Scan Result
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
 
-No functions were returned by this run, so there are no activity-weighted hotspots to rank for this snapshot. Treat this as a failed or under-scoped analysis run: the next useful action is to re-run the scan with explicit TypeScript source globs rather than interpreting the empty table as a low-risk codebase.
+## Top 5 Hotspots
 
-## Large Repo Analysis
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `runJavaScript` | packages/client/setup/code-runners.ts | 16.9 | 10 | 8 | 23 |
+| `createSlidesLoader` | packages/slidev/node/vite/loaders.ts | 16.4 | 17 | 5 | 61 |
+| `exportSlides` | packages/slidev/node/commands/export.ts | 15.9 | 12 | 4 | 118 |
+| `parseTimeString` | packages/parser/src/timesplit/timestring.ts | 15.4 | 21 | 5 | 12 |
+| `render` | packages/client/builtin/VClicks.ts | 15.4 | 18 | 5 | 18 |
 
-slidev is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+<BandChart fire='61' debt='114' watch='83' ok='554' />
 
-## Codemod / Tooling Files in Results
+<PatternCloud patterns='god_function:10,complex_branching:8,long_function:8,deeply_nested:7,exit_heavy:7' />
 
-No functions were returned by the scan, so no vendored or third-party files can be identified or excluded at this time. Once the scan is producing results, common exclusion candidates in a Vite/Node monorepo like slidev include compiled output and bundled assets. A starting exclude pattern would be `{ "exclude": ["**/dist/**", "**/node_modules/**", "**/*.min.js"] }` added to `.hotspotsrc.json` in the repository root.
+The quadrant split is worth sitting with before getting into individual functions: 61 fire, 114 debt, 83 watch, 554 ok. Structural debt (high complexity, low recent activity) outnumbers live fire by almost 2 to 1. Most of slidev's risk is dormant rather than actively churning — but the five functions below are the exceptions that matter most right now, plus one piece of debt that deserves attention before it's next touched.
 
-## Key Takeaways
+### `runJavaScript` — packages/client/setup/code-runners.ts
 
-- A scan returning zero functions at commit 36f8a89 means the hotspots CLI did not locate any analyzable TypeScript functions — verify that the `include` paths in `.hotspotsrc.json` point to the correct source directories (e.g., `packages/*/src`).
-- Before investing in refactoring work, re-run the scan with explicit source globs to confirm coverage across slidev's core packages such as the parser, compiler, and dev-server layers.
-- Once a valid scan is produced, prioritize any functions that appear in the 'fire' quadrant — those combining high cyclomatic complexity with high recent commit frequency represent live regression risk, not just backlog cleanup.
+<FunctionCard fn='runJavaScript' file='packages/client/setup/code-runners.ts' risk='16.89' band='critical' cc='10' nd='8' fo='23' touches='0' />
+
+This is the top-ranked hotspot in the whole repo, and it's a debt-quadrant function — zero touches in 30 days, last changed 59 days ago. The nesting depth of 8 is the standout number: the source shows a `new Function(...)` construction wrapping user-authored code in a try/catch, with a nested `printObject`/`objectToText` pair handling type-by-type serialization (strings, Errors, Arrays, Sets, Maps, RegExp, plain objects) via a long `else if` chain. That chain is where the nesting stacks up — each branch adds another indent level, and `objectToText` itself shows up separately in the context data at fan-out 13 and nesting depth 8 with zero touches in 113 days. Because this function isn't being edited right now, the risk isn't regression — it's blast radius the next time someone has to touch the sandboxed code runner. I'd extract the type-dispatch logic in `objectToText` into a lookup table keyed by constructor before adding any new supported type.
+
+### `createSlidesLoader` — packages/slidev/node/vite/loaders.ts
+
+<FunctionCard fn='createSlidesLoader' file='packages/slidev/node/vite/loaders.ts' risk='16.4' band='critical' cc='17' nd='5' fo='61' touches='1' />
+
+This is the fire-quadrant function I'd prioritize first in practice, because it's both complex and live. Fan-out of 61 means this single Vite plugin factory calls out to 61 distinct functions — it owns HMR watcher wiring, a middleware handler that branches on GET vs POST for the slide-request path, frontmatter merging, and Markdown-It setup with conditional KaTeX registration. The source excerpt shows a middleware function with nested method checks and JSON body parsing sitting inside the returned plugin object — that's the cyclomatic complexity of 17 concentrated in request routing logic. One touch in the last 30 days plus a fan-out this high means any change here has to be reasoned about against a wide surface. The related `handleHotUpdate` function in the same file (fan-out 28, cyclomatic complexity 29, but zero touches in 113 days) is debt sitting next to this fire — worth reviewing together since they likely share HMR state.
+
+### `exportSlides` — packages/slidev/node/commands/export.ts
+
+<FunctionCard fn='exportSlides' file='packages/slidev/node/commands/export.ts' risk='15.86' band='critical' cc='12' nd='4' fo='118' touches='2' />
+
+Fan-out of 118 is the highest number in this entire dataset, and this function was last changed the same day as this snapshot. The source shows why: a long parameter list (20 named options with defaults) drives an `if/else if` chain across four export formats — pdf, png, md, pptx — each delegating to a `genPagePdf`/`genPagePng`/`genPageMd`/`genPagePptx` helper, plus an inner `go(no, clicks)` closure that builds Playwright navigation URLs with query params for range, clicks, and print mode. That's a god-function pattern by name: one entry point orchestrating browser launch, page navigation, and format-specific rendering. Two touches in 30 days on a function this coupled is the definition of live regression risk — a change to one export format's branch can affect the shared `browser`/`page`/`progress` lifecycle used by all four. I'd split the per-format generation (`genPagePdf`, `genPagePng`, `genPageMd`, `genPagePptx`) out from the browser lifecycle management so the format switch isn't sharing a function body with resource setup/teardown.
+
+### `parseTimeString` — packages/parser/src/timesplit/timestring.ts
+
+<FunctionCard fn='parseTimeString' file='packages/parser/src/timesplit/timestring.ts' risk='15.41' band='critical' cc='21' nd='5' fo='12' touches='1' />
+
+Cyclomatic complexity of 21 is the highest raw complexity among the fire-quadrant functions here, and it comes from parsing timestamps in multiple formats — numeric seconds, `h:m:s` colon notation with a length-based branch (3 parts, 2 parts, 1 part, else throw), and a unit-suffix format resolved through an 18-entry `unitMap` (s/sec/secs, m/min/mins, h/hr/hrs/hour/hours, day/days, week/weeks, month/months, year/years) walked via regex `matchAll`. Each format branch also throws its own `TypeError` on invalid input, which is where the exit-heavy pattern comes from — multiple distinct failure paths that all need test coverage. One touch in the last 30 days on a function this branchy in a parsing library is worth watching closely, since silent unit-mapping mistakes here would misplace slide timing rather than crash loudly. I'd pull the colon-notation parsing and the unit-suffix parsing into two separate functions — they don't share logic beyond the final `seconds` accumulation.
+
+### `render` — packages/client/builtin/VClicks.ts
+
+<FunctionCard fn='render' file='packages/client/builtin/VClicks.ts' risk='15.4' band='critical' cc='18' nd='5' fo='18' touches='2' />
+
+This is Vue render-function logic for the `v-click` building block, and the source shows recursive helpers (`openAllTopLevelSlots`, `mapSubList`, `mapChildren`) walking VNode trees with depth tracking and index bookkeeping (`globalIdx`, `execIdx`) to assign click-reveal order across nested lists. Nesting depth of 5 combined with two mutually recursive closures (`mapSubList` calling `mapChildren` and vice versa, per the `no-use-before-define` eslint-disable comment) is a legitimate source of subtle bugs in TypeScript — recursive VNode traversal with running counters is hard to unit test in isolation because the state threads through every call. Two touches in 30 days plus cyclomatic complexity of 18 makes this a function I'd write characterization tests for before the next feature request touches click-animation behavior.
+
+One function just outside the top five deserves a mention for contrast: `handler` in `packages/slidev/node/vite/contextInjection.ts` sits at an activity-weighted risk of 15.29, cyclomatic complexity 19, nesting depth 5, and is also fire-quadrant with one touch in 30 days — it's effectively tied with `parseTimeString` and belongs in the same review pass even though it didn't make the top five cutoff. And `resolveShikiOptions` in shiki-options.ts is worth flagging as the highest raw complexity in the debt quadrant — cyclomatic complexity 31, nesting depth 7, 113 days since last touched — dormant now but expensive whenever syntax highlighting options next need to change.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 10 |
+| `complex_branching` | 8 |
+| `long_function` | 8 |
+| `deeply_nested` | 7 |
+| `exit_heavy` | 7 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
 
 ## Reproduce This Analysis
 
@@ -52,9 +102,9 @@ No functions were returned by the scan, so no vendored or third-party files can 
 git clone https://github.com/slidevjs/slidev
 cd slidev
 git checkout 36f8a896618cc243be82577b77658d7ed1b122a5
-hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+hotspots analyze . --mode snapshot --explain-patterns --force
 ```
 
 To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
 
-_Hotspots highlights structural and activity risk — not "bad code." Findings are a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
