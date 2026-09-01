@@ -1,0 +1,110 @@
+---
+title: "Starship's git status parser has sat untouched for 31 days at CC 47 — 5 debt hotspots to fix first"
+titleSeo: "Starship code health: git_status.rs complexity leads refactoring priority list"
+description: "A repository scan of starship/starship finds five critical-band functions, all in the debt quadrant, with get_repo_status in src/modules/git_status.rs carrying cyclomatic complexity 47 and 31 days of inactivity."
+introContent: "I looked at where starship's structural complexity is piling up untouched, and the answer is its git integration layer — a 47-path function nobody has needed to touch in a month, which is exactly when it becomes dangerous."
+pubDate: 2026-09-01
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "starship/starship"
+commit: "cc763c5557a235530ff00c8917169bb77aac1e24"
+language: "rust"
+hotspots_version: "1.35.4"
+analyzed_at: "2026-09-01T00:34:36Z"
+clone_depth: 200
+topRisk: 15.65
+topFunction: "get_repo_status"
+topFile: "src/modules/git_status.rs"
+topPatterns: ["long_function", "exit_heavy", "god_function", "complex_branching", "deeply_nested"]
+patternCounts: {long_function: 5, complex_branching: 1, deeply_nested: 1, exit_heavy: 4, god_function: 4}
+qaSection:
+  - question: "What is exit_heavy and why does it matter in starship?"
+    answer: "Exit-heavy describes a function with an unusually high number of return or early-exit points relative to its size — multiple `return None`, `?` operators, or early `return` statements scattered through the body. In starship, 4 of the 5 top hotspots carry this pattern, including `get_repo_status` and `shell_command`, both of which use chained `?` operators and conditional early returns tied to git state or subprocess failures. Each exit point is a distinct path that needs its own test case, so a function with many of them is harder to cover completely and easier to leave a gap in. It also makes local reasoning harder — you can't tell what a function guarantees on success without tracing every branch that might bail out early."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The most direct technique is extract-method: pull a self-contained branch of logic — like the reftables-specific branch resolution inside `module` in git_branch.rs — into its own named function with a clear return type. As a rule of thumb, cyclomatic complexity above 15 is worth flagging for a split, and above 30 (as seen in `get_repo_status` at 47 and `main` at 48) warrants immediate attention rather than waiting for the next refactor cycle. A concrete first step for `get_repo_status` specifically: separate the git-executable status path from the gix-native status path into two functions joined by a shared match, which would likely cut its complexity by close to half. For flat enumeration-style complexity like `parse_color_string`'s 16-arm match statement, replacing the match with a static lookup table removes that portion of the branching entirely."
+  - question: "Is starship actively maintained?"
+    answer: "Yes, though the top structural risks in this scan aren't where the active development is happening. All five critical-band hotspots — `get_repo_status`, `main`, `module` in git_branch.rs, `parse_color_string`, and `shell_command` — show zero touches in the last 30 days, with the most dormant, `shell_command` and `parse_color_string`, sitting at 148 days since last change. Meanwhile, functions like `get_tfm_from_project_file` and `get_maven_version` show 1 touch in the last 30 days with changes as recent as 2 days ago, confirming active feature work elsewhere in the codebase. Active development and accumulated structural debt in specific files coexist here — the debt just hasn't been in the way of recent work yet."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run against starship/starship at commit cc763c5 using the hotspots CLI, available on GitHub. After running `git checkout cc763c5`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command runs against any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies structural complexity (cyclomatic complexity times nesting depth times fan-out) by recent commit frequency, so functions that are both hard to understand and actively changing score highest. In starship, the top-ranked function, `get_repo_status`, scores 15.65 despite zero commits in 30 days, because its structural complexity is high enough to dominate the score even without recent activity — that's what marks it as debt rather than fire. A function with similar complexity that was being edited weekly would score higher still, since near-term regression probability rises with both dimensions together. The goal of the metric is to point reviewers toward code that either needs attention right now (fire) or will need it the moment someone opens the file again (debt), rather than ranking purely by how complex the code looks in isolation."
+---
+
+Every one of starship's top five hotspots falls into the debt quadrant — high structural complexity, zero commits in the last 30 days. That's the story here: this isn't code breaking under active churn, it's complexity that has been quietly accumulating while it waits for the next person who has to touch it. Starship is a cross-shell prompt written in Rust, and across 810 analyzed functions, 36 land in the critical band and 133 sit in the debt quadrant — so structural risk here is heavily backlog-shaped, not fire-shaped, with only 8 functions currently in active-risk territory. I'd start with `get_repo_status` in src/modules/git_status.rs, which hasn't been modified in 31 days but carries a cyclomatic complexity of 47 and an activity-weighted risk of 15.65, the highest in the repo.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `get_repo_status` | src/modules/git_status.rs | 15.7 | 47 | 5 | 16 |
+| `main` | src/main.rs | 13.1 | 48 | 3 | 29 |
+| `module` | src/modules/git_branch.rs | 12.9 | 12 | 3 | 15 |
+| `parse_color_string` | src/config.rs | 12.4 | 29 | 2 | 6 |
+| `shell_command` | src/modules/custom.rs | 11.9 | 14 | 2 | 11 |
+
+### `get_repo_status` — src/modules/git_status.rs
+
+<FunctionCard fn='get_repo_status' file='src/modules/git_status.rs' risk='15.65' band='critical' cc='47' nd='5' fo='16' touches='0' />
+
+This is the top-ranked hotspot in the repo, and it's a debt-quadrant function, not a fire-quadrant one — nobody has changed it in 31 days, and that's the point. It computes staged, modified, and deleted file counts for the git status segment of the prompt, and the source shows why the complexity number is so high: it branches between two entirely different execution strategies (shelling out to `git status --porcelain=2` versus using `gix`'s native status API) based on config flags like `use_git_executable`, `fs_monitor_value_is_true`, and whether the repo uses reftables. Cyclomatic complexity of 47 against a nesting depth of 5 means there are dozens of paths through this function, and the excerpt shows a thread spawned for command timeout handling nested inside one of those branches — exactly the kind of code where Rust's ownership and lifetime rules (note the `Arc<AtomicBool>` clone into the spawned closure) can mask how much branching complexity is actually here, since CC alone doesn't capture the added reasoning burden of tracking borrows across a spawned thread. Fan-out of 16 means touching this function touches a wide dependency surface. The `god_function`, `deeply_nested`, and `exit_heavy` patterns all fire here, and `exit_heavy` is worth taking seriously on its own — every `?` and early `return None` is a separate path a test suite needs to cover. My recommendation: before this function is next touched, split the git-executable path and the gix-native path into two separate functions with a shared return type. That alone would cut the cyclomatic complexity roughly in half and make each path independently testable.
+
+### `main` — src/main.rs
+
+<FunctionCard fn='main' file='src/main.rs' risk='13.06' band='critical' cc='48' nd='3' fo='29' touches='0' />
+
+This is the CLI entry point, untouched for 91 days — the longest dormancy window of any function in the top five. Fan-out of 29 is the highest in this list, which tracks with what `main` typically does: it dispatches across `Commands::Init`, `Commands::Prompt`, `Commands::Module`, and presumably more variants, each branch calling into a different subsystem (`init::init_main`, `init::init_stub`, `print::prompt`). Nesting depth is only 3, so this isn't deeply tangled logic — cyclomatic complexity of 48 here comes from breadth, not depth: a wide match statement plus error-handling branches for `Cli::try_parse()` failures. This is the `god_function` and `long_function` pattern combination in practice — a single function that owns argument parsing, error formatting, exit-code selection, and command dispatch. Because 91 days is a long stretch of inactivity for a function with this much fan-out, the risk here is blast radius: whenever a new CLI command or flag is added, whoever touches `main` next inherits all 48 paths at once. A reasonable first step is extracting the `Cli::try_parse()` error-handling block (the exit-code logic) into its own function — it's self-contained and would immediately reduce both complexity and the exit-path count.
+
+### `module` — src/modules/git_branch.rs
+
+<FunctionCard fn='module' file='src/modules/git_branch.rs' risk='12.93' band='critical' cc='12' nd='3' fo='15' touches='0' />
+
+This builds the git branch prompt segment, and it's a useful contrast to `get_repo_status`: cyclomatic complexity here is a moderate 12, well below the other four functions in this table, but it still lands in critical band because fan-out is 15 and the pattern set includes `god_function` and `exit_heavy`. The source excerpt shows why — this function has to resolve branch name, remote branch, and remote name across two different code paths depending on whether the repository uses reftables, including a nested call to `get_branch_info_from_git`, a `find_longest_matching_remote_name` lookup, and manual string manipulation to strip a remote prefix (with an `.expect()` call embedded in the middle of that chain). Thirty-one days since last change puts this in the same debt window as `get_repo_status`, and it lives in the same file family (git integration), which means a coordinated refactor of both functions together could pay down debt across the whole git-status module rather than one function at a time. My recommendation: pull the reftables branch-resolution logic into a named helper — it already reads like a self-contained unit inside the larger function.
+
+### `parse_color_string` — src/config.rs
+
+<FunctionCard fn='parse_color_string' file='src/config.rs' risk='12.39' band='critical' cc='29' nd='2' fo='6' touches='0' />
+
+This has gone 148 days without a change — the second-longest dormancy in the top five — and it's a config-parsing function: it takes a color string and decides whether it's a hex code, an ANSI number, a user-defined palette entry, or one of 16 hardcoded color names. Nesting depth of 2 is low, and fan-out of 6 is modest, so this isn't a coupling risk — the complexity comes almost entirely from the flat match statement enumerating color names, plus multiple early-return guard clauses (`exit_heavy` is the only pattern flagged here). Cyclomatic complexity of 29 for what is conceptually a lookup table signals that the match arms and guard clauses could be flattened. Because this function recurses into itself for palette resolution (`return parse_color_string(palette_color, None)`), any future addition of new color formats will land directly on this complexity. A concrete fix: extract the hardcoded 16-entry match into a static lookup table (a `HashMap` or `phf` map) — that would drop the cyclomatic complexity for this section to near zero and leave only the hex/ANSI/palette branching logic to reason about.
+
+### `shell_command` — src/modules/custom.rs
+
+<FunctionCard fn='shell_command' file='src/modules/custom.rs' risk='11.86' band='critical' cc='14' nd='2' fo='11' touches='0' />
+
+This runs user-defined custom commands for the `custom` module, also dormant for 148 days. Cyclomatic complexity of 14 is the lowest in the top five, but the `exit_heavy` and `god_function` patterns both apply, and the source shows why: multiple fallible operations chained with `?` and early returns (`create_command`, `command.spawn()`, `child.stdin.as_mut()?.write_all()`), a Windows/non-Windows branch for fallback shell selection, and manual timeout handling via `controlled_with_output().time_limit()`. Fan-out of 11 means this function coordinates a fair number of collaborators for something that ultimately just needs to run a subprocess and capture output. Given that it executes arbitrary user-configured shell commands, the multiple early-exit paths each represent a distinct failure mode (spawn failure, stdin write failure, timeout) that deserves its own explicit test case rather than being implicitly covered. A reasonable next step is extracting the fallback-shell selection logic (the `cfg!(windows)` branch) into its own function, since it's already a self-contained decision independent of the rest of the execution flow.
+
+### The pattern across all five
+
+<BandChart fire='8' debt='133' watch='33' ok='636' />
+
+<PatternCloud patterns='long_function:5,exit_heavy:4,god_function:4,complex_branching:1,deeply_nested:1' />
+
+What stands out across this list isn't a single bad file — it's that all five critical-band functions share zero touches in the last 30 days, with dormancy ranging from 31 days (`get_repo_status`, `module` in git_branch.rs) to 148 days (`parse_color_string`, `shell_command`). That's 133 functions in the debt quadrant overall against just 8 in the fire quadrant, so the dominant risk shape in this repo right now is backlog, not live churn. For contrast, the fire-quadrant functions in the broader dataset — `get_tfm_from_project_file` in dotnet.rs and `get_maven_version` in package.rs, both touched once in the last 2 days — show what active development looks like here, and neither comes close to the complexity of the top five debt functions. The takeaway isn't urgency, it's timing: these five functions are the ones I'd schedule for refactoring before the next feature push touches git_status.rs, main.rs, git_branch.rs, config.rs, or custom.rs, rather than waiting for a bug report to force the issue under time pressure.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 5 |
+| `exit_heavy` | 4 |
+| `god_function` | 4 |
+| `complex_branching` | 1 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/starship/starship
+cd starship
+git checkout cc763c5557a235530ff00c8917169bb77aac1e24
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
