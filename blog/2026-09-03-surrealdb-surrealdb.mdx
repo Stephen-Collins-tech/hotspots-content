@@ -1,0 +1,128 @@
+---
+title: "surrealdb's search and value layer hides 77-day-old complexity debt in 5 functions"
+titleSeo: "surrealdb code health: search::linear and val::del lead structural technical debt priorities"
+description: "A repository scan of surrealdb/surrealdb finds the highest structural risk sitting untouched for 58 to 77 days in search::linear, val/value/del.rs, and GraphQL kind conversion, not in actively-changing code."
+introContent: "I went looking for where surrealdb's structural risk actually lives, and the answer surprised me: the five riskiest functions haven't been touched in at least 58 days, which means the debt has been quietly compounding while everyone's attention was elsewhere."
+pubDate: 2026-09-03
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "surrealdb/surrealdb"
+commit: "c7eac9022af90d2d9658a94e2dc51d45d9c6ff5b"
+language: "rust"
+hotspots_version: "1.35.5"
+analyzed_at: "2026-09-03T08:04:49Z"
+clone_depth: 100
+topRisk: 18.8
+topFunction: "linear"
+topFile: "surrealdb/core/src/fnc/search.rs"
+topPatterns: ["long_function", "exit_heavy", "god_function", "complex_branching", "deeply_nested"]
+patternCounts: {exit_heavy: 7, god_function: 5, long_function: 8, complex_branching: 5, deeply_nested: 5}
+qaSection:
+  - question: "What is cyclomatic complexity and why does it matter in surrealdb?"
+    answer: "Cyclomatic complexity counts the number of independent execution paths through a function — every if, match arm, and loop condition adds one more path that a test suite theoretically needs to cover. In surrealdb, `graphql_to_sql_kind_with_scope` hits 213, meaning the type-conversion logic between GraphQL values and SurrealQL kinds has 213 distinct paths, largely from a match over `Kind` variants nested inside a match over `GraphqlValue` variants. That density makes it hard to know if a given code change is fully tested, and it makes reasoning about correctness for any single input type require mentally isolating one path out of 213."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The standard technique is decompose-conditional: pull each match arm or branch group into its own named function so the top-level function becomes a short dispatcher. For `del` in core/src/val/value/del.rs, which sits at cyclomatic complexity 96 driven by a three-layer nested match (value variant, then path part, then resolved value type), a concrete first step is extracting the innermost `Part::Value` resolution block — the `Number`/`String`/`RecordId` handling — into its own helper function. As a working threshold, treat cyclomatic complexity above 15 as a signal to consider splitting, and above 30 as a function that shouldn't gain new branches without refactoring first."
+  - question: "Is surrealdb actively maintained?"
+    answer: "Yes — the context data shows real active development, with `init` in server/src/cli/mod.rs and `parse_partial` in core/src/syn/parser/mod.rs both showing touches_30d of 1 and days_since_changed of 0, meaning they were modified the same day this analysis ran. The top five structural risks in this scan are a separate story: all four in the 'debt' quadrant are untouched for 58 to 77 days, which reflects accumulated complexity rather than any lack of maintenance. Active development on the CLI and parser layer and high structural debt in search/value/GraphQL code aren't contradictory — they're just different parts of the codebase moving at different speeds."
+  - question: "How do I reproduce this analysis?"
+    answer: "The hotspots CLI is available on GitHub, and this scan was run against surrealdb/surrealdb at commit c7eac90. After running `git checkout c7eac90`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works unmodified on any local git repository, no configuration file required."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies structural complexity — cyclomatic complexity times nesting depth times fan-out — by recent commit frequency, so functions that are both hard to understand and actively changing score highest. A function with cyclomatic complexity 96 that hasn't been touched in 77 days, like `del` in core/src/val/value/del.rs, scores lower on this measure than a much simpler function that's being edited every week, because the dormant complex function poses less near-term regression risk. This is why four of the five top hotspots in this scan are labeled 'debt' rather than 'fire' — they're structurally worse than almost anything else in the repository, but nobody is actively changing them right now, so the risk is about what happens the next time someone does."
+---
+
+surrealdb/surrealdb is a 14,130-function Rust codebase with 926 functions in the critical band, and the top of that list is dominated by structural debt, not live churn. The highest-risk function I found, `linear` in core/src/fnc/search.rs, carries an activity-weighted risk of 18.8 with zero commits in the last 30 days and 77 days since its last change — that's the real story here: a complex function sitting quietly until someone has to touch it next. Four of my top five hotspots share this profile (all quadrant 'debt'), which tells me the urgent work in this repo is archaeology, not firefighting.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `linear` | surrealdb/core/src/fnc/search.rs | 18.8 | 45 | 8 | 21 |
+| `del` | surrealdb/core/src/val/value/del.rs | 18.6 | 96 | 7 | 23 |
+| `graphql_to_sql_kind_with_scope` | surrealdb/core/src/graphql/schema.rs | 17.6 | 213 | 5 | 21 |
+| `from_str` | surrealdb/types/src/value/duration.rs | 17.4 | 34 | 11 | 6 |
+| `run` | language-tests/src/cmd/bench/run.rs | 17.4 | 59 | 5 | 32 |
+
+### The shape of the risk
+
+Of 14,130 functions analyzed, 2,843 fall into the 'debt' quadrant — high structural complexity with low or no recent activity — versus only 9 in 'fire' (actively changing and complex) and 6 in 'watch'. That ratio is the headline: surrealdb's risk surface is mostly dormant complexity, not code currently under active stress.
+
+<BandChart fire='9' debt='2843' watch='6' ok='11272' />
+
+Across the top hotspots, the antipattern mix is consistent: 8 long-function flags, 7 exit-heavy, 5 god-function, 5 complex-branching, 5 deeply-nested. That combination — long functions with many exits and many branches — is exactly what makes a function expensive to test and risky to modify blind.
+
+<PatternCloud patterns='long_function:8,exit_heavy:7,god_function:5,complex_branching:5,deeply_nested:5' />
+
+### `linear` — core/src/fnc/search.rs
+
+<FunctionCard fn='linear' file='core/src/fnc/search.rs' risk='18.8' band='critical' cc='45' nd='8' fo='21' touches='0' />
+
+This is `search::linear`, the function that fuses ranked result lists (vector search and full-text search) using weighted linear combination with MinMax or Z-score normalization. The doc comment alone describes four distinct score-extraction priorities (`distance`, `ft_score`, `score`, rank-based fallback) and two normalization branches, which lines up with a cyclomatic complexity of 45 and a max nesting depth of 8 — deep enough that tracing a single execution path means holding multiple nested match arms in your head at once. Fan-out of 21 means it calls out to two dozen-ish distinct functions, so a change to how scores are extracted or normalized has a wide blast radius across the search pipeline.
+
+It hasn't been touched in 77 days and had zero commits in the last 30, so no one is actively breaking this function — it's simply going to be expensive the day someone needs to add a third normalization method or a new score field priority. My recommendation: extract the score-extraction logic (the four-way fallback) and the two normalization methods into their own named functions before the next feature request forces someone to read all 45 branches at once.
+
+### `del` — core/src/val/value/del.rs
+
+<FunctionCard fn='del' file='core/src/val/value/del.rs' risk='18.55' band='critical' cc='96' nd='7' fo='23' touches='0' />
+
+This is the value-deletion path used to walk a `Part` path against a `Value` and remove the matching field, element, or filtered subset — core data-layer logic. A cyclomatic complexity of 96 is the highest number in this entire top five, driven by a nested match-on-match structure: matching on the value variant (`Object`, presumably `Array` and others), then matching on the path part (`Part::All`, `Part::Field`, `Part::Value`), then matching again on the resolved value type (`Number`, `String`, `RecordId`) inside each branch. That's three layers of type-driven branching stacked on top of each other, which is why nesting depth hits 7 despite the code looking fairly linear line by line.
+
+Because this sits in the value/data layer, bugs here are the quiet kind — a missed match arm silently no-ops instead of throwing, and a wrong deletion is hard to notice until a query returns unexpected data. It's had exactly one commit total and zero in the last 30 days, so this is textbook structural debt: nothing is actively wrong, but the next person who needs to add a new `Part` variant or `Value` type is walking into 96 branches cold. I'd start by peeling out the `Part::Value` resolution block (the `Number`/`String`/`RecordId` match) into its own helper — that alone should meaningfully cut both the complexity and nesting numbers.
+
+### `graphql_to_sql_kind_with_scope` — core/src/graphql/schema.rs
+
+<FunctionCard fn='graphql_to_sql_kind_with_scope' file='core/src/graphql/schema.rs' risk='17.56' band='critical' cc='213' nd='5' fo='21' touches='0' />
+
+A cyclomatic complexity of 213 is by far the largest number anywhere in this data set. This function converts GraphQL values into SurrealQL values given a target `Kind`, and the excerpt shows why: it's a large match over `Kind` variants (`Any`, `None`, `Null`, `Bool`, `Bytes`, `Datetime`, `Decimal`, and evidently many more), with each arm containing its own nested match over `GraphqlValue` variants. That's a combinatorial branching structure — every supported SurrealQL type times every possible incoming GraphQL representation — which explains the complexity number without needing a matching nesting depth; at nesting depth 5 the branching is wide rather than deep.
+
+This is the kind of function where CC alone understates the real risk, because each new `Kind` variant added to the type system means another arm has to be added correctly here or type conversion silently breaks for that type. It's untouched for 58 days and carries zero bug-linked commits in the file-level signal, so there's no evidence of active defects — but a function this large acting as the single conversion point between two type systems is a natural fan-out hazard (fan-out of 21) if the GraphQL schema or the `Kind` enum changes shape. I'd treat this as a candidate for a lookup-table or trait-based dispatch pattern per `Kind` variant rather than one giant match, so adding a type doesn't mean editing a 213-path function.
+
+### `from_str` — types/src/value/duration.rs
+
+<FunctionCard fn='from_str' file='types/src/value/duration.rs' risk='17.41' band='critical' cc='34' nd='11' fo='6' touches='0' />
+
+This is the `FromStr` implementation for `Duration` — parsing strings like `'2h30m'` into a duration value. The nesting depth of 11 is the standout number here, the deepest in the entire top five, and the excerpt shows exactly why: a `while` loop over the remaining string, inside which there's a long `if`/`else if` chain checking unit suffixes (`ms`, `µs`, `us`, `ns`, `y`, `w`, `d`, `h`, `m`, `s` in that order, because longer prefixes must be checked before shorter ones), followed by a second `match` converting each matched unit into seconds and nanoseconds. Two sequential decision structures nested inside a loop is how you get to nesting depth 11 with a comparatively modest fan-out of 6 — this function does its own work rather than delegating much.
+
+<MetricBar label='Max Nesting Depth' value='11' threshold='4' max='12' />
+
+Parsing code like this is exactly where off-by-one errors in string slicing hide, and the unit-ordering dependency (checking `'ms'` before `'m'`, `'ns'` before `'m'`, etc.) is fragile to reorder by accident. It's had zero commits in 30 days and hasn't moved in 77 days, so I'd treat it as debt to retire with a table-driven approach — a sorted list of (suffix, seconds-per-unit) pairs matched in one pass — the next time duration parsing needs a new unit or a bug report touches this file.
+
+### `run` — language-tests/src/cmd/bench/run.rs
+
+<FunctionCard fn='run' file='language-tests/src/cmd/bench/run.rs' risk='17.37' band='critical' cc='59' nd='5' fo='32' touches='0' />
+
+This is the benchmark-suite entry point, and it stands out for fan-out: 32 distinct functions called, the highest fan-out in the top five. The excerpt shows why — it resolves a backend (memory, RocksDB, SurrealKV, TiKV), builds a temp directory with cleanup-on-drop semantics, constructs a `BenchConfig`, opens a store, then builds a filtered `RunSetBuilder` chained through four separate `.with_filter()` calls checking backend compatibility, path filters, and version compatibility for both the test and its imports. That's a lot of orchestration concentrated in one function, and a cyclomatic complexity of 59 backs that up.
+
+Unlike the other four functions here, this file has real commit history — 13 total commits with 2 authors in the last 90 days and a bug-fix fraction of 0.3846, meaning roughly 4 in 10 of those commits were bug fixes. That's a meaningful signal: this benchmarking harness has had real defect-driven churn even though it shows zero commits in the exact last-30-day window. Given the backend-selection and filter-chaining logic is already showing complexity-driven churn, I'd extract the four `.with_filter()` predicates into named functions — that reduces both the visible branching in `run` itself and gives each filter condition an isolated place to fix the next bug.
+
+### What I'd leave alone for now
+
+The `context_only` data shows a different story on the CLI and parser side: `init` in server/src/cli/mod.rs (activity-weighted risk 15.04, quadrant 'fire', touches_30d 1) and `parse_partial` in core/src/syn/parser/mod.rs (risk 13.34, also 'fire', touches_30d 1) are genuinely active right now — both changed the same day as this scan (days_since_changed 0). Their complexity is lower than the top five (CC 31 and 21 respectively, versus the 34-213 range above), so they're worth a lighter-touch review pass rather than a rewrite: watch them for regressions given the active churn, but they aren't the structural priority.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 8 |
+| `exit_heavy` | 7 |
+| `god_function` | 5 |
+| `complex_branching` | 5 |
+| `deeply_nested` | 5 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/surrealdb/surrealdb
+cd surrealdb
+git checkout c7eac9022af90d2d9658a94e2dc51d45d9c6ff5b
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
