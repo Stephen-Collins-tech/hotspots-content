@@ -1,0 +1,109 @@
+---
+title: "mdBook's front-end search carries the highest structural debt — 5 functions to address first"
+titleSeo: "mdBook code health: search.js and HTML tree functions lead technical debt priorities"
+description: "A 112-day-dormant search function in mdBook's front-end carries the highest structural risk in the codebase, with cyclomatic complexity 29 and fan-out 93 across 653 analyzed functions."
+introContent: "The riskiest function in mdBook hasn't been touched in 112 days, which sounds reassuring until you look at its fan-out of 93 distinct calls and realize the next person to modify it inherits all that coupling cold."
+pubDate: 2026-09-06
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "rust-lang/mdBook"
+commit: "a57975d499a660fd11da05a9010e93fe245525ba"
+language: "rust"
+hotspots_version: "1.35.5"
+analyzed_at: "2026-09-06T07:51:54Z"
+clone_depth: 100
+topRisk: 18.31
+topFunction: "search"
+topFile: "crates/mdbook-html/front-end/searcher/searcher.js"
+topPatterns: ["complex_branching", "god_function", "deeply_nested", "exit_heavy", "long_function"]
+patternCounts: {complex_branching: 6, exit_heavy: 4, god_function: 6, long_function: 4, deeply_nested: 5, stale_complex: 1}
+qaSection:
+  - question: "What is deep nesting and why does it matter in mdBook?"
+    answer: "Deep nesting (max_nesting_depth, or 'nd') counts how many levels of if/match/loop blocks are stacked inside each other in a single function; a value of 4 or higher makes code hard to trace mentally, and 8 or higher is a strong refactoring signal. In mdBook, the 'set' function in config.rs reaches a nesting depth of 10 — the deepest in this analysis — through a chain of sequential prefix checks for routing dotted config keys. Deep nesting matters because every additional level multiplies the number of states a reader has to hold in their head simultaneously, and it's exactly the kind of structure where a missing 'else' branch or misplaced closing brace silently changes behavior without an obvious signal at review time."
+  - question: "How do I reduce cyclomatic complexity in Rust?"
+    answer: "The most direct technique is decompose-conditional: pull each branch of a large match or if-else chain into its own named function so the outer function becomes a short dispatch table instead of a wall of logic. As a rule of thumb, cyclomatic complexity above 15 warrants planning a split, and above 30 — like the 39 seen in mdBook's 'start_tag' — warrants doing it before the next feature lands, since every new branch measurably increases the number of required test cases. A concrete first step for 'start_tag' would be extracting the 'Tag::CodeBlock' and 'Tag::BlockQuote' arms (which already contain their own internal branching) into separate functions, meaningfully cutting the top-level match's complexity without touching the simpler single-line arms."
+  - question: "Is mdBook actively maintained?"
+    answer: "Yes — 'start_tag' in tree.rs, the second-highest risk function in this analysis, was touched 4 times in the last 30 days and has 0 days since its last change, placing it squarely in the 'fire' quadrant of active development. At the same time, four of the five highest-risk functions found here (search, set, test_chapter, and the vendored Q) sit in the 'debt' quadrant with 0 touches in 30 days and up to 352 days of dormancy. That combination is normal for a mature project: active feature work on the HTML-rendering path coexists with untouched, structurally complex code elsewhere that simply hasn't needed attention recently — high structural debt and active maintenance aren't contradictory signals."
+  - question: "How do I reproduce this analysis?"
+    answer: "The hotspots CLI is available on GitHub, and this analysis was run against commit a57975d. To reproduce it, run `git checkout a57975d` followed by `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works unmodified on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies structural complexity (cyclomatic complexity times nesting depth times fan-out) by recent commit frequency, so functions that are both hard to understand and currently being changed score highest. In mdBook, 'search' scores 18.31 almost entirely from structure since it has 0 touches in 30 days, while 'start_tag' scores 16.66 with real recent activity (4 touches in 30 days) layered on top of its complexity — the first is dormant debt, the second is a live regression risk. This distinction matters because a complex-but-frozen function poses little near-term danger, while a complex function under active edit is exactly where new bugs get introduced."
+---
+
+Across 653 functions in rust-lang/mdBook, 50 land in the critical band and 127 fall into the structural-debt quadrant — complex code that simply isn't being touched right now. The top hotspot, 'search' in searcher.js, has an activity-weighted risk of 18.31 built almost entirely from structure: cyclomatic complexity 29, nesting depth 7, and a fan-out of 93 distinct calls, yet it has sat untouched for 112 days (touches_30d of 0). That's not a live regression risk — it's a time bomb waiting for the next contributor who needs to add a search feature or fix a reported bug. I'd treat this list as a map of where blast radius is highest whenever someone finally has to go back in.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `search` | crates/mdbook-html/front-end/searcher/searcher.js | 18.3 | 29 | 7 | 93 |
+| `start_tag` | crates/mdbook-html/src/html/tree.rs | 16.7 | 39 | 4 | 25 |
+| `set` | crates/mdbook-core/src/config.rs | 15.6 | 13 | 10 | 3 |
+| `test_chapter` | crates/mdbook-driver/src/mdbook.rs | 15.2 | 26 | 5 | 12 |
+| `Q` | crates/mdbook-html/front-end/playground_editor/ace.js | 14.8 | 17 | 8 | 11 |
+
+## Codemod / Tooling Files in Results
+
+The 'Q' function in ace.js is part of the bundled Ace code editor (used for mdBook's interactive playground) and 'search' plus 'globalKeyHandler' live in a similarly bundled searcher.js — all three are checked-in, minified or near-minified third-party front-end assets rather than code the mdBook team writes and reviews line by line. Their high complexity scores reflect minification and vendor design choices, not maintainability debt introduced by mdBook contributors. To exclude these from future scans, add a pattern like `{ "exclude": ["crates/mdbook-html/front-end/playground_editor/", "crates/mdbook-html/front-end/searcher/"] }` to `.hotspotsrc.json`.
+
+### `search` — searcher.js
+
+<FunctionCard fn='search' file='crates/mdbook-html/front-end/searcher/searcher.js' risk='18.31' band='critical' cc='29' nd='7' fo='93' touches='0' />
+
+This is the largest self-contained IIFE driving mdBook's client-side search: it wires up DOM references (search wrapper, searchbar, results panel), sets up a String.prototype polyfill for IE 11 compatibility, configures elasticlunr search options, and defines a cluster of nested helper functions ('hasFocus', 'removeChildren', 'parseURL') before getting to the actual query logic. A cyclomatic complexity of 29 combined with a nesting depth of 7 means there are many independent paths through this function, buried several levels deep — the kind of code where a one-line fix can silently break an unrelated branch. The fan-out of 93 is the number that should worry a reviewer most: this function reaches into dozens of collaborators (DOM APIs, elasticlunr, Mark.js, its own internal helpers), so any change here carries a wide blast radius even though nothing has forced that change yet. With 0 touches in the last 30 days and 112 days since the last commit, this is squarely structural debt, not active churn — total_commit_count of 6 with a 0.667 bug-fix fraction on the file suggests this area has needed fixes before, even if none are linked directly to this function. My recommendation: before anyone extends search behavior again, split the DOM-wiring, polyfill setup, and query-execution paths into separate functions so a future change only has to reason about one slice of this god function at a time.
+
+### `start_tag` — tree.rs
+
+<FunctionCard fn='start_tag' file='crates/mdbook-html/src/html/tree.rs' risk='16.66' band='critical' cc='39' nd='4' fo='25' touches='4' />
+
+This is the one function in the top five that's a genuinely live regression risk rather than dormant debt. `start_tag` sits in the 'fire' quadrant with 4 touches in the last 30 days and 0 days since its last change — it's being actively worked on right now, and it carries the highest cyclomatic complexity of any hotspot in this analysis at 39. The excerpt shows a large match expression over markdown 'Tag' variants (Paragraph, Heading, BlockQuote, CodeBlock, HtmlBlock, and more), each arm building up a different HTML element with its own attribute logic — a large switch structure where every new tag type is another branch to keep in sync with the others. The nesting depth of 4 is moderate, but with fan-out at 25 distinct calls, changes to how one tag type is rendered risk unintended ripple effects on siblings in the same match arm. The file's total_commit_count of 24 with a pr_review_comment_density of 9.0 tells me reviewers are already spending real effort scrutinizing changes here — a signal this code deserves that scrutiny, not a green light to skip it. Given it's being modified today, I'd prioritize extracting each 'Tag' variant's rendering logic into its own named function before the next round of edits lands, so the match expression becomes a dispatch table rather than a 39-path decision tree.
+
+### `set` — config.rs
+
+<FunctionCard fn='set' file='crates/mdbook-core/src/config.rs' risk='15.61' band='critical' cc='13' nd='10' fo='3' touches='0' />
+
+The standout number here is nesting depth: 10, the deepest of any hotspot in this analysis, on a function with only moderate cyclomatic complexity (13) and low fan-out (3). Looking at the excerpt, this is a chain of 'if index == X' / 'else if let Some(key) = index.strip_prefix(...)' branches used to route a dotted config key ('output.html.playground') to the right nested config struct. Each additional prefix this function needs to support (book., build., rust., output., preprocessor.) adds another link to that chain, and the nesting depth suggests some of that logic is doing more than flat dispatch. This is Rust's config layer — the kind of code where a missed branch silently drops a user-supplied setting instead of erroring, and because it acts like a small internal schema router, bugs here tend to be quiet rather than loud. It hasn't been touched in 289 days and shows 0 touches in the last 30, so this is pure structural debt: nobody is actively fighting this code, but whoever next adds a new top-level config section will need to extend an already 10-deep nesting chain. I'd flatten this into a match on a parsed key-prefix enum rather than sequential string comparisons — it collapses the nesting without changing behavior and makes adding a new section a one-line addition instead of another branch.
+
+### `test_chapter` — mdbook.rs
+
+<FunctionCard fn='test_chapter' file='crates/mdbook-driver/src/mdbook.rs' risk='15.18' band='critical' cc='26' nd='5' fo='12' touches='0' />
+
+This function drives `rustdoc --test` execution across a book's chapters, and it's tagged with the 'stale_complex' pattern — the only hotspot in this set flagged that way. That pattern exists precisely because this combination (cyclomatic complexity 26, 266 days since last change, 0 touches in 30 days) means the complexity was baked in a long time ago and nobody has revisited it since. The excerpt shows a for-loop over 'book.iter()' with early 'continue' statements for chapters that don't match a filter, plus a nested match over Rust edition variants (2015/2018/2021/2024, with a 'panic!' fallback) used to build up command-line arguments for a spawned 'rustdoc' subprocess. That's real branching complexity: filtering logic, edition dispatch, and subprocess argument construction all living in one function with a fan-out of 12. The file's bug_fix_fraction of 0.571 (across 7 total commits) suggests this area of the test-runner has already needed correction more than once. Because nothing is actively touching it, the risk here is entirely about the next contributor who has to add a new Rust edition or change how chapter filtering works — I'd extract the edition-to-args mapping into its own small function first, since it's the most self-contained piece and the easiest place to start peeling this apart.
+
+### `Q` — ace.js
+
+<FunctionCard fn='Q' file='crates/mdbook-html/front-end/playground_editor/ace.js' risk='14.82' band='critical' cc='17' nd='8' fo='11' touches='0' />
+
+This is a minified module-loader shim from the bundled Ace editor, used to power mdBook's interactive code-playground feature. Its nesting depth of 8 is the second-highest in this analysis, but that depth is largely an artifact of aggressive minification rather than genuinely tangled application logic — variable names are single letters and the module-definition/require machinery is condensed into a handful of nested closures. It has 352 days since its last change and 0 touches in 30 days, the longest dormancy of any hotspot here, with only 1 total commit on record and a bug_fix_fraction of 1.0 on that single commit. Practically speaking, this is vendored third-party code bundled directly into the front-end tree rather than first-party logic the mdBook team is maintaining line by line, so I'm flagging it here for completeness but not recommending a refactor — see the vendor note below for how to keep files like this out of future scans.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 6 |
+| `god_function` | 6 |
+| `deeply_nested` | 5 |
+| `exit_heavy` | 4 |
+| `long_function` | 4 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/rust-lang/mdBook
+cd mdBook
+git checkout a57975d499a660fd11da05a9010e93fe245525ba
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
