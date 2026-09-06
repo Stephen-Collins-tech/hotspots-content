@@ -1,0 +1,73 @@
+---
+title: "hotspots v1.36.0: risk isn't the only axis"
+description: "A new hotspots analyze --axes command ranks files independently by Risk, Coupling, Ownership, and Centrality instead of one blended score, plus a stability audit that added schema versioning, cold-start hysteresis, and suppression-gate smoothing — and one integration break two green PRs produced together."
+pubDate: 2026-09-06
+author: "Stephen Collins"
+tags: ["release-notes", "hotspots", "rust", "cli", "research"]
+ogImage: "/og.png"
+summary: "v1.36.0 adds hotspots analyze --axes, which ranks files independently by defect risk, co-change coupling, ownership churn, and call-graph centrality rather than blending them into one score — the CLI-side promotion of a research finding that those signals barely correlate. It also ships four smaller reliability fixes from an internal stability audit, including one I caught only because two independently-green PRs broke main when merged together."
+introContent: "The headline feature here started as a research question, not a product idea: do coupling and ownership actually predict something different from complexity-times-activity, or are they just repeating the same ranking in different units? The answer shaped the entire design — four ranked lists, never blended into one."
+---
+
+I shipped [v1.36.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v1.36.0) of [hotspots](https://github.com/Stephen-Collins-tech/hotspots) today. The centerpiece is `hotspots analyze --axes`, a new output mode that ranks a codebase four separate ways instead of one. Everything else in this release is smaller, but one of those smaller changes is worth its own section: two PRs that each passed CI cleanly broke `main` the moment they landed together.
+
+## The question behind `--axes`: is Risk the only signal worth ranking by?
+
+Every other `hotspots analyze` mode collapses a function down to one number — `activity_risk`, complexity times churn — and ranks by that. The research behind this release asked a narrower question first: if you rank files by co-change coupling (`directed_coupling`) or by ownership churn (`newcomer_rate`) instead, do you get back the same files in a different order, or a genuinely different set? The measured correlation against defect risk was low on both — coupling at `|r|=0.075`, ownership at `|r|=0.104` — which means a file that never shows up in your Risk-ranked top 10 can still be your most-coupled or most-ownership-unstable file, invisible to anyone only looking at one score.
+
+That's the design constraint that shaped `--axes`: four independent rankings — Risk, Coupling, Ownership, and (new in this same release) Centrality — printed as four sections, never blended into a composite. The module doc in `ranking.rs` says this outright: *"do not blend them into a composite score."* Blending would just reintroduce the one-score problem the whole feature exists to avoid.
+
+```
+$ hotspots analyze . --axes
+
+Risk Hotspots
+  1. src/parser.rs           47.20
+  2. src/cfg/builder.rs      31.85
+  ...
+
+Coupling Hotspots
+  1. src/config.rs           0.82
+  2. src/snapshot.rs         0.71
+  ...
+
+Ownership Hotspots
+  1. src/trainer.rs          0.44
+  ...
+
+Centrality Hotspots
+  1. src/lib.rs              0.91
+  ...
+```
+
+`--axes` bypasses the trained-ranker/snapshot pipeline entirely — it's mutually exclusive with `--mode`, and each axis excludes files lacking that axis's signal rather than sorting them to the bottom (a file with `directed_coupling == 0` isn't "low coupling," it's not measured, so it's dropped from that list). Risk and Coupling/Ownership/Centrality also disagree about what "a file" means: Coupling and Ownership scores are already file-level, but Risk and Centrality are computed per function, so both take the max score across a file's functions to produce one file-level number.
+
+## Centrality: the fourth axis, added the same day
+
+Call-graph centrality — `fan_in`, `fan_out`, PageRank, betweenness — has been computed and stored on every function snapshot for a while, but neither the HTML report nor the new `--axes` view surfaced it as its own ranked signal. It's not validated by a dedicated research finding the way Risk/Coupling/Ownership are; the closest precedent is a stalled research thread on call-graph centrality as a defect-risk sub-signal, blocked on a different problem (function identity across renames) that doesn't affect ranking files by centrality directly. Given that, and that PageRank already folds fan-in-weighted transitive importance into a single number, I ranked by `callgraph.pagerank` unblended rather than inventing a new composite of fan-in/fan-out/betweenness — the same unblended-axis principle the other three axes already established, just applied to a signal that was sitting unused in the snapshot the whole time.
+
+## The stability audit: four fixes nobody was going to hit by accident
+
+Alongside `--axes`, this release absorbs four fixes from an internal review of how predictable and stable the tool's own output is over time — not bugs anyone reported, but gaps found by asking "what happens when this value sits right at a boundary."
+
+- **Cold-start Gini routing now has a dead zone.** The cold-start ranker switches between a formula-based route and an anomaly-detection route based on a repo's commit-count Gini coefficient. A repo sitting right at that boundary could flip strategies entirely on one marginal commit. `cold_start_gini_dead_zone` widens the ambiguous middle zone so a borderline repo doesn't oscillate.
+- **The suppression gate's verdict is smoothed across runs.** The Pass/Suppressed CI verdict was computed from a single rolling window, so repos with sparse or bursty fix-commit history could see it flip week to week with no real underlying change. It now requires three consecutive Suppressed readings before reporting Suppressed, backed by a small `.hotspots/gate_history.json`.
+- **Snapshots now carry a `formula_version`.** Alongside the CLI's own version, so `hotspots diff`/`trends` can eventually tell a score change caused by a tool upgrade apart from one caused by a real code change — something that wasn't distinguishable before.
+- **Config files now carry a `schema_version`.** Mirroring the pattern already used for snapshots, giving future breaking changes to weight/threshold semantics a migration path instead of silent reinterpretation.
+
+None of these are things a user would file a bug about — they're the kind of gap that only shows up as "why did this flip for no reason I can see," which is exactly the failure mode that's hardest to file a clear bug report against.
+
+## The fifth fix: two green PRs, one red `main`
+
+This is the one I want to slow down on. The Gini dead-zone PR added a new field to `HotspotsConfig`. A separate, unrelated PR — adding `schema_version` — had, a bit earlier, changed that same struct's `Default` implementation from a compiler-derived one to a manually written one. Each PR was authored and reviewed against its own base branch, and each passed `cargo fmt`, `clippy -D warnings`, and the full test suite on its own branch. Neither was wrong in isolation.
+
+The moment both merged, `main` failed to compile: `error[E0063]: missing field 'cold_start_gini_dead_zone' in initializer of 'config::HotspotsConfig'`. The dead-zone PR's author had no way to know, at review time, that a manual `Default` impl requiring every field to be listed explicitly would exist by the time their branch landed — that change arrived on `main` after their branch was cut. This is the specific failure mode CI-on-a-branch can't catch: two independently-correct diffs that only conflict in what they silently assume about a shared struct, and only once combined.
+
+The fix was a one-line addition to the manual `Default` impl. The lesson worth keeping is narrower than "add more tests" — it's that a derived `Default` and a struct that gets new fields from multiple concurrent branches is a specific, recurring shape of integration risk, independent of how careful any single PR is.
+
+## Shipping it
+
+I ran this as a minor bump — 1.35.5 → 1.36.0 — since `--axes`, Centrality, and both new versioned fields are new user-facing surface, not fixes. Bump, tag, and quality gates ran first via `cargo-release`; binaries for Linux, macOS ARM64, and Windows built in parallel with the crates.io, npm, three-platform PyPI, and Homebrew tap publishes; the GitHub Release went out last. Every stage passed clean end to end, about seventeen minutes start to finish.
+
+```bash
+hotspots upgrade
+```
