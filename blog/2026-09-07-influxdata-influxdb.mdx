@@ -1,0 +1,115 @@
+---
+title: "influxdb's query planner carries the highest structural debt — 5 functions to fix first"
+titleSeo: "influxdb code health: query planner functions lead refactoring priority list"
+description: "A repository analysis of influxdata/influxdb finds the highest structural risk sitting untouched in the DataFusion query planner, with optimize_plan dormant for 152 days at cyclomatic complexity 30."
+introContent: "The riskiest function in influxdb's codebase hasn't been touched in five months — and that's exactly what makes it dangerous. I dug into the query planning layer to find out what's been quietly accumulating complexity while nobody was looking."
+pubDate: 2026-09-07
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "influxdata/influxdb"
+commit: "693b1fd1b96cdcb980cf76a1004c0b3f1b46db48"
+language: "rust"
+hotspots_version: "1.36.0"
+analyzed_at: "2026-09-07T08:13:38Z"
+clone_depth: 100
+topRisk: 18.15
+topFunction: "optimize_plan"
+topFile: "core/iox_query/src/physical_optimizer/projection_pushdown.rs"
+topPatterns: ["exit_heavy", "long_function", "god_function", "complex_branching", "deeply_nested"]
+patternCounts: {complex_branching: 6, deeply_nested: 5, exit_heavy: 10, god_function: 7, long_function: 10, stale_complex: 2}
+qaSection:
+  - question: "What is exit_heavy and why does it matter in influxdb?"
+    answer: "Exit-heavy describes a function with an unusually high number of return or early-exit points relative to its size. In influxdb's top hotspots, this pattern appears 10 times, including in `check_fields` where 32 branches each represent a distinct validation rule that can short-circuit the function with its own `return error::query(...)`. Each exit point is a path a test suite needs to cover independently, and a high count makes it easy for a new validation rule to be added without realizing an earlier rule already covers (or conflicts with) the same case. It's not a bug by itself, but it's a direct measure of how much test surface a function carries."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The standard technique is extract-method: pull each branch of a large match or if-chain into its own named function that returns a `Result` or `Option`, then compose them with `?`. As a threshold, cyclomatic complexity above 15 is worth splitting during the next touch, and above 30 — like `optimize_plan` at 30 or `check_fields` at 32 in this analysis — warrants attention before the next feature lands on top of it. A concrete first step: in `check_fields`, extract the FILL-clause compatibility check, the GROUP BY requirement check, and the `distinct()` combination check into three separate functions chained with `?` — that alone removes several branches from the parent function's complexity count."
+  - question: "Is influxdb actively maintained?"
+    answer: "Yes, though the top structural risks in this analysis are concentrated in dormant code rather than actively changing code. Three of the top five hotspots — `optimize_plan`, `select_aggregate`, and `check_fields` — have zero touches in the last 30 days and have sat untouched for 152, 171, and 171 days respectively. Elsewhere in the repository, functions like `command` in `create.rs` and `authorize_action` show 1 touch in 30 days, confirming active development is happening on CLI and authorization code in parallel. Active development and high structural debt on the query-planning side aren't contradictory findings — they describe two different parts of the same codebase moving at different speeds."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run with the hotspots CLI against commit `693b1fd` of influxdata/influxdb. After `git checkout 693b1fd`, run `hotspots analyze . --mode snapshot --explain-patterns --force` — the same command works on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies structural complexity (cyclomatic complexity times nesting depth times fan-out) by recent commit frequency, so functions that are both hard to understand and actively changing score highest. A function with cyclomatic complexity 80 that hasn't been touched in two years scores lower than one with cyclomatic complexity 20 touched every week, because the dormant function carries lower near-term regression risk even though it looks worse on paper. In this influxdb analysis, that's why `optimize_plan` at complexity 30 with zero recent touches still ranks above functions with lower complexity but active commit history elsewhere in the codebase — the scoring is trying to answer 'where should I look first,' not 'what looks the messiest.'"
+---
+
+Across 10,995 functions in influxdata/influxdb, 350 land in the critical band, and the top of that list is dominated not by code that's actively changing but by code that's gone quiet. The highest-risk function, `optimize_plan` in the DataFusion projection pushdown optimizer, sits at an activity-weighted risk of 18.15 with cyclomatic complexity 30, nesting depth 10, and zero commits in the last 30 days — it's been sitting untouched for 152 days. That's the core story here: structural debt with a long fuse, not a fire alarm. I'd start remediation in the query planning layer (`core/iox_query` and `core/iox_query_influxql`), where three of the top five hotspots live, before the next person who has to touch that code inherits ten layers of nested conditionals blind.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `optimize_plan` | core/iox_query/src/physical_optimizer/projection_pushdown.rs | 18.1 | 30 | 10 | 19 |
+| `command` | influxdb3/src/commands/create.rs | 17.8 | 42 | 6 | 16 |
+| `select_aggregate` | core/iox_query_influxql/src/plan/planner.rs | 15.0 | 30 | 4 | 21 |
+| `check_fields` | core/iox_query_influxql/src/plan/rewriter.rs | 15.0 | 32 | 6 | 2 |
+| `command` | influxdb3/src/commands/update.rs | 14.9 | 22 | 5 | 11 |
+
+<BandChart fire='110' debt='1388' watch='359' ok='9138' />
+
+The quadrant split tells the real story of this codebase: 1,388 functions sit in structural debt (high complexity, low recent activity) versus only 110 in active fire. That's a 12:1 ratio of dormant complexity to live regression risk. Most of what needs attention here isn't being broken right now — it's waiting to be broken the next time someone has to touch it without full context.
+
+<PatternCloud patterns='exit_heavy:10,long_function:10,god_function:7,complex_branching:6,deeply_nested:5,stale_complex:2' />
+
+The pattern mix across the top hotspots skews toward exit-heavy and long-function issues in roughly equal measure (10 each), with god_function close behind at 7. That combination matches what I see in the source excerpts below: large functions with many early returns, each one a distinct path a test suite has to cover.
+
+### `optimize_plan` — core/iox_query/src/physical_optimizer/projection_pushdown.rs
+
+<FunctionCard fn='optimize_plan' file='core/iox_query/src/physical_optimizer/projection_pushdown.rs' risk='18.15' band='critical' cc='30' nd='10' fo='19' touches='0' />
+
+This is the top-ranked hotspot in the repository, and it's a debt-quadrant function, not a fire one — zero touches in 30 days, last modified 152 days ago. The source excerpt shows exactly why the nesting depth of 10 matters: it's a chain of `downcast_ref` checks against `EmptyExec`, `PlaceholderRowExec`, `UnionExec`, and `DataSourceExec`, each branch handling a different execution-plan node type with its own early return. Fan-out of 19 means this function reaches broadly across the DataFusion plan-node type system, so any change to how one node type is projected risks a ripple into the others. The single author and three total commits on this file (per the external signals) suggest one person carries the context for this logic — that's the real risk multiplier when it eventually needs to change. My recommendation: before the next optimizer change lands here, extract each downcast-and-rewrite branch into its own named function (`pushdown_into_union`, `pushdown_into_parquet_scan`, etc.) so the 10-level nesting collapses into a flat dispatch and each case gets its own test.
+
+### `command` — influxdb3/src/commands/create.rs
+
+<FunctionCard fn='command' file='influxdb3/src/commands/create.rs' risk='17.82' band='critical' cc='42' nd='6' fo='16' touches='1' />
+
+This one is different in kind: it's in the fire quadrant, with 1 touch in the last 30 days and cyclomatic complexity of 42 — the highest raw complexity in the top five. The source excerpt confirms the shape: a large `match` over `SubCommand` variants (`Database`, `LastCache`, `DistinctCache`, and presumably more below the excerpt), each arm building up a request via a chain of optional builder calls (`.name()`, `.key_columns()`, `.max_cardinality()`, etc.) before sending it. This is a CLI command dispatcher, and the bug_fix_fraction of 0.125 on this file means one in eight recent commits here was a fix — modest, but a real signal that this function has needed correction before. With 3 distinct authors touching it in the last 90 days, this is a function actively being extended by more than one person right now. I'd split each `SubCommand` arm into its own handler function (`create_database`, `create_last_cache`, `create_distinct_cache`) — that alone would cut this function's complexity by more than half and let each subcommand be tested and reviewed independently of the others.
+
+### `select_aggregate` — core/iox_query_influxql/src/plan/planner.rs
+
+<FunctionCard fn='select_aggregate' file='core/iox_query_influxql/src/plan/planner.rs' risk='15.03' band='critical' cc='30' nd='4' fo='21' touches='0' />
+
+Another debt-quadrant function, dormant for 171 days, with the highest fan-out in the top five at 21. That fan-out is the number I'd flag first: this function coordinates integral-window processing, aggregate-expression discovery, selector wrapping, and fill-value handling across the InfluxQL-to-DataFusion translation path, all in one call. The source excerpt shows nested pattern matches on `Expr::AggregateFunction` and `Expr::Alias` inside a loop building `additional_args` and `fields_to_extract` — logic that's doing real semantic work on the query, which is exactly where a silent data-layer bug is hardest to catch, since a mistranslation shows up as a wrong query result rather than a crash. With only 5 total commits and 1 author in 90 days, whoever touches this next will be doing so without much recent shared context. I'd start by extracting the single-selector wrapping block (the `if let [selector] = aggr_exprs.as_slice()` branch) into its own function — it's self-contained enough to test against the selector-handling logic in isolation.
+
+### `check_fields` — core/iox_query_influxql/src/plan/rewriter.rs
+
+<FunctionCard fn='check_fields' file='core/iox_query_influxql/src/plan/rewriter.rs' risk='15.00' band='critical' cc='32' nd='6' fo='2' touches='0' />
+
+This function has the highest cyclomatic complexity of any in the top five (32) paired with the lowest fan-out (2) — it's not coupled broadly, it's just densely branched internally. The excerpt shows a validation function stacked with query-rule checks: FILL clause compatibility, GROUP BY requirements, `top`/`bottom` selector exclusivity, `distinct()` combination rules — each one a hard rejection path (`return error::query(...)`) that the exit_heavy pattern flags directly. That's 32 independent paths through a function whose entire job is deciding whether a query is valid, so each path is a distinct rule that needs its own test case to guarantee it still rejects (or accepts) correctly. It's been untouched for 171 days, same window as `select_aggregate` in the same subsystem, suggesting this InfluxQL rewriting layer as a whole has been stable but not simplified. I'd pull each validation rule into its own named check function returning a `Result`, chained with `?` — that turns the exit-heavy branching into a readable list of named preconditions instead of one 32-path function.
+
+### `command` — influxdb3/src/commands/update.rs
+
+<FunctionCard fn='command' file='influxdb3/src/commands/update.rs' risk='14.87' band='critical' cc='22' nd='5' fo='11' touches='0' />
+
+The second CLI dispatcher in the top five, and the most dormant of the group at 221 days since last change — flagged with the `stale_complex` pattern, which is the right label: this function is both structurally heavy and has gone the longest without a human looking at it. The excerpt shows the same match-over-subcommand shape as the `create.rs` version — `Database`, `Trigger`, with file-existence checks, directory-walking for multi-file plugin trigger updates, and `__init__.py` validation baked into the branching. The bug_fix_fraction of 0.1667 on this file is the highest of any top-five function, meaning roughly one in six recent commits to this file was a fix — a signal worth weighing alongside the 221-day dormancy, since it means this exact function class (CLI update commands) has needed correction before, even if the current version hasn't been retested since. Given it mirrors `create.rs`'s structure, the same fix applies: extract each `SubCommand` arm into its own function, starting with the `Trigger` arm's directory-walking logic, which is the most self-contained piece to pull out first.
+
+A few functions outside the top five are worth a mention for contrast. `authorize_action` in `influxdb3_authz/src/authorizer.rs` and `command` in `influxdb3/src/commands/serve.rs` are both fire-quadrant with 1 touch in 30 days and complexity in the 20-31 range — active development on authorization and server startup paths right now, distinct from the dormant planner code above. On the other end, functions like `send_json_error` and `handle_retry_delay` in the scheduler sit in the watch quadrant with complexity under 10 — low structural risk despite recent touches, and not a refactoring priority.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 10 |
+| `long_function` | 10 |
+| `god_function` | 7 |
+| `complex_branching` | 6 |
+| `deeply_nested` | 5 |
+| `stale_complex` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/influxdata/influxdb
+cd influxdb
+git checkout 693b1fd1b96cdcb980cf76a1004c0b3f1b46db48
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
