@@ -1,0 +1,130 @@
+---
+title: "Does My Bug-Risk Model Still Work Once an AI Is Committing Code?"
+description: "I tested my defect-risk signals against real, large-scale AI-assisted commits on Next.js. They mostly held up — except for one narrow blind spot that shows up exactly where you'd predict if you think about how an LLM fails differently than a tired human does."
+pubDate: 2026-09-08
+author: Stephen Collins
+tags: ["defect-prediction", "ai-generated-code", "methodology", "embeddings", "nextjs"]
+draft: false
+introContent: "Churn, ownership concentration, and code coupling are old proxies, built from decades of human development patterns. An LLM doesn't get tired and doesn't lose context between commits the way a person does. I found Next.js — a repo with real, large-scale, ground-truth AI-assisted commit history — and checked whether my existing signals still know what they're looking at."
+---
+
+Every team adopting an AI coding assistant is quietly running an experiment on their own
+codebase: does everything you already know about where bugs come from still apply? Churn,
+complexity, and ownership concentration are old, well-worn proxies for defect risk — built
+from decades of human development patterns: accumulated fatigue, context loss over time,
+handoffs between owners, drift under deadline pressure. An LLM doesn't get tired and
+doesn't forget context between commits the way a human does. So does a defect-risk tool
+quietly stop working the moment half your commits are AI-assisted? I hadn't seen anyone
+actually measure this on a real codebase with real ground truth, so I went looking for one.
+
+---
+
+## The setup
+
+I found one: Next.js. Vercel's engineers pair with Claude Code on real, numbered pull
+requests, and Git faithfully records it in the commit metadata. That combination is rare —
+most AI-assisted commits in public repos show up in small, low-scrutiny side projects,
+which is why most published claims about "AI code quality" lean on small or synthetic
+samples. Next.js gave me hundreds of real AI-assisted commits sitting next to thousands of
+ordinary human commits, in the same codebase, reviewed by the same team, over more than a
+year of history.
+
+I split the question into two competing predictions going in:
+
+1. **Stylistic mimicry.** The model learned to reproduce human code's surface statistics —
+   including the ones correlated with defects — so my existing signals should still work,
+   just a little weaker.
+2. **Clean-looking failure.** LLM mistakes concentrate in confident, structurally simple
+   output — a hallucinated API, subtly wrong logic on the happy path — invisible to metrics
+   built to catch *messy* code. If this dominates, my signals should quietly stop
+   discriminating on AI-assisted commits specifically.
+
+I expected some mix of both. A clean win for either prediction would have surprised me more
+than the actual result did.
+
+## What I found
+
+The old signals mostly held up. Churn, ownership concentration, code coupling, and
+complexity discriminated buggy AI-assisted commits from clean ones at an AUC of 0.798 —
+against 0.831 for ordinary human commits. A 3-point gap is nowhere near "these signals
+stopped working" — that would look like a collapse toward a coin flip, and it didn't
+happen. A second check, controlling for how often a file gets touched at all (an easy
+confound to miss in this kind of comparison — a file that changes constantly will look
+"risky" under almost any metric, regardless of who's touching it), told the same story:
+AI-assisted commits weren't more bug-associated than comparable human commits — if
+anything, slightly less.
+
+But the second prediction wasn't wrong, either — it was just narrower than I'd expected.
+Among the AI-assisted commits that my existing signals specifically rated low-risk — the
+exact population where "clean-looking failure" would hide — an embedding-based anomaly
+score still found real signal: an AUC of 0.62, with a 95% confidence interval that clears
+chance. My old metrics and the new one are looking at different things, and on this narrow
+slice, only the new one sees anything.
+
+## The fingerprint, independent of bugs at all
+
+As a follow-up, I checked whether AI-assisted and human commits look different at all, set
+aside from bug outcomes entirely — same repo, same features, just comparing the two
+populations directly. They do, on every feature I checked. AI-assisted commits land on
+quieter files (less than a third the churn of a typical human commit), more singly-owned
+files, and files with far fewer coupling partners than human commits touch. They also touch
+more files per commit, and skew hard toward tooling and test-file changes — only about half
+of AI-assisted commits touch pure product code, against nearly three-quarters for human
+commits.
+
+The most likely explanation isn't something about how the model writes code — it's what
+kind of work gets handed to it in the first place. A well-specified, self-contained tooling
+fix is a much easier task to delegate than an ambiguous product change, and that pattern
+would produce exactly this fingerprint without implying anything about code quality at all.
+One wrinkle argues against reading too much into that story, though: complexity went the
+other way — AI-assisted commits touched slightly *more* complex files, not less, which is
+the opposite of what a pure "gets handed the easy work" story would predict.
+
+## What I'm not claiming
+
+- **This is one repo: Next.js.** A large, well-resourced, experienced-team codebase with
+  real code review. This may understate the "clean-looking failure" problem in less
+  rigorously reviewed contexts — a solo developer or a small team with lighter review could
+  see a very different picture.
+- **The bug-association label isn't perfectly precise.** The cleanest possible method —
+  tracing a bug back to the exact commit that introduced it, line by line — turned out to
+  be computationally impractical to run at this repo's full scale, so I used a cheaper,
+  file-level proxy instead, and checked it against an obvious confound before trusting it.
+  It's still a proxy, not ground truth. I also tried the strictest possible label — was an
+  AI-assisted commit ever formally reverted — and got zero, out of nearly 600 commits.
+  That's itself informative about how rare a full revert is at this repo's rigor level, but
+  too small a number to build a conclusion on by itself.
+- **The "why" behind the feature fingerprint is my best interpretation, not a proven
+  mechanism.** I didn't isolate the task-delegation story directly — I inferred it from the
+  pattern.
+- **The AI-attribution marker is a weak label on its own.** Not every commit that carries it
+  necessarily reflects heavy AI involvement, and it's trivial to disable — plenty of real
+  AI-assisted work elsewhere carries no marker at all.
+
+## What this changes
+
+On the evidence from this one repo, the result argues against a full rebuild of
+defect-risk tooling — my existing signals are directionally sound here. But it does argue
+for one narrow check worth testing further: when a commit is AI-attributed *and* my
+existing signals call it low-risk, that's exactly the population worth a second,
+differently-shaped look — not because the AI wrote worse code, but because that's precisely
+the blind spot the old signals were never built to see into.
+
+## What I'd test next
+
+The same comparison, on a second real repo with a different flavor of AI attribution —
+ideally one with less rigorous review, to see whether the "clean-looking failure" blind
+spot grows in a lower-scrutiny setting the way the mechanism would predict.
+
+---
+
+## Caveats
+
+- **Single repo (Next.js).** A well-resourced monorepo with strong review culture — the
+  blind-spot effect could be larger or smaller elsewhere.
+- **File-level, not line-level, bug attribution.** The most precise method wasn't
+  computationally feasible at this scale; the fallback was checked against an obvious
+  confound but is still a proxy.
+- **Zero reverted AI-assisted commits, out of ~600.** Informative on its own, but too small
+  a number to draw a conclusion from directly.
+- **The feature-fingerprint "why" is an interpretation**, not something I tested directly.
