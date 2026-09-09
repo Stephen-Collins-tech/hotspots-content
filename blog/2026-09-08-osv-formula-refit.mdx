@@ -1,0 +1,95 @@
+---
+title: "I Tested a New Risk Formula Against Real CVEs. The First Result Was Too Good to Be True."
+description: "A five-signal formula beat my production risk score on 20 of 21 repos when I checked it against real, published vulnerabilities. Then I found out why — and what the number looks like once you fix it."
+pubDate: 2026-09-08
+author: Stephen Collins
+tags: ["defect-prediction", "security", "hotspots-score", "methodology", "cve"]
+draft: false
+introContent: "A five-signal formula beat my production risk score on 20 of 21 repos when I checked it against real CVEs. The real result, once I found the bug in my own comparison, was 9 of 10 — still a win, for a completely different reason."
+---
+
+A five-signal formula fit on real vulnerability data beat my production risk score on 20 of 21 repos, with a mean AUC lift of +0.213. That number was wrong, and not because the formula was bad — because half my baseline wasn't real.
+
+---
+
+## The problem
+
+`hotspots_score` — the risk score I ship in the CLI — was tuned against general bug-fix history, not against security risk specifically. I wanted to know how it actually performs against something much harder to argue with than a bug-fix keyword: files that a real, published CVE advisory names as the fix location for a real vulnerability.
+
+In an earlier analysis, I tested 23 candidate signals against that CVE-linked label across 21 open-source repos. `hotspots_score` wasn't even the best predictor available — it ranked 8th of 23. Three signals led: a convention-aware fix-commit count, author count, and a burst-detection score. The obvious next step was to stop looking at these one at a time and fit a small model that combines them, then see if the combination beats `hotspots_score` outright.
+
+## Setup
+
+Five candidate signals, all computable from git history alone — no CVE database access needed at runtime: a fix-convention commit count, author count, a commit-burst score, total commit count, and author entropy (how evenly commits are spread across contributors). I fit a logistic regression on standardized inputs, using leave-one-repo-out cross-validation across the 21 repos with at least 5 CVE-linked files, so no repo is ever scored by a model that was partly fit on its own data.
+
+Metric: ROC-AUC against the binary "is this file CVE-linked" label. The label is binary, so AUC is the right tool, not a rank correlation.
+
+## The catch
+
+The first run: 20 of 21 repos won, mean AUC lift +0.213. That kind of number should make you suspicious before it makes you happy, and it should have made me suspicious faster than it did.
+
+It turned out `hotspots_score` was completely unpopulated — flat zero — on 5 of the 21 repos, and nearly constant (under 5% nonzero, or fewer than 5 distinct values across the whole repo) on 6 more. Eleven of twenty-one repos — more than half the test set — had a baseline that wasn't really a baseline. Beating a constant isn't a finding about formula quality. It's a finding about a gap in how the comparison data gets built.
+
+I added a gate: a repo only counts in the comparison if `hotspots_score` is populated for at least 5% of its files and has at least 5 distinct values. Then I re-ran the comparison only where the baseline was real.
+
+## Results
+
+Ten of twenty-one repos passed the gate. On those ten:
+
+| Repo | Files | CVE-linked | New formula AUC | hotspots_score AUC | Δ |
+|---|---|---|---|---|---|
+| pocketbase | 19,278 | 18 | 0.960 | 0.632 | +0.328 |
+| scikit-learn | 2,865 | 46 | 0.929 | 0.746 | +0.183 |
+| rustfs | 3,018 | 23 | 0.858 | 0.710 | +0.147 |
+| alist | 1,069 | 18 | 0.869 | 0.746 | +0.123 |
+| streamlit | 20,830 | 11 | 0.970 | 0.858 | +0.112 |
+| fiber | 1,244 | 25 | 0.844 | 0.734 | +0.111 |
+| django | 6,059 | 24 | 0.932 | 0.836 | +0.096 |
+| elysia | 2,508 | 13 | 0.989 | 0.911 | +0.078 |
+| jadx | 3,637 | 13 | 0.769 | 0.735 | +0.034 |
+| elasticsearch | 13,237 | 37 | 0.680 | 0.736 | **−0.056** |
+
+Nine wins out of ten. Mean lift +0.116 — about half the ungated, confound-inflated number, but real this time. Mean formula AUC 0.880 versus mean `hotspots_score` AUC 0.764.
+
+## What the coefficients say
+
+Pooling coefficients across all 21 cross-validation folds:
+
+| Signal | Mean coefficient | Positive in |
+|---|---|---|
+| burst score | +0.65 | 21/21 folds |
+| commit count | +0.42 | 21/21 folds |
+| author entropy | +0.06 | 19/21 folds |
+| fix-convention count | +0.11 | 21/21 folds |
+| author count | **−0.04** | **2/21 folds** |
+
+Author count is the interesting casualty. It ranked in the top 3 signals when I tested each one individually. Once it's sitting next to commit count and burst score in the same model, its coefficient goes negative in almost every fold. It wasn't a bad signal on its own — it was measuring something commit count and burst score already measure, since files with more commits and burstier commit patterns also tend to accumulate more distinct authors. The regression doesn't need it, and reallocates its weight to correct for the overlap.
+
+That's worth stating plainly, because it's easy to get backwards: a signal can rank well when you test it alone and still be dead weight in a combined formula — not because it's noisy, but because it's redundant with signals that are already doing its job.
+
+## The one loss
+
+elasticsearch is the largest repo in the ten (13,237 files) and the only loss. I don't yet know if that's "the formula struggles on very large monorepos" or "one repo, one bad draw." A sample size of one loss can't tell those apart, and I'm not going to pretend it can — this needs a repeat on a few more large repos before I'd say anything stronger about it.
+
+## What I'm not claiming
+
+The eleven repos that failed the gate aren't evidence either way. `hotspots_score` isn't meaningfully computed for them in this dataset, so there's no real baseline to compare against — the new formula's own AUC on those repos ranges 0.65 to 1.00, consistent with the ten-repo result, but I can't call that a win over something that effectively doesn't exist for those repos.
+
+And the whole comparison is scoped to files with a published, indexed CVE — a fraction of real security-relevant code, selected by whatever a security researcher happened to file a report about. That's a real ground truth, but not a complete one.
+
+## What this changes
+
+This gives me a concrete, git-history-only candidate for a security-focused risk ranking — burst score, commit count, and fix-convention count doing the real work, author entropy as a weak stabilizer — without needing a CVE database at request time. The CVE data only mattered here, to figure out which signals deserve the weight; it doesn't need to be looked up again once the formula is set.
+
+## What I'd test next
+
+Repeat the large-monorepo question specifically: pull in more repos in elasticsearch's size class and see if the loss replicates. If it does, that's a real boundary condition on the formula, not a one-off. I also want to re-check how often `hotspots_score` actually populates across my full research corpus — if 11 of 21 repos came up empty or near-constant in this slice, the gap is probably wider than I'd assumed.
+
+---
+
+## Caveats
+
+- **Half the eval set had no usable baseline.** The headline 9-of-10 win rate is real, but it's a 10-repo claim, not a 21-repo one — say so every time this number gets cited.
+- **One loss, unexplained.** elasticsearch could be a monorepo-scale effect or plain noise. Not enough data yet to tell.
+- **Author count looked good until it didn't.** A caution against trusting a signal's solo correlation as a guide to what belongs in a combined formula.
+- **CVE-linked files are a biased sample of "risky."** They're the files someone filed a public vulnerability report against — not a full picture of security-relevant code.
