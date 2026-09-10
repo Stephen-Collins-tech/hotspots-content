@@ -1,0 +1,75 @@
+---
+title: "A Field Guide to Signals That Don't Predict Bugs"
+description: "Semantic embeddings, coupling-reduction advice, cross-repo model transfer, and three different flavors of 'fancier churn' — a survey of the negative results, with real numbers, so you don't have to re-derive them."
+pubDate: 2026-09-09
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "A negative result is only wasted effort once. After that it's a fact worth writing down. Here's a survey of the ways I've tried to predict bugs that didn't work, organized by why they failed, with the real numbers attached."
+---
+
+Most of what I've tried in this research program hasn't worked. That's not a complaint — a well-run experiment that kills a plausible hypothesis is doing its job — but it does mean there's a growing pile of dead ends that are easy to re-discover if you don't already know they're dead. This is that pile, organized by *why* each one failed, because the failure modes cluster into a small number of real patterns, not a long list of unrelated bad luck.
+
+Four categories: signals that are secretly just churn wearing a costume, static/semantic features that add nothing over what's already measured, prescriptive advice that backfires when you actually test whether following it helps, and models that don't survive being moved to a different repo than the one they were trained on.
+
+---
+
+## Category 1: fancier ways to count the same thing
+
+Three separate hypotheses, three different mechanisms proposed, one identical failure mode: each looked like a real signal on a first pass, and each turned out to be highly correlated with plain commit count — once you control for that, nothing is left.
+
+**Diff-size volatility.** The idea: a file whose commit sizes suddenly become erratic — sometimes tiny, sometimes huge — is entering an unstable change regime, a leading indicator distinct from how *often* it changes. It passed its first gate (median ρ=+0.119 across 36 repos, replicated in a stratified split). It failed the second: once churn was controlled for, the lift went to 0.0 pooled, with the sign flipping between repos (scikit-learn −0.225, zed +0.253 — no consistent direction).
+
+**Regime-beta.** Borrowed from quantitative finance: detect a team-wide "frantic" period first, then rank files by how disproportionately their bug rate rises during it relative to their own calm-period baseline — a market-regime-and-instrument-beta analogy. Real two-stage model, real temporal holdout (score computed pre-cutoff, tested against outcomes 180 days after). Ten repos cleared the bar for a stable estimate; the partial correlation against churn split six positive, four negative, mean absolute value 0.059. The tell was structural: the model's own numerator was itself commit-frequency-conditioned, the same axis its "frantic period" label was built from.
+
+**Signature churn.** Not a function's signature *shape* (rejected before running — obviously just LOC and complexity restated) but how often its *declaration line specifically* changes, tracked via git's own line-history algorithm to sidestep a real unsolved problem in my own pipeline (tracking "the same function" across edits to the file around it). Four of six repos positive, two negative, mean absolute value 0.062 — same verdict again, on the most differently-constructed of the three signals.
+
+The common thread: any signal built primarily from counting git events is going to correlate with the strongest git-event-based predictor already available. Across the repos in these two experiments, plain commit count alone correlated anywhere from ρ=0.08 to ρ=0.57 with future bug involvement — repo to repo, not a fixed number, but consistently the thing to beat. Clearing that bar, not just correlating with the outcome, is the actual test.
+
+---
+
+## Category 2: static and semantic features add nothing
+
+A separate, older thread, same conclusion from a different angle: features computed from code *structure* — not activity — consistently fail to add anything once activity signals are already in the model.
+
+LSP-derived reference counts (how many places call into a function) looked like a natural proxy for how load-bearing a piece of code is. On Django, it added zero lift over the existing feature set. Extended to TypeScript on Vue.js, extraction itself worked well (96.7% parse coverage) — but the underlying signal still added nothing once measured properly. The eventual diagnosis: reference count measures *centrality*, not *instability*, and centrality was already captured elsewhere. A from-scratch source-code featurizer built to try to extract semantic signal a different way was folded into the same conclusion rather than independently re-litigated.
+
+This is the most consistent pattern in the whole research program — structural and semantic features hover around ρ=0.06–0.13 across dozens of variations, while activity-based signals sit at ρ=0.27–0.47. It's not that structure is irrelevant to bugs; it's that whatever structural information is predictive is apparently already redundant with the activity signal, once you have one.
+
+---
+
+## Category 3: telling people what to fix doesn't mean fixing it helps
+
+This is the category I'd flag as most important if you're building anything that gives prescriptive advice ("reduce coupling here," "add an owner there") rather than just a risk score. Four independent tests, each asking "does following this advice actually improve the outcome the theory predicts," and four failures — one of them a failure in the *opposite* direction from the hypothesis.
+
+**Coupling reduction.** The theory: files with high co-change coupling are risky because they're tangled; reducing that coupling should reduce defects. Tested observationally across a large sample: a strong effect showed up, in the opposite direction of the hypothesis (median ρ=−0.088, 77% of repos negative). Then tested interventionally — did guided refactors that actually reduced coupling produce fewer downstream issues than unguided ones — and that failed too (the guided arm won only 5 of 10 scored pairs, needed 6).
+
+**Ownership fixes.** The theory: files with fragmented ownership (high author entropy, no clear owner) are riskier, and assigning a clear owner should help. The core relationship didn't hold — one repo (Angular) even showed a significant effect in the opposite direction — and a follow-up specifically hunting for what made Angular different found no repo-level explanation across 89 repos.
+
+**Stabilization via reduced burstiness.** The theory: files with reactive, panic-driven commit bursts are unstable, and encouraging planned refactors to reduce that burstiness should lower their fix rate. Tested against real outcomes: median ρ=−0.167, with only 5 of 89 repos showing the predicted direction.
+
+**Review-diff annotation.** A narrower test of whether annotating a pull request's diff with context actually helps a review agent catch more than the diff alone (or, tellingly, than *no diff content at all*). It didn't clear its bar either — the annotated arm was statistically indistinguishable from diff-only, and a prior-only baseline recovered 80% of the same lift with no diff content whatsoever.
+
+Four different prescriptions, four different mechanisms, one shared lesson: an *observational* correlation between a code-health signal and defects is not evidence that acting on the signal changes the outcome. That gap — between "this correlates with risk" and "changing this reduces risk" — is exactly the gap a risk-scoring tool can measure and a prescriptive tool can't skip.
+
+---
+
+## Category 4: train once, deploy everywhere doesn't work
+
+A model (or adapter, or fine-tune) trained on one repo's bug-fix history does not transfer cleanly to another repo, even a superficially similar one. Cross-repo adapter transfer was tested directly and found not viable — per-repo training turned out to be the actual ceiling, not a fallback. A follow-up tried masking out repo-specific path information before transfer, on the theory that the model was overfitting to path structure rather than learning something general; the masked version still collapsed out-of-distribution. A third attempt trained a domain-clustered encoder on 35 JavaScript/TypeScript-only repos specifically to test whether narrowing the training domain would help transfer to held-out JS/TS repos — it didn't (median lift −0.0074, worse than a mixed-domain baseline that wasn't even trying to specialize).
+
+The practical upshot: if you're deciding between one general model and N per-repo models, the evidence in this corpus points at N, every time it's been tested.
+
+---
+
+## What this is actually for
+
+None of this means nothing works — directed co-change coupling is a real, shipped ranking feature that clears every bar in this post. Commit-timing burst scores did too, for a while: validated, shipped, and then *removed* from the live score once a later check found the specific way it was implemented made risk scores one-directional — a file that ever burst once could never recover, regardless of what happened afterward. It's still computed and used elsewhere (cold-start routing, a separate formula), just not in the score most people look at day to day. That's its own small lesson: "validated" and "shipped" aren't permanent — recheck a signal's actual behavior in production, not just its validation numbers, especially once it's been live long enough to accumulate history. The point of collecting the failures in one place isn't pessimism, it's triage: before you spend a week building a semantic feature, a cross-repo model, or a prescriptive "fix this" recommendation, check whether this list already tells you the answer. Four different research threads, four different plausible mechanisms, each one costing real time to run down properly — that's the cost this post is trying to save you.
+
+---
+
+*Numbers pulled directly from the underlying findings' own recorded results (partial correlations, gate pass/fail thresholds, repo counts) — nothing here is restated from memory or approximated for narrative effect. Every experiment referenced used a pre-registered kill condition stated before running, and — where the claim is about prediction rather than intervention — a genuine temporal holdout.*
