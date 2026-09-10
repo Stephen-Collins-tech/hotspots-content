@@ -1,0 +1,73 @@
+---
+title: "Three Signals That Looked Promising and Weren't"
+description: "Diff-size volatility, a quant-finance-flavored 'regime-beta,' and signature churn — three different hypotheses about what predicts bugs, killed by the exact same test, for the exact same reason."
+pubDate: 2026-09-09
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+  - "machine-learning"
+draft: false
+introContent: "Three plausible-sounding ideas about what predicts bugs beyond raw commit frequency. All three passed a first look. All three failed the same follow-up test, for the same underlying reason. Here's the test, so you can run it before you build the feature, not after."
+---
+
+I've now killed three different hypotheses about what predicts bugs in a codebase, across three separate experiments, with the exact same test producing the exact same verdict each time. None of the three ideas were bad on their face — one came from a quant-finance analogy, one from a code-smell heuristic, one from a straightforward "does X correlate with Y" gut check. All three looked real on a first pass. All three turned out to be the same thing wearing a different coat: raw commit count, restated.
+
+If you're building a defect-risk signal from git history, this is the test to run before you trust a result, not after you've shipped a feature column on top of it.
+
+---
+
+## The test
+
+Any signal derived from git history is going to correlate with how much a file or function changes, because commit frequency alone is already a strong bug predictor — in my own corpus, plain commit count correlates 0.23 to 0.57 with future bug involvement, repo to repo. That's the bar. A new signal has to clear it, not just correlate with the outcome.
+
+The test: **partial correlation**, controlling for total commit count. Compute how much a new signal correlates with the bug outcome, compute how much raw churn correlates with the same outcome, and ask what's left of the new signal's correlation once churn's contribution is subtracted out. If the answer is "not much, and it doesn't even agree on which direction across repos," the new signal isn't adding information — it's a different way of counting the same thing.
+
+I ran this test against three different signals. Here's what happened.
+
+---
+
+## Attempt 1: diff-size volatility
+
+The idea: a file that's normally touched with small, stable patches and suddenly starts getting erratic, wildly-varying-sized commits is entering an unstable change regime — a leading indicator, not just a churn count. This one passed its first gate cleanly: computed as the standard deviation of commit diff sizes over a rolling window, it showed a real, positive correlation with bugs (median ρ=+0.119 across 36 repos) and even replicated in a stratified maintenance-vs-feature-velocity split.
+
+It didn't survive the second test. Once churn was controlled for, the lift evaporated — the pooled result across model/baseline combinations came out flat at 0.0, with the sign itself flipping between repos (a repo like scikit-learn showed −0.225 where zed showed +0.253, no consistent direction). Confirmed correlated with bugs. Not confirmed to be adding anything churn wasn't already telling you.
+
+---
+
+## Attempt 2: regime-beta
+
+This one had the most interesting shape of the three, borrowed directly from quantitative finance. In markets, nobody tests one stock's volatility in isolation — you detect a market-wide regime shift first, then rank individual instruments by their *beta*, their sensitivity to that shift. The software analogue: don't ask whether a file's own history has a change point, ask whether the *team* enters a "frantic" period (crunch, pre-deadline, post-incident), and then ask which files react disproportionately hard when that happens, relative to their own calm-period baseline.
+
+I built this as a real two-stage model: a crude weekly regime label from commit-frequency z-scores and revert-rate spikes, then a per-file beta — the ratio of a file's bug-fix rate during frantic weeks to its bug-fix rate during calm weeks, computed only from history before a cutoff date. Tested against bug involvement in the 180 days *after* that cutoff, so the score couldn't see the thing it was being scored against.
+
+Ten repos cleared the minimum bar for a stable estimate. The partial correlation against churn: six positive, four negative, mean absolute value 0.059 — that's not a signal, that's noise with a sign attached. I added a second, stricter control for file size after finding that a public benchmark for a comparable tool (repowise) has the exact same failure mode baked into its own headline number — a pooled AUC of 0.73 that collapses to near-random once you hold file size fixed, because bigger files just have more bugs and most "defect prediction" signals are quietly riding that fact. Controlling for size on top of churn didn't rescue it either.
+
+The tell was in the model's own numerator: a file's regime-beta is built from how its bug rate changes during high-commit-frequency weeks. Its own denominator is also commit-frequency-conditioned. The signal was measuring itself.
+
+---
+
+## Attempt 3: signature churn
+
+The most narrowly scoped of the three. The original version of this idea — does a function's *signature* (parameter count, arity, return type shape) correlate with bugs — I rejected before running anything, because it's almost certainly just restating function size and complexity, both of which are already captured by existing metrics. The variant I actually tested: not the signature's shape, but how often it *changes* — how many times a function's declaration line specifically was edited, as opposed to just its body.
+
+This is activity-flavored rather than static, which put it in the one category of signal that has actually worked in this corpus before. It also ran into a real infrastructure problem worth naming on its own: tracking "the same function" across its lifetime as a file gets edited around it is an unsolved, deliberately-parked problem in my own pipeline. The workaround was to stop trying to track the function and track its *declaration line* instead, using git's own line-history algorithm (`git log -L`), which handles line-number drift correctly without needing to solve function identity at all.
+
+Six repos produced usable data. Four of six showed a positive partial correlation against total commit count; two showed negative. Mean absolute value: 0.062. Same verdict as the other two, on a signal that was, on paper, the most different of the three.
+
+Two unrelated bugs turned up in the process, worth a sentence each because they're the kind of thing that silently corrupts a result if you don't check for it: one repo's file paths in my training data were absolute leftover paths from a temporary checkout directory instead of paths relative to the repo, which silently failed every single git call for that repo until I noticed the failure rate was exactly 100% instead of noisy. And five repos, it turned out, have zero functions labeled as bug-linked anywhere in their entire training set — a labeling gap at the opposite extreme from the more commonly discussed problem of labels that are *too* dense to be useful.
+
+---
+
+## Why this keeps happening
+
+None of these three ideas were unreasonable. Volatility, regime detection, and interface stability are all real phenomena, and it's not obviously wrong to guess that any of them might carry information about defect risk. What they share is that all three are constructed, in one way or another, from counting git events — commits, diffs, edits to a specific line — and once you're counting git events, you're going to correlate with the thing that's already the strongest predictor available: how often something changes, full stop.
+
+This isn't a reason to stop trying signals shaped like this. Two things in the same corpus that *are* built from git events and did clear this exact bar: directed co-change coupling (does file A tend to change right after file B, in a specific direction) and a burst score based on commit-timing clustering. Both add real, measured lift over churn alone. The difference isn't "activity signal vs. non-activity signal" — churn-adjacent signals can absolutely work. The difference is whether the new signal is actually orthogonal to raw frequency, or just a more elaborate way of computing frequency and calling it something else.
+
+The cheap way to tell the difference before you build the feature: pick any two repos, run a temporal holdout, and check the partial correlation against plain commit count. If it survives on more than half your sample and doesn't flip sign, you might have something. If it looks like these three, you've found a more expensive way to compute churn.
+
+---
+
+*All three experiments used a fixed pre-registered kill condition (stated before running) and a genuine temporal holdout — features computed only from history before a cutoff, tested against outcomes only from after it. Partial correlations computed via OLS residualization or the standard two-variable formula depending on the number of controls. None of the three signals were promoted to a shipped feature.*
