@@ -1,0 +1,66 @@
+---
+title: "Using Hotspots on Its Own CFG Builder, and Watching a File Leave Critical"
+description: "A small case study in dogfooding: I ran hotspots on its own Go control-flow-graph builder, found three CRITICAL functions sharing real duplicated logic, extracted it, and re-ran the tool to check the file's own verdict changed."
+pubDate: 2026-09-10
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "code-health"
+  - "rust"
+  - "cli"
+draft: false
+introContent: "The honest test of a risk-scoring tool isn't a benchmark corpus, it's whether the score actually moves when you fix the thing it flagged. Here's what happened when I pointed hotspots at its own Go CFG builder."
+---
+
+I ran `hotspots analyze` against its own codebase and got a CSV export ranking every file by risk. Near the top: `hotspots-core/src/language/go/cfg_builder.rs`, `critical` band, three functions in the critical range at once. I read the file, found real duplicated logic behind the numbers, fixed it, and then did the thing that actually matters for a tool like this — ran the analysis again and checked whether the score believed me.
+
+---
+
+## What the report actually said
+
+The file's dispatcher, `visit_node`, matches on 17 different tree-sitter node kinds to decide how to build each piece of the control-flow graph. Two of the arms had real logic inlined that didn't belong in a dispatcher: the `"statement_list"` case re-implemented a full "walk this node's children and dispatch each one" loop, and the `"expression_statement"` case had a two-way if/else deciding panic-call versus ordinary statement, right there in the match body. Separately, `visit_switch` and `visit_select` — Go's `switch` and `select` statements, structurally almost identical — each had their own copy of the same case-handling logic: build a node, walk the case body, wire it to the join point.
+
+None of this was hard to see once I went looking. It's the kind of thing that accumulates in a hand-written recursive-descent CFG builder over several separate PRs, each one reasonable on its own, until the aggregate is three functions sharing one file, each independently earning a CRITICAL score.
+
+---
+
+## The fix, and the one thing I checked before trusting it
+
+Three small extractions:
+
+- `visit_children` — the walk-and-dispatch loop, now called from both `build_from_block` and the `statement_list` arm instead of being written out twice.
+- `visit_case` — the switch/select case-handling logic, now shared by both instead of duplicated. This one also let me remove a dead conditional: the original code filtered case-body children with `is_named() && kind() != ":"`, and I wasn't sure the second check was actually doing anything. I wrote a throwaway test that walks a real parsed switch statement and prints every child's `is_named()` value — the colon token was already unnamed, so the check was redundant. Confirmed, then deleted, both the check and the test.
+- `visit_expression_statement` — the panic-vs-statement decision, pulled out of the dispatcher into its own two-line function.
+
+The thing I actually checked, rather than assumed: all 55 golden CFG tests across every supported language passed unchanged before and after, meaning the actual graph structure produced — nodes, edges, everything the risk score is computed from — is byte-for-byte identical. This wasn't a "should be behavior-preserving" refactor. It was verified to be.
+
+---
+
+## Before and after, same file, same command
+
+Structural risk score (LRS — cyclomatic complexity × nesting depth × fan-out, deliberately independent of any trained model or git history, so this comparison isn't affected by anything except the code itself):
+
+| Function | LRS before | LRS after | Band before | Band after |
+|---|---:|---:|---|---|
+| `visit_switch` | 10.58 | 8.03 | critical | high |
+| `visit_node` | 10.32 | 8.43 | critical | high |
+| `visit_select` | 10.21 | 7.66 | critical | high |
+| `build_from_block` | 7.25 | 6.41 | high | high |
+
+Three critical functions became zero. The file's own band — which is the max across everything in it — moved from `critical` to `high`. I got this by running the exact same `hotspots analyze` command against the file before the change and after it, with touch metrics and the trained ranker both turned off, so the only thing that could move the number was the structure of the code itself.
+
+---
+
+## Why the "same command, before and after" part matters
+
+It would have been easy to stop at "removed duplicate code, added tests pass, ship it" — and that's a legitimate PR on its own merits. But a tool that scores code for risk should be able to show its own homework: if the fix was real, the score should reflect it, using the tool's own arithmetic, not a hand-wavy "this is obviously better now." Running the identical command twice and diffing the output is the whole test. It's also the fastest way to catch the failure mode where a refactor *feels* clean but doesn't actually touch the thing the metric measures — cyclomatic complexity is famously insensitive to some kinds of cosmetic cleanup, so an LRS drop this size is real evidence, not a foregone conclusion.
+
+---
+
+## The scope I didn't take
+
+`visit_switch` and `visit_select` still exist as their own functions with real branching logic — a 17-arm dispatcher is never going to look simple, because dispatching on 17 things is 17 decisions, however you write it. I didn't try to collapse the dispatch itself into a lookup table or any other structural rewrite; that's a bigger, riskier change than "remove logic that was accidentally written twice," and it wasn't warranted here. The three functions dropped out of `critical` because the *duplicated* portion of their complexity went away, not because their inherent job got smaller. That's the right amount of refactor for what was actually wrong.
+
+---
+
+*Verified via `hotspots analyze <file> --mode snapshot --format json --touch-mode none --skip-gate --all-functions`, diffed function-by-function between the pre- and post-refactor commit. `cargo test --workspace`: 540 passed. All 55 golden CFG-output tests (every supported language) passed unchanged on both sides of the diff.*
