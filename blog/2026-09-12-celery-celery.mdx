@@ -49,41 +49,41 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 
 celery is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
 
-&lt;BandChart fire='595' debt='0' watch='2280' ok='0' /&gt;
+<BandChart fire='595' debt='0' watch='2280' ok='0' />
 
 The quadrant split is worth sitting with for a second: zero functions landed in 'debt' at the top of this analysis, and 595 are actively changing while structurally complex enough to warrant a second look. There's no backlog of dormant complexity to schedule for later here - the top five hotspots are all 'fire': complex and recently touched at the same time.
 
-&lt;PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:4,god_function:4,long_function:2' /&gt;
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:4,god_function:4,long_function:2' />
 
 Across the top five, every single function shows complex branching and deep nesting, four are flagged as god functions, four are exit-heavy (meaning they have multiple return or exception paths that each need their own test case), and two are long enough to warrant extract-method treatment on their own. That's a tight cluster of the same underlying problem showing up in five different subsystems: task execution, string representation, result backends, app discovery, and the async worker pool.
 
-### `build_tracer` - celery/app/trace.py
+### `build_tracer` — celery/app/trace.py
 
-&lt;FunctionCard fn='build_tracer' file='celery/app/trace.py' risk='18.25' band='critical' cc='31' nd='6' fo='57' touches='1' /&gt;
+<FunctionCard fn='build_tracer' file='celery/app/trace.py' risk='18.25' band='critical' cc='31' nd='6' fo='57' touches='1' />
 
 This is the function that wraps task execution and decides what happens on success, retry, and failure - it builds the closure that every task invocation runs through. The excerpt shows why the numbers are what they are: it pulls in signal receivers, task lifecycle hooks (`before_start`, `on_success`, `after_return`), result backend encoding, and a nested `on_error` handler, all before the traced function itself ever runs. A fan-out of 57 in a dynamically typed language means the real coupling is probably higher than the number suggests, since celery resolves task and backend behavior at runtime rather than through static interfaces. It's been touched once in the last 30 days, with its most recent change 24 days ago, and it carries the highest score in the repository because six levels of nesting combined with 31 branches make every future edit here expensive to reason about. The file-level signals show zero bug-linked commits and a single recent author, so there's no historical defect signal - this is maintainability risk, not a track record of breakage. My first move would be extracting the nested `on_error` handler and the success/failure branches into named helpers, so the god-function pattern stops concentrating all of task-tracing logic in one 31-path body.
 
-### `reprstream` - celery/utils/saferepr.py
+### `reprstream` — celery/utils/saferepr.py
 
-&lt;FunctionCard fn='reprstream' file='celery/utils/saferepr.py' risk='16.81' band='critical' cc='43' nd='5' fo='19' touches='1' /&gt;
+<FunctionCard fn='reprstream' file='celery/utils/saferepr.py' risk='16.81' band='critical' cc='43' nd='5' fo='19' touches='1' />
 
 This one has the highest branch count of the whole set at 43, striking for a repr-generation utility. The excerpt shows a streaming generator that walks a stack of iterables and dispatches on type - decimals, sets, tuples, dicts, lists, and a fallback case - each with its own literal-token handling and cycle-detection logic via the `seen` set. That's a textbook complex-branching case: 43 independent paths through a single generator function is a lot of surface area for a utility that likely gets exercised by nearly every debug log line and repr call in the codebase. It's also deeply nested at five levels, and the generator-chain style (yielding through recursive appends onto a deque) adds a layer of control flow that's easy to misread on a quick pass. One touch in the last 30 days and 24 days since its last change means it's not under heavy churn, but the branch count alone makes it a strong candidate for splitting the type-dispatch logic into a lookup table or a decompose-conditional pass rather than one long if/elif chain.
 
-### `on_chord_part_return` - celery/backends/redis.py
+### `on_chord_part_return` — celery/backends/redis.py
 
-&lt;FunctionCard fn='on_chord_part_return' file='celery/backends/redis.py' risk='16.33' band='critical' cc='32' nd='6' fo='31' touches='3' /&gt;
+<FunctionCard fn='on_chord_part_return' file='celery/backends/redis.py' risk='16.33' band='critical' cc='32' nd='6' fo='31' touches='3' />
 
 This handles what happens when one task in a chord group finishes - updating Redis state, checking whether the group is complete, and firing the chord callback. The excerpt shows nested pipeline operations, a branch between zset- and list-based group tracking, and a try/except around the callback dispatch that itself branches into `chord_error_from_stack` on failure. That's 32 branches and six levels of nesting wrapped around a Redis pipeline plus a `GroupResult` restore-and-join path - exactly the kind of code where a change to one branch (say, the zset path) needs to be checked against the non-zset path too. It's been touched three times in the last 30 days by three distinct authors, with its most recent change 14 days ago, and the file-level history shows a bug-fix fraction of 0.3333 - one in three recent commits on this file was a fix. That's not proof this specific function is defective, but combined with recent editing activity and high branching, it's the strongest case in this list for adding test coverage around the chord-completion paths before the next change lands.
 
-### `find_app` - celery/app/utils.py
+### `find_app` — celery/app/utils.py
 
-&lt;FunctionCard fn='find_app' file='celery/app/utils.py' risk='16.07' band='critical' cc='25' nd='5' fo='8' touches='4' /&gt;
+<FunctionCard fn='find_app' file='celery/app/utils.py' risk='16.07' band='critical' cc='25' nd='5' fo='8' touches='4' />
 
 This resolves an app instance from a dotted name or module path - the kind of function the CLI calls to turn `myproject.celery` into an actual `Celery` object. The excerpt shows nested try/except blocks handling the case where the symbol is a module rather than an instance, falling back through `sym.app`, then `sym.celery`, then a recursive call appending `.celery` to the name, then a scan through the module's attributes looking for a `Celery` instance. Five levels of nesting for what is fundamentally a chain of fallback lookups is a deeply-nested pattern worth flattening - a guard-clause rewrite or an ordered list of resolver strategies would likely cut the nesting in half. It's the most actively edited function in this list, touched four times in the last 30 days with the most recent change today (0 days since last change), across three distinct authors, and a quarter of the file's recent commits are tagged as bug fixes. Given it sits on the app-discovery path used by every CLI invocation, I'd prioritize flattening this before the next round of edits rather than after.
 
-### `schedule_writes` - celery/concurrency/asynpool.py
+### `schedule_writes` — celery/concurrency/asynpool.py
 
-&lt;FunctionCard fn='schedule_writes' file='celery/concurrency/asynpool.py' risk='16.00' band='critical' cc='35' nd='5' fo='13' touches='1' /&gt;
+<FunctionCard fn='schedule_writes' file='celery/concurrency/asynpool.py' risk='16.00' band='critical' cc='35' nd='5' fo='13' touches='1' />
 
 This is the write-scheduling callback inside the async worker pool's event hub - deciding which ready file descriptor gets the next job write, skipping busy workers and already-active writers, and falling back to unqueuing or requeuing messages on failure. At 35 branches it has the second-highest complexity in the set, and the excerpt confirms a dense chain of continue/break conditions checked against `active_writes`, `busy_workers`, and `all_inqueues` state - the kind of code where a small logic change can silently alter fairness or throughput under load. It's long enough to be flagged as a long-function candidate on top of the branching, and comments in the code itself reference a prior optimization decision (`total_writes % ready_fds` over shuffle) that a future editor would need to preserve context for. It's had a single touch in the last 30 days, with its most recent change 24 days ago, so it's not under heavy churn today, but given it sits in the worker pool's I/O hot path, I'd treat any future change here as requiring the full 35-path test matrix rather than a targeted patch.
 
