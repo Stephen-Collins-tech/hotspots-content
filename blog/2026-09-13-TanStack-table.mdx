@@ -1,0 +1,106 @@
+---
+title: "TanStack Table's example apps carry the highest structural debt — 5 functions to fix first"
+titleSeo: "TanStack table code health: dormant example-app functions lead refactoring priority"
+description: "A cross-framework analysis of TanStack/table finds its highest-risk functions sitting untouched for over a month in example apps, not in the core library."
+introContent: "Open TanStack/table's core row-model engine expecting to find its riskiest code, and you'd be looking in the wrong place. The real hazard is sitting quietly in an example app, untouched for over a month, waiting for the next developer to open the file and discover 46 branching paths."
+pubDate: 2026-09-13
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "TanStack/table"
+commit: "ce123bc6651bcbf188f3198627c6bb0b10588162"
+language: "typescript"
+hotspots_version: "1.37.0"
+analyzed_at: "2026-09-13T08:16:01Z"
+clone_depth: 100
+topRisk: 19.55
+topFunction: "cellKeyboardShortcuts"
+topFile: "examples/react/material-react-table/src/material-react-table/utils/cell.utils.ts"
+topPatterns: ["god_function", "long_function", "exit_heavy", "complex_branching", "deeply_nested"]
+patternCounts: {complex_branching: 8, exit_heavy: 9, god_function: 10, long_function: 10, deeply_nested: 3}
+qaSection:
+  - question: "What is a god function and why does it matter in TanStack/table?"
+    answer: "A god function is one that takes on responsibility for many distinct concerns instead of delegating to smaller, focused functions — the tell-tale signs are high fan-out (many distinct functions called) paired with high cyclomatic complexity. Ten of the antipatterns flagged across the top hotspots in this repo are god functions, including `useGridInteractions` and `createGridInteractions`, which each call out to 68 and 71 distinct functions respectively while also managing cell lookup, selection, scrolling, and editing in one place. That combination matters because it makes the function hard to test in isolation — you can't verify the selection logic without also standing up the editing and scrolling dependencies — and it means a change intended for one concern risks breaking an unrelated one sharing the same closure."
+  - question: "How do I reduce fan-out and cyclomatic complexity in TypeScript?"
+    answer: "The direct technique is extract-method: pull cohesive blocks of logic — especially ones triggered by distinct branches in an if-else chain — into their own named functions with explicit parameters, which immediately reduces both the cyclomatic complexity of the parent function and the perceived fan-out at each call site. As a threshold, I'd treat cyclomatic complexity above 15 as worth splitting and above 30 as needing immediate attention; `cellKeyboardShortcuts` sits at 46, well past that line. A concrete first step: split its single keyboard-event handler into per-interaction functions (selection, expansion, pinning, sorting) — even just extracting the sort and pin branches would meaningfully cut its complexity below 30."
+  - question: "Is TanStack/table actively maintained?"
+    answer: "Yes, though the evidence splits by area. The top five highest-risk functions are all in the debt quadrant — untouched for 39 to 45 days — but that's because they live in example applications, not core logic. Meanwhile, core row-model functions like `rebuildRowModel` and `rebuildRows` in the table-core package sit in the fire quadrant with 3 and 2 touches in the last 30 days, indicating active work on the engine itself. Active development in core and structural debt in examples aren't contradictory — they're just two different parts of the same repository moving at different speeds."
+  - question: "How do I reproduce this analysis?"
+    answer: "I ran the analysis with the hotspots CLI, available on GitHub, against commit ce123bc. After running `git checkout ce123bc`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`, and it runs the same way against any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "The activity-weighted risk score multiplies structural complexity — cyclomatic complexity times nesting depth times fan-out — by recent commit frequency, so functions that are both hard to understand and actively changing score highest. A function with cyclomatic complexity 80 that hasn't been touched in two years scores much lower than one with cyclomatic complexity 20 touched every week, because the dormant function carries less near-term regression risk even though it's structurally worse. In TanStack/table this shows up clearly: the top five functions score 15.4 to 19.6 purely on structural weight since they have zero touches in the last 30 days, while `rebuildRowModel` reaches an activity-weighted risk score of 14.43 with only cyclomatic complexity 12 because it's being actively touched 3 times in the last 30 days."
+---
+
+Across 7,520 functions in TanStack/table, 142 land in the critical band, but the single riskiest one — `cellKeyboardShortcuts` in the material-react-table example — hasn't been changed in 45 days despite carrying a cyclomatic complexity of 46 and a nesting depth of 9. That's the defining pattern in this repo's top five: every one of them sits in the 'debt' quadrant, meaning the risk isn't from live churn but from complexity that's been quietly accumulating with nobody currently looking at it. I'd treat all five as pre-emptive refactoring targets — the danger isn't that they're breaking today, it's that whoever touches them next inherits a function with 27 to 71 fan-out and little recent context to work from.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `cellKeyboardShortcuts` | examples/react/material-react-table/src/material-react-table/utils/cell.utils.ts | 19.6 | 46 | 9 | 27 |
+| `DataTableFilterList` | examples/react/kitchen-sink-shadcn-base/src/components/data-table/data-table-filter-list.tsx | 16.4 | 31 | 5 | 38 |
+| `DataTableFilterList` | examples/react/kitchen-sink-shadcn-radix/src/components/data-table/data-table-filter-list.tsx | 16.4 | 31 | 5 | 38 |
+| `useGridInteractions` | examples/react/spreadsheet/src/useGridInteractions.ts | 15.5 | 20 | 4 | 68 |
+| `createGridInteractions` | examples/solid/spreadsheet/src/createGridInteractions.ts | 15.5 | 20 | 4 | 71 |
+
+&lt;BandChart fire='120' debt='601' watch='1049' ok='5750' caption='Risk quadrant distribution across 7,520 functions' /&gt;
+
+The quadrant split tells the real story here: 601 functions are sitting in structural debt versus 120 in live-fire territory. That ratio matters more than any single score — it means the dominant risk pattern in this codebase is dormant complexity, not runaway churn. When I filtered to the top five by activity-weighted risk score, all five landed in the debt quadrant, none in fire. That's unusual, and it shifts how I'd read the whole exercise: this is archaeology, not firefighting.
+
+&lt;PatternCloud patterns='god_function:10,long_function:10,exit_heavy:9,complex_branching:8,deeply_nested:3' /&gt;
+
+The pattern counts back this up. Ten god functions and ten long functions among the top hotspots mean the standard fix — extract-method refactoring — applies broadly here, not just to one outlier.
+
+### `cellKeyboardShortcuts` — cell.utils.ts
+
+&lt;FunctionCard fn='cellKeyboardShortcuts' file='examples/react/material-react-table/src/material-react-table/utils/cell.utils.ts' risk='19.55' band='critical' cc='46' nd='9' fo='27' touches='0' /&gt;
+
+This is the top-ranked function in the whole analysis, and it hasn't been touched in 45 days. Looking at the source, it's a single keyboard-event handler branching on which cell or header was focused — row selection, select-all, row expansion, expand-all, row pinning, column actions menu, sort toggling, and arrow-key navigation are all handled inside one function body via a long `if / else if` chain. A nesting depth of 9 is genuinely deep for TypeScript, and combined with cyclomatic complexity of 46, that's 46 independent paths a test suite would need to cover to claim real coverage. The historical signal here is thin — one total commit, one author in the last 90 days, zero bug-linked commits — so this isn't a function with a documented defect history. It's untested structural debt: a single author wrote a wide keyboard-shortcut dispatcher and nobody has had reason to revisit it since. I'd split it into one handler per interaction type (selection, expansion, pinning, sorting, clipboard) before the next person needs to add a new shortcut and has to trace all 9 nesting levels to find where it belongs.
+
+### `DataTableFilterList` — kitchen-sink-shadcn-base and kitchen-sink-shadcn-radix
+
+&lt;FunctionCard fn='DataTableFilterList' file='examples/react/kitchen-sink-shadcn-base/src/components/data-table/data-table-filter-list.tsx' risk='16.37' band='critical' cc='31' nd='5' fo='38' touches='0' /&gt;
+
+This function appears twice in the top five, once in the shadcn-base example and once in shadcn-radix, with identical metrics: cyclomatic complexity of 31, fan-out of 38, and 45 days since either copy was last changed. The source shows a component managing column-filter state — building filter definitions per column type (multi-select, number, date, select, text), handling add/update/remove operations against a controlled filter array, and coordinating a handful of generated IDs for accessibility. A fan-out of 38 is the standout number here: this function reaches into nearly 40 other functions or hooks, so any change to filter-variant logic or the underlying column-filter shape has a wide blast radius across both copies. Because it's duplicated verbatim across two example apps, a fix in one won't propagate to the other — that duplication is itself worth flagging. I'd extract the filter-variant resolution and the add/update/remove handlers into a shared hook that both examples import, cutting fan-out at each call site and eliminating the need to fix the same bug twice.
+
+### `useGridInteractions` and `createGridInteractions` — the spreadsheet examples
+
+&lt;FunctionCard fn='useGridInteractions' file='examples/react/spreadsheet/src/useGridInteractions.ts' risk='15.47' band='critical' cc='20' nd='4' fo='68' touches='0' /&gt;
+
+&lt;FunctionCard fn='createGridInteractions' file='examples/solid/spreadsheet/src/createGridInteractions.ts' risk='15.47' band='critical' cc='20' nd='4' fo='71' touches='0' /&gt;
+
+These two are the React and Solid ports of the same spreadsheet-interaction logic, and they track each other almost exactly: cyclomatic complexity of 20, nesting depth of 4, and 39 days since either was last changed. What jumps out is fan-out — 68 for the React version, 71 for the Solid version, the highest of any function in this top five. Looking at the source, each one wires together cell lookup by row and column id, active-range tracking, scroll-to-cell behavior, selection movement, edit-session start, and value commit, all as interdependent callbacks sharing closures over the same maps. That's a textbook god-function shape: one function orchestrating six or seven distinct concerns, each calling out to a wide set of table APIs (`getRowsInDisplayOrder`, `getStartVisibleLeafColumns`, `extendCellSelection`, and more). With zero touches in the last 30 days for both, this isn't breaking right now, but it's the kind of function where a single change to selection behavior forces a developer to reason about scrolling, editing, and undo/redo simultaneously. I'd start by extracting the selection-and-scroll logic (`getActiveRange`, `scrollToActiveCorner`, `moveSelection`) into its own hook shared by both ports, since it appears to be nearly identical cross-framework logic duplicated rather than shared.
+
+### What this means next to the fire-quadrant functions
+
+None of the top five are in the fire quadrant, but it's worth contrasting them with what is. `rebuildRowModel` and `rebuildRows` in `packages/table-core/src/worker/rebuildRowModel.ts` sit at an activity-weighted risk score of 14.43 and 13.19 with 3 and 2 touches in the last 30 days respectively — that's core row-model code being actively worked on right now, with cyclomatic complexity of 12 and 17. Those are lower-complexity than anything in the top five, but they're live: someone is actively iterating on row-model rebuilding logic in the actual table-core package. That's a healthier risk profile than the top five — active work on moderate complexity beats dormant work on severe complexity. It also means core engine code isn't where this repo's structural debt concentrates; it's concentrated in the example applications, which apparently get written once by a single author (every top-five function shows exactly one author in the last 90 days) and then left alone.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 10 |
+| `long_function` | 10 |
+| `exit_heavy` | 9 |
+| `complex_branching` | 8 |
+| `deeply_nested` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/TanStack/table
+cd table
+git checkout ce123bc6651bcbf188f3198627c6bb0b10588162
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
