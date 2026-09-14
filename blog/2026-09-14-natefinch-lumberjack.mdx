@@ -1,0 +1,112 @@
+---
+title: "lumberjack.go carries the highest structural debt — 5 functions to address first"
+titleSeo: "lumberjack code health: lumberjack.go complexity leads technical debt priorities"
+description: "A structural analysis of natefinch/lumberjack finds all five top-risk functions concentrated in lumberjack.go, led by the 42-branch millRunOnce, framing the file as dormant structural debt rather than active churn."
+introContent: "I ran a structural risk pass on natefinch/lumberjack and found something worth flagging before anyone opens a pull request against its core file: every one of the top five risk functions lives in the same 800-something line file, and none of them have been touched in over two years."
+pubDate: 2026-09-14
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "natefinch/lumberjack"
+commit: "4cb27fcfbb0f35cb48c542c5ea80b7c1d18933d0"
+language: "go"
+hotspots_version: "1.37.0"
+analyzed_at: "2026-09-14T08:49:32Z"
+clone_depth: 100
+topRisk: 12.33
+topFunction: "millRunOnce"
+topFile: "lumberjack.go"
+topPatterns: ["exit_heavy", "god_function", "stale_complex"]
+patternCounts: {god_function: 1, stale_complex: 1, exit_heavy: 4}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in lumberjack?"
+    answer: "An exit-heavy function is one with many distinct return points scattered through its body, typically from explicit error checks — in Go this shows up as repeated 'if err != nil { return ... }' blocks. Four of the five top functions in lumberjack.go carry this pattern, including 'compressLogFile' with a cyclomatic complexity of 21 built substantially from sequential error-return checks. Each exit point is a separate path a test suite has to cover to claim real coverage, and it means a reviewer has to mentally track many possible early-termination points to understand what a function guarantees on success. It's not a bug in itself, but it raises the cost of confidently changing the function later."
+  - question: "How do I reduce cyclomatic complexity in Go functions like this?"
+    answer: "The direct technique is extract-method: pull cohesive chunks of sequential logic — especially setup/preamble code or independent decision blocks — into their own named functions, which lowers the complexity of the caller without changing behavior. As a rule of thumb, a cyclomatic complexity above 15 is worth scheduling for a split, and above 30 warrants immediate attention; 'millRunOnce' sits at 42 and is the clearest candidate in this codebase. A concrete first step would be extracting the backup-count filtering loop and the max-age filtering loop in 'millRunOnce' into two standalone functions that each return a filtered slice, which alone would cut its complexity by close to half. Do the same decomposition for 'compressLogFile' by separating the file-opening preamble from the actual gzip-copy-and-cleanup sequence."
+  - question: "Is lumberjack actively maintained?"
+    answer: "Based on this analysis, all five of the highest-risk functions fall into the structural-debt quadrant rather than the active-churn quadrant — none show any touches in the last 30 days, and the most dormant of them, 'Write', hasn't been changed in 3157 days. The other four — 'millRunOnce' (2077 days), 'compressLogFile', 'openNew', and 'openExistingOrNew' (838 days each) — show the same pattern of zero recent touches with long stretches since their last change. That doesn't mean the project is abandoned; it means the rotation-and-write core has been stable enough that nobody has needed to modify it recently, which for a small, focused logging library is plausibly a sign of a settled design rather than neglect. High structural complexity and low recent activity aren't contradictory — this file is exactly the kind of dormant-but-complex core that deserves a review pass before the next feature request forces someone into it under time pressure."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run with the hotspots CLI against commit 4cb27fc of natefinch/lumberjack. After running `git checkout 4cb27fc`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command runs against any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies structural complexity — cyclomatic complexity times nesting depth times fan-out — by recent commit frequency, so functions that are both hard to understand and actively changing score highest. A function with high cyclomatic complexity that hasn't been touched in two years scores lower than one with lower complexity that gets touched every week, because the dormant complex function carries lower near-term regression risk. In lumberjack, none of the top functions have any touches in the last 30 days, which is why even 'millRunOnce', with its activity-weighted risk score of 12.33, is framed as structural debt rather than a live fire. This prioritization is meant to focus refactoring effort where it lowers the odds of a bug landing soon, not just where code looks complicated on paper."
+---
+
+Out of 23 functions analyzed in natefinch/lumberjack, 5 landed in the critical band, and all 5 live in a single file: lumberjack.go. The top-ranked function, `millRunOnce`, carries a cyclomatic complexity of 42 and an activity-weighted risk score of 12.33, but it sits in the 'debt' quadrant — it hasn't been changed in 2077 days, so the risk here isn't live churn, it's accumulated structural debt with a high blast radius the next time someone has to touch rotation or cleanup logic. I'd treat this file as a single unit of refactoring risk, not five isolated functions.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `millRunOnce` | lumberjack.go | 12.3 | 42 | 3 | 15 |
+| `compressLogFile` | lumberjack.go | 11.8 | 21 | 1 | 12 |
+| `openNew` | lumberjack.go | 11.1 | 13 | 2 | 11 |
+| `Write` | lumberjack.go | 10.9 | 13 | 2 | 9 |
+| `openExistingOrNew` | lumberjack.go | 10.0 | 11 | 1 | 11 |
+
+&lt;BandChart fire='0' debt='10' watch='0' ok='13' /&gt;
+
+The quadrant split tells the real story here: zero functions are in active-churn territory ('fire'), ten are dormant structural debt ('debt'), and the remaining thirteen are low-complexity and quiet ('ok'). Nothing in this repository is currently a live regression risk. What lumberjack has instead is a small, concentrated pocket of complexity that nobody has needed to touch in a long time — a different kind of risk: high blast radius the day someone does.
+
+&lt;PatternCloud patterns='exit_heavy:4,god_function:1,stale_complex:1' /&gt;
+
+Four of the five top functions are flagged 'exit_heavy' — meaning they have many distinct return points scattered through error-handling branches. In Go, every early return on an `err != nil` check is an explicit, visible fork, which is good for readability line-by-line but adds up to a real test-coverage burden once a function has a dozen of them. One function, `millRunOnce`, is also flagged 'god_function' and 'stale_complex' — the combination that matters most here, because it means the function both does too much and hasn't been revisited in years.
+
+### `millRunOnce` — lumberjack.go
+
+&lt;FunctionCard fn='millRunOnce' file='lumberjack.go' risk='12.33' band='critical' cc='42' nd='3' fo='15' touches='0' /&gt;
+
+This is the highest-risk function in the repository, and it earns that spot on structure alone: a cyclomatic complexity of 42, a fan-out of 15 distinct calls, and no changes in 2077 days. Reading the source, it's doing three separate jobs in one body — trimming backups past 'MaxBackups', pruning files older than 'MaxAge', and deciding what needs compression — each with its own loop building up 'remove' and 'compress' slices, followed by two more loops that actually perform the removal and compression while accumulating the first non-nil error. That's the 'god_function' pattern in concrete terms: one function owns filtering, cutoff-time math, and I/O side effects, and fifteen distinct downstream calls means a change to any one concern risks touching the others. The file's commit history shows a bug-fix fraction of 0.2692 across 26 total commits and a review-comment density of 0.75, which tells me this file has drawn real reviewer attention in the past even though no individual commit is tagged as bug-linked. My recommendation: split this into three functions — one that computes what to remove, one that computes what to compress, and one that executes the file operations — before the next feature request touches retention policy.
+
+### `compressLogFile` — lumberjack.go
+
+&lt;FunctionCard fn='compressLogFile' file='lumberjack.go' risk='11.79' band='critical' cc='21' nd='1' fo='12' touches='0' /&gt;
+
+Second on the list, with a cyclomatic complexity of 21 and a fan-out of 12, dormant for 838 days. The 'exit_heavy' tag is earned honestly here — I count at least eight separate error-returning checks across opening the source file, statting it, chowning the destination, opening the gzip destination, copying bytes, closing the writer, closing the reader, and removing the source. Each of those wraps its own `fmt.Errorf` with a distinct message, which helps diagnostics but means testing every failure path requires mocking eight different os/io failure points. The nesting depth of 1 is actually reassuring — this isn't deeply nested logic, it's a long, flat sequence of sequential operations, which makes it a good extract-method candidate: pull the open-stat-chown preamble into its own helper and leave the copy-and-cleanup as a second function.
+
+### `openNew` — lumberjack.go
+
+&lt;FunctionCard fn='openNew' file='lumberjack.go' risk='11.06' band='critical' cc='13' nd='2' fo='11' touches='0' /&gt;
+
+A cyclomatic complexity of 13 and fan-out of 11, dormant for 838 days just like `compressLogFile` — both were last touched in the same window, suggesting they moved together in a prior refactor. The logic here handles directory creation, mode preservation from the old file, renaming the existing log to its backup name, a platform-specific chown, and finally opening the new file — five distinct concerns stacked in sequence with an early return baked into the middle for the 'file already exists' branch. It's not the worst offender in this file, but an 11-way fan-out for what is conceptually 'make way for a new log file' is worth trimming — I'd look at whether the chown and rename steps can be isolated into a single 'rotateExistingFile' helper called before the actual open.
+
+### `Write` — lumberjack.go
+
+&lt;FunctionCard fn='Write' file='lumberjack.go' risk='10.9' band='critical' cc='13' nd='2' fo='9' touches='0' /&gt;
+
+`Write` is the public entry point of the `io.Writer` interface this whole package exists to implement, which makes its complexity worth extra scrutiny — a cyclomatic complexity of 13 and fan-out of 9, untouched for 3157 days, the longest dormancy of any function in the top five. The function guards a mutex, checks the write length against the configured maximum, lazily opens or rotates the file, and only then performs the actual write — four conditional gates before a single byte is written. Because this method is called on every log line an application emits, any latent edge case here has a wide blast radius, even though nothing in the data suggests it has misbehaved. I'd leave the mutex handling alone and focus any refactor on separating the size-check-and-rotate decision from the write itself, since that's the part most likely to need a new branch the next time file-size policy changes.
+
+### `openExistingOrNew` — lumberjack.go
+
+&lt;FunctionCard fn='openExistingOrNew' file='lumberjack.go' risk='10.04' band='critical' cc='11' nd='1' fo='11' touches='0' /&gt;
+
+Rounding out the top five: cyclomatic complexity of 11 against a fan-out of 11 — a rare case where the number of distinct calls out roughly matches the number of decision branches, meaning almost every conditional path here ends in a call to another piece of rotation machinery ('mill', 'openNew', 'rotate'). It's been dormant for 838 days, the same window as `openNew` and `compressLogFile`, reinforcing that this trio of file-lifecycle functions was last worked on together. Given its role deciding between reuse, rotation, and fresh-file creation, I'd treat any future change to this function as a signal to re-review `openNew` and `rotate` in the same pass, since they're tightly coupled by call graph even if git hasn't linked them recently.
+
+Stepping back, the pattern across all five is consistent: nothing here is broken, and nothing here is currently churning. What I'm looking at is a rotation-and-cleanup subsystem that was written once, works, and hasn't needed a human in years — exactly the profile that turns into an expensive incident when someone finally does have to change 'MaxAge' semantics or add a new backup-naming scheme. The bug-fix fraction of 0.2692 and review-comment density of 0.75 on this file suggest past changes here haven't been trivial to land cleanly, which is one more reason to shrink these functions before the next one arrives.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 4 |
+| `god_function` | 1 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/natefinch/lumberjack
+cd lumberjack
+git checkout 4cb27fcfbb0f35cb48c542c5ea80b7c1d18933d0
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
