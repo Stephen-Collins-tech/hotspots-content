@@ -1,5 +1,5 @@
 ---
-title: "mitchellh/cli's core dispatcher carries the highest structural risk — 5 functions to address first"
+title: "mitchellh/cli's cli.go carries the highest structural risk — 5 functions to fix"
 titleSeo: "mitchellh/cli code health: cli.go dispatcher functions lead refactoring priority"
 description: "Four of the five riskiest functions in mitchellh/cli live in cli.go, where a 37-path Run function and a 50-path processArgs function form the core of the command dispatch logic."
 introContent: "One file, cli.go, accounts for four of the top five structural-risk hotspots in mitchellh/cli — including a 37-path dispatch function that hasn't been touched in over four years."
@@ -70,17 +70,17 @@ This is the highest cyclomatic complexity in the set at 50, and it also has the 
 
 init runs once via `sync.Once` and sets up everything Run depends on: help function defaults, writer defaults, hidden-command lookup, the radix command tree, nested-command detection, and a recursive walk function that back-fills missing parent commands for nested subcommand trees. The recursive `walkFn` closure it builds inline is the interesting piece — a self-referential radix tree walk that inserts placeholder `MockCommand` entries for implied parent commands, doing real structural work inside a setup function rather than in a named, testable unit. With 13 called functions and 25 paths, this is tagged god_function for a reason: it's the single place that has to stay correct for every downstream command-tree lookup, including the `commandTree.Get` and `LongestPrefix` calls that Run and processArgs both depend on. It hasn't moved in 1582 days, same as Run, which tracks — they were likely last touched together. I'd extract the parent-command backfill loop (the `walkFn` closure and its insertion logic) into a named top-level function; it has no dependency on the rest of init's state beyond the tree itself.
 
-### `commandHelp` — cli.go
-
-&lt;FunctionCard fn='commandHelp' file='cli.go' risk='10.69' band='critical' cc='27' nd='3' fo='24' touches='0' /&gt;
-
-This function has the highest fan-out in the entire top five at 24 distinct called functions, against 27 paths and 3 levels of nesting. Looking at the excerpt, it's doing template selection, template parsing with fallback error handling, building a data map for the template, and — when the CLI is in nested-command mode — iterating subcommands to compute name alignment padding and build a subcommand list for the help template. That padding-alignment loop (finding the longest key, then repeating spaces per entry) is exactly the kind of formatting-detail code that has no business sharing a function with error-handling template fallback logic. A fan-out of 24 means a change to any of those called helpers — `helpCommands`, `Subcommand`, the sprig template functions, `sub.Help()`, `sub.Synopsis()` — has a real chance of needing a corresponding check here. It's been dormant for 1398 days. Splitting the subcommand-list-building block into its own function would cut fan-out immediately and let the template-execution path be tested independently of the padding logic.
-
 ### `ask` — ui.go
 
 &lt;FunctionCard fn='ask' file='ui.go' risk='10.87' band='critical' cc='11' nd='1' fo='13' touches='0' /&gt;
 
 ask is the outlier in this set — its cyclomatic complexity (11) and nesting (1) are both far lower than the cli.go functions, but its fan-out of 13 and the concurrency shape push its score up. The excerpt shows why this one deserves a different kind of attention: it spins up a signal-notification channel for interrupts, launches a goroutine that reads a line from stdin (or via `speakeasy.Ask` for secret input), and then selects across an error channel, a line channel, and the interrupt channel. That's textbook goroutine-and-channel coordination, and structural metrics like cyclomatic complexity don't fully capture the risk in that kind of code — a mishandled channel close or an unregistered signal path can produce a leak or a hang that a path count won't reveal. It's on the exit_heavy list, which fits: three separate return points inside the `select`, each needing separate test coverage for the interrupt-during-input case specifically. This function has gone 3126 days without a change, the longest dormant period in the set, with only 10 total commits on record for the file, so this is old, stable code — but if anyone touches it, I'd want a test that explicitly forces the interrupt-channel branch, since that's the path most likely to be undertested given the concurrency involved.
+
+### `commandHelp` — cli.go
+
+&lt;FunctionCard fn='commandHelp' file='cli.go' risk='10.69' band='critical' cc='27' nd='3' fo='24' touches='0' /&gt;
+
+This function has the highest fan-out in the entire top five at 24 distinct called functions, against 27 paths and 3 levels of nesting. Looking at the excerpt, it's doing template selection, template parsing with fallback error handling, building a data map for the template, and — when the CLI is in nested-command mode — iterating subcommands to compute name alignment padding and build a subcommand list for the help template. That padding-alignment loop (finding the longest key, then repeating spaces per entry) is exactly the kind of formatting-detail code that has no business sharing a function with error-handling template fallback logic. A fan-out of 24 means a change to any of those called helpers — `helpCommands`, `Subcommand`, the sprig template functions, `sub.Help()`, `sub.Synopsis()` — has a real chance of needing a corresponding check here. It's been dormant for 1398 days. Splitting the subcommand-list-building block into its own function would cut fan-out immediately and let the template-execution path be tested independently of the padding logic.
 
 ## Patterns Found
 
