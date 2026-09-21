@@ -1,0 +1,115 @@
+---
+title: "Typst's layout and IDE code carries the highest structural debt — 5 functions first"
+titleSeo: "typst code health: layout and IDE functions lead refactoring priority list"
+description: "A structural-debt audit of typst/typst finds its riskiest function, collect() in the inline layout engine, has sat untouched for 67 days at cyclomatic complexity 21 and nesting depth 9."
+introContent: "I went digging through typst/typst's structural risk data and found the top hotspot isn't some function under active fire — it's a nine-deep nested collector nobody has touched in over two months. That's the more dangerous kind of risk: the one nobody's watching."
+pubDate: 2026-09-21
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "typst/typst"
+commit: "094b9634d2aa506757d342103411a33a347e3012"
+language: "rust"
+hotspots_version: "1.40.0"
+analyzed_at: "2026-09-21T08:59:49Z"
+clone_depth: 100
+topRisk: 18.75
+topFunction: "collect"
+topFile: "crates/typst-layout/src/inline/collect.rs"
+topPatterns: ["god_function", "long_function", "complex_branching", "deeply_nested", "exit_heavy"]
+patternCounts: {complex_branching: 7, deeply_nested: 7, exit_heavy: 7, god_function: 9, long_function: 8, hub_function: 2}
+qaSection:
+  - question: "What is a god function and why does it matter in typst?"
+    answer: "A god function is one that takes on too many responsibilities at once — high fan-out (calling many other functions), often paired with high branching, so a single function becomes a hub that many parts of the system depend on indirectly. Typst has 9 functions in the top hotspots flagged with this pattern, including `write` in the test report harness with a fan-out of 17 and `collect` in inline layout with a fan-out of 16. The practical problem is blast radius: a change to a god function's internals can ripple into every caller's behavior, and testing it in isolation means exercising a large surface area rather than a focused unit."
+  - question: "How do I reduce cyclomatic complexity in Rust?"
+    answer: "The standard technique is decompose-conditional: pull each branch of a long if-else-if or match chain into its own named function, so the outer function becomes a short dispatcher. `named_items` at a cyclomatic complexity of 52 and `resolve_realized` at 39 are the most extreme cases in this analysis, and both warrant that treatment before the next unrelated change touches them. A concrete first step for `resolve_realized` would be extracting the two dozen `to_packed::<T>()` branches into a lookup table or trait-dispatch pattern, cutting both the complexity count and the extreme nesting depth in one pass."
+  - question: "Is typst actively maintained?"
+    answer: "Yes, though the top five hotspots mostly show up as structural debt rather than active churn — four of the five (`collect`, `named_items`, `resolve_realized`, and `write`) have zero touches in the last 30 days and haven't changed in 42 to 67 days. But the fire quadrant tells the other half of the story: `visit_styled` was touched once in the last 30 days with a change only 17 days old, and context functions like `progress_tree_start`, `build_group_tag`, and `new_impl` were all edited within the last 17 days too. Active development and high structural debt coexist here — the debt isn't a sign of abandonment, it's accumulated complexity in code that simply hasn't needed to change recently."
+  - question: "How do I reproduce this analysis?"
+    answer: "I ran the hotspots CLI, available on GitHub, against commit 094b963 of typst/typst. After `git checkout 094b963`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`. It runs the same way against any local git repository with no project-specific configuration required."
+  - question: "What does activity-weighted risk mean?"
+    answer: "The activity-weighted risk score combines structural complexity — cyclomatic complexity, nesting depth, and fan-out — with how frequently a function has been changed recently, so functions that are both hard to understand and actively being edited score highest. That's why `collect`, sitting untouched for 67 days, still lands at the top with a score of 18.75: its structural complexity alone (cyclomatic complexity 21, nesting depth 9, fan-out 16) is high enough to dominate even with zero recent commits. This prioritization is meant to point review effort at where a bug is most likely to get introduced soon, not simply at whatever function looks most tangled on paper."
+---
+
+Typst is a markup-based typesetting system written in Rust, and this analysis covers 6,190 functions, 220 of which land in the critical band. The top-ranked function, `collect` in `crates/typst-layout/src/inline/collect.rs`, carries an activity-weighted risk score of 18.75 but sits in the debt quadrant — zero touches in the last 30 days and 67 days since its last change. That's the core of the story here: the riskiest code in this repo isn't mid-refactor, it's been quietly accumulating branches and nesting while nobody's looking, so whoever touches it next inherits all of that complexity at once.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `collect` | crates/typst-layout/src/inline/collect.rs | 18.7 | 21 | 9 | 16 |
+| `named_items` | crates/typst-ide/src/matchers.rs | 18.0 | 52 | 7 | 14 |
+| `visit_styled` | crates/typst-realize/src/lib.rs | 17.8 | 34 | 7 | 13 |
+| `resolve_realized` | crates/typst-library/src/math/ir/resolve.rs | 17.3 | 39 | 36 | 4 |
+| `write` | tests/src/report/mod.rs | 16.9 | 13 | 3 | 17 |
+
+<BandChart fire='81' debt='743' watch='222' ok='5144' />
+
+Of 6,190 functions analyzed, 743 fall into the debt quadrant — structurally complex code that isn't currently being changed — versus 81 in the fire quadrant that are both complex and under active edit right now. That ratio is the headline: this is a codebase where the dominant risk pattern is dormant complexity, not runaway churn. The watch quadrant (222) and the overwhelming 'ok' bucket (5,144) suggest most of the codebase is in reasonable shape; the risk is concentrated in a small, identifiable set of files.
+
+<PatternCloud patterns='god_function:9,long_function:8,complex_branching:7,deeply_nested:7,exit_heavy:7,hub_function:2' />
+
+Across the top hotspots, nine functions show god-function characteristics (doing too much, coupled to too much), eight are simply long, seven mix complex branching with deep nesting, and seven have so many exit points that covering them with tests means covering every early return. That's a consistent signature: large dispatch-style functions with dense conditional logic, not scattered one-off complexity.
+
+### `collect` — crates/typst-layout/src/inline/collect.rs
+
+<FunctionCard fn='collect' file='crates/typst-layout/src/inline/collect.rs' risk='18.75' band='critical' cc='21' nd='9' fo='16' touches='0' />
+
+This function builds the text and segment structure that inline layout works from — collecting styled children, handling directional embedding, smart quotes, spacing, and line breaks into one flattened representation. A nesting depth of 9 is a strong refactoring signal on its own, and the source confirms why: a long if-else-if chain branches on element type (space, text, horizontal spacing, line break, smart quote), each branch doing its own nested logic for styles and directionality. With a fan-out of 16, this function is also a hub — it calls into many collaborators, so any signature or behavioral change here has a wide blast radius across inline layout. It hasn't been touched in 67 days and shows no history of bug-linked commits or reverts on the file, so I'd frame this as maintainability debt rather than an active fire: nobody is fighting this code right now, which makes it a good, low-pressure candidate to extract the per-element-type branches into separate handler functions before the next feature forces someone to add a tenth level of nesting.
+
+### `named_items` — crates/typst-ide/src/matchers.rs
+
+<FunctionCard fn='named_items' file='crates/typst-ide/src/matchers.rs' risk='17.95' band='critical' cc='52' nd='7' fo='14' touches='0' />
+
+This one walks the syntax tree upward from a cursor position to find named bindings and imports for IDE features like autocomplete and go-to-definition. A cyclomatic complexity of 52 is very high, and the source shows why: nested loops over ancestors and siblings, pattern matches on let-bindings versus module imports, and further matches on wildcard versus named versus bare imports, each with its own early return via the callback-based `recv` closure. That's the 'exit_heavy' pattern in practice — many `return Some(res)` points scattered through nested match arms, which makes exhaustive test coverage expensive. It's had zero touches in the last 30 days and hasn't changed in 42 days, with only two total commits and two distinct authors on the file historically, so there's no evidence of recurring defects — this reads as one person's original design that hasn't needed revisiting, not a known trouble spot. Given the entangled control flow, I'd split the let-binding branch and the import-resolution branch into two dedicated functions; the import logic alone (wildcard vs. named vs. bare) looks big enough to justify its own name.
+
+### `visit_styled` — crates/typst-realize/src/lib.rs
+
+<FunctionCard fn='visit_styled' file='crates/typst-realize/src/lib.rs' risk='17.76' band='critical' cc='34' nd='7' fo='13' touches='1' />
+
+This is the one function in the top five that's actually live right now. It handles styled elements during content realization — applying document, page, and format-level set rules and validating where they're allowed (bailing with an error if a document set rule shows up inside a container, for instance). At cyclomatic complexity 34 and nesting depth 7, it's already dense, and it's been touched once in the last 30 days, with its most recent change 17 days ago. A third of the file's recorded commits are bug fixes, and three distinct authors have touched it in the last 90 days — that combination of shared ownership, a recent history of fixes, and an activity-weighted risk score of 17.76 is what puts this in the fire quadrant rather than debt: it's both hard to reason about and being actively edited. This is the one I'd review before the next merge lands, not queue for later — specifically the branches handling document versus bundle versus container targets, since the bail conditions there are exactly the kind of logic that's easy to get subtly wrong under time pressure.
+
+### `resolve_realized` — crates/typst-library/src/math/ir/resolve.rs
+
+<FunctionCard fn='resolve_realized' file='crates/typst-library/src/math/ir/resolve.rs' risk='17.32' band='critical' cc='39' nd='36' fo='4' touches='0' />
+
+This function dispatches a realized math element to its type-specific resolver — symbols, fractions, accents, matrices, underbraces, and roughly two dozen more element kinds, each in its own `else if` arm. The cyclomatic complexity of 39 tracks with that — one branch per element type — but the nesting depth of 36 is the real outlier in this entire dataset, an order of magnitude beyond anything else in the top hotspots. Fan-out is only 4 despite the size — this is a wide dispatch table over `to_packed::<T>()` casts, not a function calling many collaborators. It hasn't moved in 67 days and carries no bug-linked history, so this reads as intentional structure (a match-like dispatch over element kinds) rather than accidental sprawl. Still, that nesting number alone justifies converting this into a proper `match` on an element-kind enum or a lookup table of resolver functions, both of which would flatten the structure without changing behavior.
+
+### `write` — tests/src/report/mod.rs
+
+<FunctionCard fn='write' file='tests/src/report/mod.rs' risk='16.94' band='critical' cc='13' nd='3' fo='17' touches='0' />
+
+This is test-harness code, not product logic — it generates an HTML test report and figures out which historical outputs are missing by walking git blame across hash-reference files. Complexity and nesting here are modest (13 and 3), but fan-out of 17 is the highest in the top five, and the source confirms it: writing files, sorting, filtering, iterating over blame lines, and building an index map all in one function marked with both 'god_function' and 'hub_function' patterns. That breadth of direct calls is what drives the risk score up despite low branching — it's coupled to a lot of moving parts (filesystem, git, report generation) in one place. It hasn't been touched in 67 days and only has one commit and one author on record, so this is low-pressure debt: I'd extract the git-blame-scanning loop and the missing-output detection into separate helper functions, both because it would make the harness easier to test in isolation and because test infrastructure this coupled tends to get avoided rather than fixed when it eventually breaks.
+
+Worth noting in the context data: `jump_from_click_in_frame` in `crates/typst-ide/src/jump.rs` sits at a similar profile to today's top five — complexity 46, zero recent touches, 67 days dormant — but didn't make the top five cut. If IDE responsiveness or accuracy becomes a focus, that function and `named_items` sit in the same file family of debt and are worth reviewing together. On the other side, `progress_tree_start` and `build_group_tag` in the PDF tagging code, along with `new_impl` in the CLI compile path and `footnote` in flow composition, are all fire-quadrant functions with real edits in the last 6 to 17 days — a cluster of active work in PDF tag-tree construction that's worth keeping an eye on given their complexity scores (58, 38, 29, and 27 respectively).
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 9 |
+| `long_function` | 8 |
+| `complex_branching` | 7 |
+| `deeply_nested` | 7 |
+| `exit_heavy` | 7 |
+| `hub_function` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`hub_function`](https://hotspots.dev/analyses/patterns/hub_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/typst/typst
+cd typst
+git checkout 094b9634d2aa506757d342103411a33a347e3012
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
