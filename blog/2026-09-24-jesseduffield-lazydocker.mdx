@@ -1,0 +1,114 @@
+---
+title: "lazydocker's GUI layer holds the highest structural debt — 5 functions to fix first"
+titleSeo: "lazydocker code health: GUI layer structural debt leads refactoring priority"
+description: "In lazydocker, the highest-risk functions are dormant structural debt in the GUI package, led by a log-writing function unmodified for 642 days."
+introContent: "I checked lazydocker's structural complexity against its commit history and found the riskiest code isn't the code that's changing right now — it's code that's sat untouched for as long as 1,256 days, which turns out to be its own kind of risk."
+pubDate: 2026-09-24
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "jesseduffield/lazydocker"
+commit: "7e7aadc2071d58031bf2daafca1fbd4093efc23f"
+language: "go"
+hotspots_version: "1.40.0"
+analyzed_at: "2026-09-24T08:23:14Z"
+clone_depth: 100
+topRisk: 13.85
+topFunction: "writeContainerLogs"
+topFile: "pkg/gui/container_logs.go"
+topPatterns: ["exit_heavy", "long_function", "god_function", "complex_branching", "stale_complex"]
+patternCounts: {exit_heavy: 8, long_function: 4, god_function: 3, complex_branching: 2, stale_complex: 1}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in lazydocker?"
+    answer: "An exit-heavy function is one with an unusually high number of distinct return or exit points scattered through its branches — every early return, every error path, and every terminal case counts as one. It matters because each exit point is a separate path a test needs to cover, and it's easy for a code reviewer to miss one when scanning a long function top to bottom. In lazydocker's top hotspots, this pattern showed up 8 times, including in `writeContainerLogs` (multiple error returns around the log stream and copy operations) and in `main` itself (three separate error-handling branches ending in `os.Exit` or `log.Fatal`). The practical risk is that a change to one branch can leave another exit path silently untested."
+  - question: "How do I reduce cyclomatic complexity in Go functions like these?"
+    answer: "The standard technique is extract-method: pull each self-contained branch or closure into its own named function so the caller reads as a short sequence of calls rather than a nested tree of conditionals. A cyclomatic complexity above 15 is a reasonable trigger to start splitting, and anything above 25 — like `getFloat` at 27 — warrants immediate attention rather than being deferred. A concrete first step for `sidePanelChildren` would be extracting each of its three screen-mode branches (full/half, tall, squashed) into separately named functions, which would cut the top-level complexity roughly in half without changing behavior."
+  - question: "Is lazydocker actively maintained?"
+    answer: "Yes, based on the fire-quadrant functions: `getContainersPanel` was touched 3 times in the last 30 days, and `NewDockerCommand`, `renderDockerComposeConfig`, `getServicesPanel`, and `createAllViews` each show one touch in the last 30 days with a same-day last change. At the same time, the top five riskiest functions by score are all in the debt quadrant, with zero touches in the last 30 days each, and the most dormant, `getFloat`, sitting unmodified for 1,256 days. Active development on the panel and command layers coexists with long-dormant complexity in logging, layout, and startup code — those are two separate findings, not a contradiction."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis was run with the hotspots CLI against commit `7e7aadc` of `jesseduffield/lazydocker`. After running `git checkout 7e7aadc`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`, and the same command works unmodified on any local git repository."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk multiplies structural complexity — cyclomatic complexity, nesting depth, and fan-out combined — by recent commit frequency, so a function that's both hard to follow and currently being edited scores highest. A function with a cyclomatic complexity of 80 that hasn't been touched in two years scores lower than one with a complexity of 20 that's edited weekly, because the dormant function poses less near-term regression risk even though it looks worse on paper. In lazydocker, this is exactly why the top five functions by score are all dormant debt rather than active fire-quadrant code — their complexity numbers are high, but their scores reflect the absence of recent change, not the presence of it."
+---
+
+Across lazydocker's 486 functions, 59 land in the critical band, and the top of that list is dominated by the GUI package sitting quietly in structural debt rather than active churn. The single riskiest function, `writeContainerLogs` in `pkg/gui/container_logs.go`, carries an activity-weighted risk score of 13.85 but hasn't been changed in 642 days — meaning the complexity is real and current, but the regression risk is latent, not live. I'd start with the debt quadrant here, not because anyone is actively breaking it, but because the next person who has to touch these functions inherits complexity nobody has had to reason about in years.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `writeContainerLogs` | pkg/gui/container_logs.go | 13.9 | 21 | 4 | 9 |
+| `getFloat` | pkg/gui/presentation/container_stats.go | 13.7 | 27 | 3 | 12 |
+| `sidePanelChildren` | pkg/gui/arrangement.go | 13.5 | 17 | 4 | 8 |
+| `Run` | pkg/gui/gui.go | 13.5 | 23 | 2 | 35 |
+| `main` | main.go | 13.1 | 19 | 2 | 29 |
+
+&lt;BandChart fire='7' debt='198' watch='2' ok='279' /&gt;
+
+The distribution tells the real story before I even get to individual functions. Out of 486 functions, 198 sit in the debt quadrant — complex code that isn't currently being touched — versus only 7 in the fire quadrant where complexity and active change overlap. That's a codebase where most of the risk is dormant, not live. When someone eventually has to modify one of these 198 functions, they'll be doing so cold, without the benefit of recent context.
+
+&lt;PatternCloud patterns='exit_heavy:8,long_function:4,god_function:3,complex_branching:2,stale_complex:1' /&gt;
+
+Across the top hotspots, exit-heavy branching shows up eight times — a pattern where a function has many distinct return or exit points, each one a separate path a test suite needs to cover. Combined with three god-function flags on functions with broad fan-out, the picture is consistent: complexity concentrated in a handful of files in `pkg/gui`, most of it aging quietly.
+
+### `writeContainerLogs` — pkg/gui/container_logs.go
+
+&lt;FunctionCard fn='writeContainerLogs' file='pkg/gui/container_logs.go' risk='13.85' band='critical' cc='21' nd='4' fo='9' touches='0' /&gt;
+
+This is the top-ranked function in the whole repository, and it hasn't been modified in 642 days. Looking at the source, the complexity comes from a real mix of concerns: a Docker log stream is opened, then the function polls with a ticker in a labeled loop waiting for container details to load, with a `select` over context cancellation and ticker ticks nested inside that wait, and finally branches into two different copy paths (`io.Copy` for TTY containers, `stdcopy.StdCopy` for multiplexed stdout/stderr). A cyclomatic complexity of 21 with a nesting depth of 4 reflects that combination of concurrent waiting, conditional branching on container state, and multiple error-return points along the way. The file's history shows 10 total commits and about one in ten commits being bug fixes, with zero reverts — nothing alarming, but also zero distinct authors in the last 90 days, meaning nobody currently holds context on this logic. Because this function ties log streaming to a context-cancellation loop, any future change needs to re-verify the goroutine and channel interaction, not just the branching. My recommendation: before the next Docker API or logging change touches this file, someone should write coverage for both the TTY and non-TTY copy paths and the ticker-based wait loop, so the next edit isn't the first time in two years anyone has exercised these branches.
+
+### `getFloat` — pkg/gui/presentation/container_stats.go
+
+&lt;FunctionCard fn='getFloat' file='pkg/gui/presentation/container_stats.go' risk='13.71' band='critical' cc='27' nd='3' fo='12' touches='0' /&gt;
+
+This one has gone the longest without a touch of any function in the top five — 1,256 days. The source is a type-switch over numeric types (`float64`, `float32`, `int64`, `int32`, `int`, and their unsigned variants) plus a string case parsed via `strconv.ParseFloat`, falling back to reflection-based conversion for anything else. A cyclomatic complexity of 27 for what is conceptually a type-coercion helper is high, and it comes almost entirely from the branching in that switch plus the reflection fallback's own nested type checks. The file shows only 2 total commits and no bug-linked activity, so there's no historical defect signal here — this reads as maintainability debt rather than a known trouble spot. Because it sits in the container-stats presentation path, a change to how stats are shaped upstream could hit this function without anyone remembering it exists. A reasonable first step is decomposing the type switch into a lookup table or a smaller set of named conversion helpers, cutting the branch count without touching the reflection fallback at all.
+
+### `sidePanelChildren` — pkg/gui/arrangement.go
+
+&lt;FunctionCard fn='sidePanelChildren' file='pkg/gui/arrangement.go' risk='13.50' band='critical' cc='17' nd='4' fo='8' touches='0' /&gt;
+
+This function computes the box layout for lazydocker's side panels across three distinct screen-mode branches: full/half screen, tall terminals (height 28 and up) with optional accordion-style focus expansion, and a squashed layout for short terminals. Each branch defines its own inline closure (`fullHeightBox`, `accordionBox`, `squashedSidePanelBox`) to build box structs conditionally on whether a given window is currently focused. That's where the cyclomatic complexity of 17 and nesting depth of 4 come from — three parallel branches, each with its own conditional box-construction logic, plus a special case for a compose 'project' panel that gets inserted at the front of the list. It's flagged long-function as well as complex-branching, which lines up: this reads as three or four smaller layout functions merged into one. This one sits in the debt quadrant with zero touches in the last 30 days, but it was last changed only 34 days ago, so the underlying commit is recent even though nothing has touched it since — a good candidate for extracting each screen-mode branch into its own named function the next time someone is already in this file.
+
+### `Run` — pkg/gui/gui.go
+
+&lt;FunctionCard fn='Run' file='pkg/gui/gui.go' risk='13.50' band='critical' cc='23' nd='2' fo='35' touches='0' /&gt;
+
+This is the fan-out outlier of the set — 35 distinct functions called from one place, flagged as both god-function and stale-complex. Looking at the excerpt, `Run` initializes the terminal UI (`gocui.NewGui`), wires up deadlock-detection logging, sets the color scheme, starts a throttled refresh loop, spawns a background goroutine draining an error channel, registers view managers, creates all views, sets initial content, wires keybindings, determines initial focus, and then launches two more goroutines — one listening for events, one monitoring container stats — before the excerpt cuts off. That's the startup sequence for the entire application concentrated in one function. A fan-out of 35 means almost any change to initialization order, view creation, or the event/stats goroutines has to be reasoned about through this single entry point. It hasn't been changed in 692 days, and the file shows roughly one in nine of its 27 commits being bug fixes — not a red flag on its own, but worth noting given how much this function coordinates. Because it spins up multiple goroutines tied to a shared cancellable context, any refactor here needs to preserve the shutdown ordering (the deferred `taskManager.Close()` and `g.Close()` calls) as carefully as the initialization order. I'd treat this as a candidate for splitting into a smaller `Run` that delegates to named setup functions (`setupUI`, `startBackgroundLoops`, `wireKeybindings`), each independently testable.
+
+### `main` — main.go
+
+&lt;FunctionCard fn='main' file='main.go' risk='13.09' band='critical' cc='19' nd='2' fo='29' touches='0' /&gt;
+
+The entry point itself lands in the top five, with a fan-out of 29 and the god-function pattern flagged. The source shows why: flag parsing and config printing, working-directory resolution, app config construction, running the app, and then a multi-branch error-handling tail that distinguishes known errors, Docker connection failures, and everything else (wrapped with a stack trace before `log.Fatalf`). Each of those is a legitimate concern for an entry point, but bundling config, app construction, execution, and three-way error classification into one function means a change to error handling requires re-reading the whole thing. It was last changed 34 days ago against only 2 total commits on file, and carries no bug-linked history, so this reads as accumulating debt rather than a proven trouble spot. The exit-heavy pattern here is worth taking literally: multiple `os.Exit` and `log.Fatal` calls are scattered through the branches, which makes this function difficult to unit test as a whole. Extracting the error-classification tail into a small `handleRunError(err)` helper would immediately cut both the branch count and the exit points in `main` itself.
+
+For contrast, the fire quadrant in this repository is small — only 7 functions — but it's where live regression risk actually concentrates. `getContainersPanel` in `pkg/gui/containers_panel.go` carries an activity-weighted risk score of 12.30 and was touched 3 times in the last 30 days, the most active function in the dataset. `NewDockerCommand`, `renderDockerComposeConfig`, `getServicesPanel`, and `createAllViews` each show one touch in the last 30 days with same-day last-change timestamps. None of these make the top five by score, but they're the functions I'd watch for regressions introduced this month, precisely because they're both nontrivial and currently in motion — a different kind of risk than the dormant debt above.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 8 |
+| `long_function` | 4 |
+| `god_function` | 3 |
+| `complex_branching` | 2 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/jesseduffield/lazydocker
+cd lazydocker
+git checkout 7e7aadc2071d58031bf2daafca1fbd4093efc23f
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
