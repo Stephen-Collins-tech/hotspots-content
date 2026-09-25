@@ -44,41 +44,41 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 | `Run` | pkg/gui/gui.go | 13.5 | 23 | 2 | 35 |
 | `main` | main.go | 13.1 | 19 | 2 | 29 |
 
-&lt;BandChart fire='7' debt='198' watch='2' ok='279' /&gt;
+<BandChart fire='7' debt='198' watch='2' ok='279' />
 
 The distribution tells the real story before I even get to individual functions. Out of 486 functions, 198 sit in the debt quadrant — complex code that isn't currently being touched — versus only 7 in the fire quadrant where complexity and active change overlap. That's a codebase where most of the risk is dormant, not live. When someone eventually has to modify one of these 198 functions, they'll be doing so cold, without the benefit of recent context.
 
-&lt;PatternCloud patterns='exit_heavy:8,long_function:4,god_function:3,complex_branching:2,stale_complex:1' /&gt;
+<PatternCloud patterns='exit_heavy:8,long_function:4,god_function:3,complex_branching:2,stale_complex:1' />
 
 Across the top hotspots, exit-heavy branching shows up eight times — a pattern where a function has many distinct return or exit points, each one a separate path a test suite needs to cover. Combined with three god-function flags on functions with broad fan-out, the picture is consistent: complexity concentrated in a handful of files in `pkg/gui`, most of it aging quietly.
 
 ### `writeContainerLogs` — pkg/gui/container_logs.go
 
-&lt;FunctionCard fn='writeContainerLogs' file='pkg/gui/container_logs.go' risk='13.85' band='critical' cc='21' nd='4' fo='9' touches='0' /&gt;
+<FunctionCard fn='writeContainerLogs' file='pkg/gui/container_logs.go' risk='13.85' band='critical' cc='21' nd='4' fo='9' touches='0' />
 
 This is the top-ranked function in the whole repository, and it hasn't been modified in 642 days. Looking at the source, the complexity comes from a real mix of concerns: a Docker log stream is opened, then the function polls with a ticker in a labeled loop waiting for container details to load, with a `select` over context cancellation and ticker ticks nested inside that wait, and finally branches into two different copy paths (`io.Copy` for TTY containers, `stdcopy.StdCopy` for multiplexed stdout/stderr). A cyclomatic complexity of 21 with a nesting depth of 4 reflects that combination of concurrent waiting, conditional branching on container state, and multiple error-return points along the way. The file's history shows 10 total commits and about one in ten commits being bug fixes, with zero reverts — nothing alarming, but also zero distinct authors in the last 90 days, meaning nobody currently holds context on this logic. Because this function ties log streaming to a context-cancellation loop, any future change needs to re-verify the goroutine and channel interaction, not just the branching. My recommendation: before the next Docker API or logging change touches this file, someone should write coverage for both the TTY and non-TTY copy paths and the ticker-based wait loop, so the next edit isn't the first time in two years anyone has exercised these branches.
 
 ### `getFloat` — pkg/gui/presentation/container_stats.go
 
-&lt;FunctionCard fn='getFloat' file='pkg/gui/presentation/container_stats.go' risk='13.71' band='critical' cc='27' nd='3' fo='12' touches='0' /&gt;
+<FunctionCard fn='getFloat' file='pkg/gui/presentation/container_stats.go' risk='13.71' band='critical' cc='27' nd='3' fo='12' touches='0' />
 
 This one has gone the longest without a touch of any function in the top five — 1,256 days. The source is a type-switch over numeric types (`float64`, `float32`, `int64`, `int32`, `int`, and their unsigned variants) plus a string case parsed via `strconv.ParseFloat`, falling back to reflection-based conversion for anything else. A cyclomatic complexity of 27 for what is conceptually a type-coercion helper is high, and it comes almost entirely from the branching in that switch plus the reflection fallback's own nested type checks. The file shows only 2 total commits and no bug-linked activity, so there's no historical defect signal here — this reads as maintainability debt rather than a known trouble spot. Because it sits in the container-stats presentation path, a change to how stats are shaped upstream could hit this function without anyone remembering it exists. A reasonable first step is decomposing the type switch into a lookup table or a smaller set of named conversion helpers, cutting the branch count without touching the reflection fallback at all.
 
 ### `sidePanelChildren` — pkg/gui/arrangement.go
 
-&lt;FunctionCard fn='sidePanelChildren' file='pkg/gui/arrangement.go' risk='13.50' band='critical' cc='17' nd='4' fo='8' touches='0' /&gt;
+<FunctionCard fn='sidePanelChildren' file='pkg/gui/arrangement.go' risk='13.50' band='critical' cc='17' nd='4' fo='8' touches='0' />
 
 This function computes the box layout for lazydocker's side panels across three distinct screen-mode branches: full/half screen, tall terminals (height 28 and up) with optional accordion-style focus expansion, and a squashed layout for short terminals. Each branch defines its own inline closure (`fullHeightBox`, `accordionBox`, `squashedSidePanelBox`) to build box structs conditionally on whether a given window is currently focused. That's where the cyclomatic complexity of 17 and nesting depth of 4 come from — three parallel branches, each with its own conditional box-construction logic, plus a special case for a compose 'project' panel that gets inserted at the front of the list. It's flagged long-function as well as complex-branching, which lines up: this reads as three or four smaller layout functions merged into one. This one sits in the debt quadrant with zero touches in the last 30 days, but it was last changed only 34 days ago, so the underlying commit is recent even though nothing has touched it since — a good candidate for extracting each screen-mode branch into its own named function the next time someone is already in this file.
 
 ### `Run` — pkg/gui/gui.go
 
-&lt;FunctionCard fn='Run' file='pkg/gui/gui.go' risk='13.50' band='critical' cc='23' nd='2' fo='35' touches='0' /&gt;
+<FunctionCard fn='Run' file='pkg/gui/gui.go' risk='13.50' band='critical' cc='23' nd='2' fo='35' touches='0' />
 
 This is the fan-out outlier of the set — 35 distinct functions called from one place, flagged as both god-function and stale-complex. Looking at the excerpt, `Run` initializes the terminal UI (`gocui.NewGui`), wires up deadlock-detection logging, sets the color scheme, starts a throttled refresh loop, spawns a background goroutine draining an error channel, registers view managers, creates all views, sets initial content, wires keybindings, determines initial focus, and then launches two more goroutines — one listening for events, one monitoring container stats — before the excerpt cuts off. That's the startup sequence for the entire application concentrated in one function. A fan-out of 35 means almost any change to initialization order, view creation, or the event/stats goroutines has to be reasoned about through this single entry point. It hasn't been changed in 692 days, and the file shows roughly one in nine of its 27 commits being bug fixes — not a red flag on its own, but worth noting given how much this function coordinates. Because it spins up multiple goroutines tied to a shared cancellable context, any refactor here needs to preserve the shutdown ordering (the deferred `taskManager.Close()` and `g.Close()` calls) as carefully as the initialization order. I'd treat this as a candidate for splitting into a smaller `Run` that delegates to named setup functions (`setupUI`, `startBackgroundLoops`, `wireKeybindings`), each independently testable.
 
 ### `main` — main.go
 
-&lt;FunctionCard fn='main' file='main.go' risk='13.09' band='critical' cc='19' nd='2' fo='29' touches='0' /&gt;
+<FunctionCard fn='main' file='main.go' risk='13.09' band='critical' cc='19' nd='2' fo='29' touches='0' />
 
 The entry point itself lands in the top five, with a fan-out of 29 and the god-function pattern flagged. The source shows why: flag parsing and config printing, working-directory resolution, app config construction, running the app, and then a multi-branch error-handling tail that distinguishes known errors, Docker connection failures, and everything else (wrapped with a stack trace before `log.Fatalf`). Each of those is a legitimate concern for an entry point, but bundling config, app construction, execution, and three-way error classification into one function means a change to error handling requires re-reading the whole thing. It was last changed 34 days ago against only 2 total commits on file, and carries no bug-linked history, so this reads as accumulating debt rather than a proven trouble spot. The exit-heavy pattern here is worth taking literally: multiple `os.Exit` and `log.Fatal` calls are scattered through the branches, which makes this function difficult to unit test as a whole. Extracting the error-classification tail into a small `handleRunError(err)` helper would immediately cut both the branch count and the exit points in `main` itself.
 

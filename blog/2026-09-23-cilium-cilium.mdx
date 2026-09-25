@@ -51,43 +51,43 @@ cilium is a large repository. To stay within memory constraints, this analysis u
 
 ## The shape of the risk
 
-&lt;BandChart fire='8362' debt='0' watch='14668' ok='0' /&gt;
+<BandChart fire='8362' debt='0' watch='14668' ok='0' />
 
 Every one of the top five functions I reviewed falls into the 'fire' quadrant — complex and actively changing, with zero functions in this dataset's 'debt' or 'ok' quadrants among the top hotspots. That distribution matters: cilium's riskiest code right now is not abandoned legacy logic waiting to be revisited. It is code under active edit, which is exactly when a cyclomatic complexity of 198 or a nesting depth of 10 turns a routine change into a regression.
 
-&lt;PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,god_function:5,long_function:5,hub_function:1' /&gt;
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,god_function:5,long_function:5,hub_function:1' />
 
 All five hotspots carry the same five antipatterns: complex branching, deep nesting, heavy exit points, god-function scope, and excessive length. That is a consistent signature, not a coincidence — these are large functions doing many things, with many ways to fail and many places where they return early.
 
 ### `ParseResources` — pkg/ciliumenvoyconfig/cec_resource_parser.go
 
-&lt;FunctionCard fn='ParseResources' file='pkg/ciliumenvoyconfig/cec_resource_parser.go' risk='20.15' band='critical' cc='198' nd='7' fo='52' touches='1' /&gt;
+<FunctionCard fn='ParseResources' file='pkg/ciliumenvoyconfig/cec_resource_parser.go' risk='20.15' band='critical' cc='198' nd='7' fo='52' touches='1' />
 
 This is the top-ranked function in the repository by activity-weighted risk, and the source backs up why. It walks a list of Envoy `xdsResources`, unmarshals each one, and then branches on `typeURL` inside a switch that handles listener configuration, TLS context injection, filter-chain rewriting, and RDS/SDS reference patching — all in one function body. A cyclomatic complexity of 198 with a nesting depth of 7 and a fan-out of 52 means 52 distinct functions get called from inside this logic, so a change to any of them can silently change parsing behavior here too. It was touched once in the last 30 days and last changed 4 days ago, with one author working on the file in the last 90 days and no bug-linked commits or reverts recorded for the file historically — this reads as maintainability debt accumulating in real time, not a function with a known defect history. My concrete recommendation: extract the per-`typeURL` branches (listener handling, HTTP connection manager patching, RDS name rewriting) into separate named functions. Each `case` block in that switch is already a natural extraction boundary.
 
 ### `GetDirectionNetworkPolicy` — pkg/envoy/model.go
 
-&lt;FunctionCard fn='GetDirectionNetworkPolicy' file='pkg/envoy/model.go' risk='19.93' band='critical' cc='107' nd='7' fo='32' touches='2' /&gt;
+<FunctionCard fn='GetDirectionNetworkPolicy' file='pkg/envoy/model.go' risk='19.93' band='critical' cc='107' nd='7' fo='32' touches='2' />
 
 This function builds per-port network policy for Envoy from Cilium's L4 policy model, iterating tier-by-tier and handling wildcard-port rules through a nested closure (`addWildcardPortRules`) that itself branches on protocol and precedence. A cyclomatic complexity of 107 and nesting depth of 7 reflect that tiered, protocol-by-protocol iteration compounding with conditional logging and sorting logic. It was touched twice in the last 30 days, with two distinct authors on the file in the last 90 days — more than one person is actively working in this area right now, which is worth coordinating on before parallel changes collide. No bug-linked commits or reverts show up for the file, so I'd frame this as a coupling and readability problem rather than a defect signal. Pulling the wildcard-rule closure out into a standalone, independently testable function would cut the effective branching a reviewer has to hold in their head at once.
 
 ### `RunK8sCiliumEndpointSync` — pkg/endpointmanager/endpointsynchronizer.go
 
-&lt;FunctionCard fn='RunK8sCiliumEndpointSync' file='pkg/endpointmanager/endpointsynchronizer.go' risk='19.83' band='critical' cc='29' nd='10' fo='50' touches='1' /&gt;
+<FunctionCard fn='RunK8sCiliumEndpointSync' file='pkg/endpointmanager/endpointsynchronizer.go' risk='19.83' band='critical' cc='29' nd='10' fo='50' touches='1' />
 
 The nesting depth here is the standout number: 10, the deepest of any function in this set, against a comparatively modest cyclomatic complexity of 29. That combination usually means one long chain of guard clauses followed by deeply nested logic inside a closure — and that's exactly what the excerpt shows, a controller `DoFunc` closure with sequential early returns (CRD disabled, k8s disabled, health endpoint, missing CEP name) before getting into the actual sync work. A fan-out of 50 means this closure reaches across a lot of the endpoint and Kubernetes client surface. It was touched once in the last 30 days, last changed 4 days ago, with a single author on the file in the last 90 days. Since this runs inside Cilium's controller framework managing Kubernetes CiliumEndpoint object lifecycle, a mistake here has a blast radius across every endpoint's k8s status sync. I would flatten the early-return guard chain at the top (already partially extract-method-friendly) and pull the `DoFunc` body into its own testable function separate from `UpdateController`'s setup.
 
 ### `validateServicePlumbingInCiliumPod` — test/helpers/kubectl.go
 
-&lt;FunctionCard fn='validateServicePlumbingInCiliumPod' file='test/helpers/kubectl.go' risk='19.54' band='critical' cc='45' nd='8' fo='17' touches='1' /&gt;
+<FunctionCard fn='validateServicePlumbingInCiliumPod' file='test/helpers/kubectl.go' risk='19.54' band='critical' cc='45' nd='8' fo='17' touches='1' />
 
 This is test-helper code, but its complexity is real: a cyclomatic complexity of 45 with four levels of nested loops (subsets, addresses, ports, realized services) checking that a Kubernetes service's backends are correctly programmed into Cilium's BPF load-balancer tables. The triple-nested backend-matching loop is the crux of the nesting depth of 8 — it compares endpoint addresses against realized services against BPF map entries all at once. It was touched once in the last 30 days and last changed 4 days ago. Because this function gates connectivity-test correctness, an unnoticed logic error would surface as flaky or misleading test failures elsewhere, not a clean stack trace. My recommendation: extract the backend/BPF-matching loop into a helper that returns a boolean plus a diagnostic string, so the outer function is reduced to orchestration and error formatting.
 
 ### `deploy` — cilium-cli/connectivity/check/deployment.go
 
-&lt;FunctionCard fn='deploy' file='cilium-cli/connectivity/check/deployment.go' risk='19.52' band='critical' cc='251' nd='6' fo='86' touches='1' /&gt;
+<FunctionCard fn='deploy' file='cilium-cli/connectivity/check/deployment.go' risk='19.52' band='critical' cc='251' nd='6' fo='86' touches='1' />
 
-&lt;MetricBar label='Cyclomatic Complexity' value='251' threshold='30' max='260' /&gt;
+<MetricBar label='Cyclomatic Complexity' value='251' threshold='30' max='260' />
 
 This is the highest raw complexity in my entire top five — a cyclomatic complexity of 251 with a fan-out of 86, meaning this single function directly calls 86 other functions to stand up the connectivity-test environment (namespaces, multi-cluster actors, egress-gateway policies, conn-disrupt client/server deployments). The nesting depth of 6 is lower than the others here, telling me the complexity comes mostly from sequential conditional deployment steps rather than deep loop nesting — still a long, branchy orchestration function rather than a deeply recursive one. It was touched once in the last 30 days and last changed 4 days ago, with a single author on the file in the last 90 days. Given the fan-out, this is exactly the kind of function where a small change to one deployment helper's signature ripples across dozens of call sites inside `deploy` itself. I would break this into smaller `deployX` functions per test scenario (egress gateway, conn-disrupt, multi-cluster) that `deploy` simply calls in sequence — the code already reads like it wants to be structured that way.
 
