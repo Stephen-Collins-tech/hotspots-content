@@ -44,31 +44,31 @@ The table below ranks functions by **activity-weighted risk** — a score that m
 | `run` | axum/benches/benches.rs | 12.0 | 13 | 2 | 14 |
 | `impl_enum_by_extracting_all_at_once` | axum-macros/src/from_request/mod.rs | 11.0 | 14 | 3 | 7 |
 
-### 'expand' — axum-macros/src/from_request/mod.rs
+### `expand` — axum-macros/src/from_request/mod.rs
 
 &lt;FunctionCard fn='expand' file='axum-macros/src/from_request/mod.rs' risk='13.63' band='critical' cc='27' nd='3' fo='12' touches='0' /&gt;
 
 This is the entry point for axum's '#[derive(FromRequest)]' macro expansion, and the excerpt confirms what the metrics suggest: a large match over 'syn::Item::Struct' versus 'syn::Item::Enum', each branch destructuring fields, inferring state types from field attributes, and threading rejection/state logic through nested conditionals. Cyclomatic complexity of 27 with a fan-out of 12 means this one function is coordinating a lot of decision points and calling out to a lot of helpers: 'parse_single_generic_type_on_struct', 'infer_state_type_from_field_types', 'impl_struct_by_extracting_all_at_once', and more. It's flagged as 'exit_heavy', 'god_function', and 'long_function' simultaneously, which lines up with what I see in the source: multiple early returns via '?', a large struct-destructure block, and inline error construction mixed with code generation. None of that is a defect, the two historical commits on this file carry a bug-fix fraction of 0.5, a thin signal given the low volume, and no linked bugs or reverts show up. But it hasn't been touched in 178 days by any recent contributor, so the next person who needs to add a new attribute or state-inference rule is working against a function nobody currently holds context for. My recommendation: before the next feature lands here, split the struct-handling branch and the enum-handling branch into two separate functions. That alone would cut the effective complexity per function roughly in half without changing behavior.
 
-### 'parse_single_generic_type_on_struct' — axum-macros/src/from_request/mod.rs
+### `parse_single_generic_type_on_struct` — axum-macros/src/from_request/mod.rs
 
 &lt;FunctionCard fn='parse_single_generic_type_on_struct' file='axum-macros/src/from_request/mod.rs' risk='13.55' band='critical' cc='26' nd='4' fo='4' touches='0' /&gt;
 
 Second in the file, and it's doing validation work: checking for disallowed 'where' clauses, rejecting lifetime and const generics, and enforcing that generic tuple structs have exactly one field of the matching type. The nesting depth of 4 is the standout number here, the source excerpt shows a match on 'generics.params.len()' nested inside a match on the generic param kind, nested inside a match on 'syn::Fields', each arm returning a distinct 'syn::Error'. That's a lot of paths to reason about for what is fundamentally a set of compile-time guard clauses. It's tagged 'complex_branching', 'exit_heavy', and 'long_function', and the fan-out of 4 is comparatively low, meaning the risk here isn't coupling, it's the sheer number of branches a reader has to hold in their head. Same commit history as 'expand': two commits, a bug-fix fraction of 0.5, zero authors in the last 90 days, 178 days since last change. Concrete step: decompose-conditional here is a natural fit, pull each 'syn::GenericParam' arm into a small named-check function so the outer match reads as a list of validation rules rather than a nested tree.
 
-### 'strip_prefix' — axum/src/routing/strip_prefix.rs
+### `strip_prefix` — axum/src/routing/strip_prefix.rs
 
 &lt;FunctionCard fn='strip_prefix' file='axum/src/routing/strip_prefix.rs' risk='12.48' band='critical' cc='15' nd='4' fo='6' touches='0' /&gt;
 
 This one sits on the routing hot path: it strips a matched prefix (including path parameters) off a request URI before handing the remainder to a nested router. The nesting depth of 4 combined with a cyclomatic complexity of 15 shows up directly in the source: a 'for' loop over zipped path and prefix segments, with a 'match' inside it on 'Item::Both' / 'Item::First' / 'Item::Second', and an inner 'if/else' deciding whether a segment matches or the prefix has ended in a trailing slash. It's tagged 'complex_branching' and 'exit_heavy', which tracks, there are three distinct break-out points inside the loop plus the final 'matching_prefix_length?' early return. This is exactly the kind of function where correctness matters more than most: it's on the request path for every prefix-stripped route, and off-by-one segment boundary errors here would be subtle. This is a debt-quadrant finding, not an active-churn one: it hasn't changed in 167 days, and it shows one author across its three total commits, with no bug-fix or revert history recorded. I'd add explicit unit tests for the trailing-slash and mismatched-segment-count branches before refactoring, then extract the segment-matching loop into its own named function so the URI-reconstruction logic at the bottom stands alone.
 
-### 'run' — axum/benches/benches.rs
+### `run` — axum/benches/benches.rs
 
 &lt;FunctionCard fn='run' file='axum/benches/benches.rs' risk='11.95' band='critical' cc='13' nd='2' fo='14' touches='0' /&gt;
 
 This is benchmark harness code: it spins up a Tokio runtime, binds a listener, spawns the server, then shells out to 'rewrk' with a pile of conditionally-assembled CLI arguments ('--connections', '--threads', '--duration', optional method/headers/body). The fan-out of 14 is the number that stands out, this function directly touches the Tokio runtime builder, the listener, thread spawning, and 'Command' construction, a lot of direct dependencies for one function even though its nesting is shallow. It's flagged 'exit_heavy' and 'god_function', the early 'return' when benchmark names don't match the CLI filter, plus the 'std::process::exit' call if the 'rewrk' subprocess fails, are the two exit points doing the heavy lifting on that tag. It sits in the debt quadrant at 178 days since its last change with a single historical commit and no recorded bug or revert signal, expected for benchmark scaffolding since it's not part of the request path. I'd deprioritize this relative to the routing and macro functions above, but if someone extends the benchmark matrix, splitting argument-assembly from process-spawning would make the next addition easier to test.
 
-### 'impl_enum_by_extracting_all_at_once' — axum-macros/src/from_request/mod.rs
+### `impl_enum_by_extracting_all_at_once` — axum-macros/src/from_request/mod.rs
 
 &lt;FunctionCard fn='impl_enum_by_extracting_all_at_once' file='axum-macros/src/from_request/mod.rs' risk='11.02' band='critical' cc='14' nd='3' fo='7' touches='0' /&gt;
 
