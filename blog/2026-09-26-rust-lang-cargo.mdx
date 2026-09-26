@@ -1,0 +1,120 @@
+---
+title: "Cargo's registry and workspace parsing carry the highest activity risk"
+titleSeo: "Cargo code health: registry publish and workspace parser lead technical debt priorities"
+description: "An analysis of rust-lang/cargo at commit 07b8049 finds the publish command and workspace TOML parser functions carrying the highest activity-weighted risk scores in the repository, split between live regression risk and dormant structural debt."
+introContent: "Five functions in cargo stand out for structural complexity, some under active recent change and some sitting as dormant debt. Top of the list: the publish command in the registry code, carrying an activity-weighted risk score of 26.58 and touched just 6 days ago."
+pubDate: 2026-09-26
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "rust-lang/cargo"
+commit: "07b80494920f3824e2515e536b76ff282e23993e"
+language: "rust"
+hotspots_version: "1.40.0"
+analyzed_at: "2026-09-26T18:50:07Z"
+clone_depth: 100
+topRisk: 26.58
+topFunction: "publish"
+topFile: "src/ops/registry/cargo_publish.rs"
+topPatterns: ["long_function", "exit_heavy", "god_function", "cyclic_hub", "complex_branching"]
+patternCounts: {complex_branching: 5, deeply_nested: 2, exit_heavy: 6, god_function: 6, long_function: 8, cyclic_hub: 6, hub_function: 4}
+qaSection:
+  - question: "What is a hub function and why does it matter in cargo?"
+    answer: "A hub function is one with a high fan-out — it directly calls a large number of distinct other functions, meaning its behavior depends on coordinating many collaborators at once. In this analysis, `publish` calls out to 23 distinct functions and `to_real_manifest` calls 32, both well above what I'd consider a comfortable threshold for a single function to own. The practical cost is blast radius: a signature change or behavior change in any one of those called functions can break the hub silently, and testing the hub in isolation means mocking or exercising a wide surface of dependencies. Six functions in this analysis carry the cyclic-hub or hub-function pattern, the second most common signal found across the top hotspots."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The most direct technique is extract-method: pull each cohesive branch of a large match or if-else chain into its own named function, which reduces the parent's complexity by exactly the number of paths you move out. As a threshold, I'd flag anything above 15 for a scoping conversation and treat anything above 30 as needing action before the next feature lands on top of it — `push_md` in cargo's mdman crate sits at 124, which is in a different category entirely and warrants extracting each markdown tag-handling arm into its own function as a first step. Start with the arm that's least entangled with shared mutable state — in this case, table processing looks like a strong candidate since it delegates to a `self.table.process` call already."
+  - question: "Is cargo actively maintained?"
+    answer: "It's a mixed picture, and the quadrant data shows both sides clearly. Three functions in this analysis sit in the fire quadrant, meaning they're both structurally complex and being edited recently: `publish` was touched once in the last 30 days and modified 6 days ago, `replace` shows the same one-touch recent pattern with edits just 2 days ago and 10 distinct authors working nearby in the last 90 days, and `to_real_manifest` in the same file was touched 3 times in the last 30 days. At the same time, three of the five top-ranked functions — `run`, `get`, and `push_md` — sit in the debt quadrant: `run` and `get` haven't changed in 141 days with zero touches in the last 30, and `push_md` carries a cyclomatic complexity of 124 while also sitting untouched for 141 days. Those two facts aren't contradictory — a maintained project can show active edits in some high-traffic areas (registry publishing, workspace manifest parsing) while carrying pockets of untouched complexity elsewhere that simply haven't come up for review."
+  - question: "How do I reproduce this analysis?"
+    answer: "The hotspots CLI is available on GitHub, and this analysis was run against rust-lang/cargo at commit 07b8049. After running `git checkout 07b8049`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command runs against any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity — cyclomatic complexity multiplied by nesting depth and fan-out — with how frequently a function has been changed recently, so functions that are both hard to reason about and under active edit score highest. A function with a cyclomatic complexity of 124 that hasn't been touched in 141 days, like `push_md` in cargo's mdman crate, scores lower on this measure than a much simpler function being edited within the last week, because the dormant one carries less near-term risk of a new bug landing in it. The goal is to point review effort at what could break in the next release cycle, not just at whatever looks complicated sitting still. That's why `publish`, at a complexity of 25 but edited 6 days ago, outranks `push_md` at a complexity of 124 that's been untouched for months."
+---
+
+Cargo is the Rust build tool and package manager. This analysis covers 9,162 functions across the repository at commit 07b8049, with 427 landing in the critical band. The top finding is `publish` in `src/ops/registry/cargo_publish.rs`, sitting in the fire quadrant with a cyclomatic complexity of 25, a nesting depth of 5, and a fan-out of 23, last changed just 6 days ago. That combination is the headline: this isn't a stale function nobody looks at, it's a wide, deeply branched function someone touched less than a week ago — exactly the profile I'd want on a review queue before the next release cycle.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `publish` | src/ops/registry/cargo_publish.rs | 26.6 | 25 | 5 | 23 |
+| `run` | src/ops/cargo_run.rs | 23.2 | 17 | 3 | 16 |
+| `replace` | src/workspace/parser/mod.rs | 21.5 | 10 | 3 | 10 |
+| `get` | src/ops/cargo_config.rs | 20.1 | 20 | 3 | 8 |
+| `push_md` | crates/mdman/src/format/text.rs | 19.4 | 124 | 10 | 24 |
+
+<BandChart fire='138' debt='993' watch='728' ok='7303' />
+
+The quadrant split tells its own story before I get to individual functions: 993 functions sit in structural debt (complex but dormant), versus 138 in active fire. Debt outnumbers fire by roughly 7 to 1, which is a normal shape for a mature codebase — most complexity accumulates quietly and gets revisited in bursts. The five functions below are the exceptions worth naming individually, because they sit at the intersection of hard-to-reason-about and either currently changing or carrying a large blast radius for whoever touches them next.
+
+<PatternCloud patterns='long_function:8,exit_heavy:6,god_function:6,cyclic_hub:6,complex_branching:5,hub_function:4,deeply_nested:2' />
+
+Across the top hotspots, long-function and exit-heavy show up most often — 8 and 6 occurrences respectively — followed closely by god-function and cyclic-hub patterns at 6 each. That combination is consistent with what I'd expect from a CLI-driven tool like cargo: top-level command handlers (`publish`, `run`, `get`) tend to accumulate validation branches, early returns, and calls out to a dozen-plus collaborators, because they're the place where user input meets the rest of the system.
+
+### `publish` — src/ops/registry/cargo_publish.rs
+
+<FunctionCard fn='publish' file='src/ops/registry/cargo_publish.rs' risk='26.58' band='critical' cc='25' nd='5' fo='23' touches='1' />
+
+This is the top-ranked function in the dataset, and the source excerpt shows why. It walks through package spec matching, filters unpublishable packages against workspace visibility rules, branches on whether `--workspace` was passed, and only then acquires a cache lock and starts verifying dependencies against the registry. That's a lot of sequential decision points before the actual publish logic even begins — consistent with the cyclomatic complexity of 25 and a nesting depth of 5. The fan-out of 23 means this function is a hub: it calls into spec resolution, feature resolution, registry source lookup, and verification routines, so a change to any of those call signatures likely means a change here too. It was touched once in the last 30 days and modified as recently as 6 days ago, with 2 distinct authors working on the surrounding file in the last 90 days and a bug-fix rate of 14% recorded historically. None of that proves the current logic is broken, but the shape — high fan-out, high nesting, recent edits — is exactly the profile where a small change to one branch can silently break another. I'd extract the unpublishable-package filtering and the registry-resolution steps into named helper functions before the next edit lands here; that alone would cut the visible branching in the top-level function significantly.
+
+### `run` — src/ops/cargo_run.rs
+
+<FunctionCard fn='run' file='src/ops/cargo_run.rs' risk='23.22' band='critical' cc='17' nd='3' fo='16' touches='0' />
+
+This one is structural debt, not live churn — it hasn't been changed in 141 days and had zero touches in the last 30. The source excerpt shows a cascade of validation checks: glob pattern rejection, binary target filtering, and then three separate branches handling zero, one, or multiple matching binaries, each with its own error message construction. A cyclomatic complexity of 17 and fan-out of 16 in a function this shape means whoever next modifies `cargo run` target-selection behavior is going to be reading through all three of those branches to understand where their change fits. Because it's dormant, the real risk isn't right now — it's the day someone needs to add a new target-selection flag and has to untangle this logic cold. Given the zero recorded bug-fix history and a single commit author in the historical record, this reads as legitimate accumulated complexity rather than a source of past incidents. Worth a scoping pass — decompose the binary-count branching (0 / 1 / many) into a match returning a result type — the next time this file is opened for any reason.
+
+### `replace` — src/workspace/parser/mod.rs
+
+<FunctionCard fn='replace' file='src/workspace/parser/mod.rs' risk='21.45' band='critical' cc='10' nd='3' fo='10' touches='1' />
+
+This function parses the `[replace]` section of a workspace manifest, and it sits in the fire quadrant: a cyclomatic complexity of 10 is moderate, but it was touched once in the last 30 days, last changed only 2 days ago, and the surrounding file shows 10 distinct authors in the last 90 days — the widest ownership spread of anything in this top five. The historical bug-fix rate on this file sits at 71%, the highest of any function analyzed here, and the review-comment density (2.5) is also the highest recorded — both are file-level signals, not proof this exact function is defective, but they mean this parsing logic has drawn sustained reviewer attention and correction over time. Combined with active edits happening right now, I'd treat this as a live regression-risk candidate rather than a backlog item: get a second reviewer on any pending change here, and consider adding explicit test cases for the semver-exact-match branch that the source shows building the replacement dependency.
+
+### `get` — src/ops/cargo_config.rs
+
+<FunctionCard fn='get' file='src/ops/cargo_config.rs' risk='20.13' band='critical' cc='20' nd='3' fo='8' touches='0' />
+
+Another debt-quadrant function — zero touches in 30 days, 141 days since its last change. The source shows a nested dispatch: first branching on output format compatibility with `--show-origin`, then branching again on merged versus unmerged config resolution, with each branch fanning out into format-specific print functions (`print_toml`, `print_json`, `print_toml_env`, `print_json_env`). A cyclomatic complexity of 20 for what reads as primarily format-selection logic suggests the branching could collapse into a lookup table or a smaller set of format-handling trait implementations rather than repeated match arms. This is textbook high-blast-radius-when-next-touched: nobody is working on it now, but the next person who adds a new output format will be threading a new branch through code that already has 20 paths to keep straight.
+
+### `push_md` — crates/mdman/src/format/text.rs
+
+<FunctionCard fn='push_md' file='crates/mdman/src/format/text.rs' risk='19.39' band='critical' cc='124' nd='10' fo='24' touches='0' />
+
+This is the outlier of the set, and it's worth calling out on its own. A cyclomatic complexity of 124 and a nesting depth of 10 are both far beyond anything else in this analysis, with a fan-out of 24 — the source excerpt confirms why: it's a markdown-event dispatcher with a nested match over event types, and inside that, a further match over tag types (paragraph, heading levels, blockquote, code block, list, item, footnote, table), each with its own indentation and formatting side effects.
+
+<MetricBar label='Cyclomatic Complexity' value='124' threshold='30' max='130' />
+
+That's four times the complexity of the next-highest function in this list, in a function with zero touches in 30 days and 141 days since last change, and zero authors recorded in the last 90 days on this file. This is pure structural debt sitting in a documentation-generation tool bundled with cargo — nobody is actively editing it, but if a new markdown tag type needs handling, whoever picks up that work is stepping into a 124-path function with 10 levels of nesting. My first move here would be extracting each `Tag::` arm into its own named function — the list-item and heading-level handling alone look like natural extraction points — before adding any new event type support.
+
+
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 8 |
+| `exit_heavy` | 6 |
+| `god_function` | 6 |
+| `cyclic_hub` | 6 |
+| `complex_branching` | 5 |
+| `hub_function` | 4 |
+| `deeply_nested` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`cyclic_hub`](https://hotspots.dev/analyses/patterns/cyclic_hub/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`hub_function`](https://hotspots.dev/analyses/patterns/hub_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/rust-lang/cargo
+cd cargo
+git checkout 07b80494920f3824e2515e536b76ff282e23993e
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
