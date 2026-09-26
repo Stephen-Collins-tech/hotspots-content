@@ -56,7 +56,9 @@ def main():
 
     # 1. section order vs table
     rows = ROW.findall(body)
-    table = {r[0]: dict(risk=float(r[2]), CC=int(r[3]), ND=int(r[4]), FO=int(r[5])) for r in rows}
+    table = {}  # name -> rows; the same function name can appear twice (e.g. two impls)
+    for r in rows:
+        table.setdefault(r[0], []).append(dict(CC=int(r[3]), ND=int(r[4]), FO=int(r[5])))
     order = [r[0] for r in rows]
     heads = HEAD.findall(body)
     if len(rows) != 5:
@@ -80,17 +82,19 @@ def main():
         h = HEAD.match(c)
         if not h or h.group(1) not in table:
             continue
-        row = table[h.group(1)]
+        # the last section runs to the next H2 and may hold wrap-up prose; stop at chart tags too
+        c = re.split(r"^## |^<(?:BandChart|PatternCloud)\b", c, flags=re.M)[0]
+        rows_for = table[h.group(1)]
         for key, pat in [("CC", r"(?:(?i:cyclomatic complexity)|\bCC\b)(?: of|:|=)? ?(\d+)"),
                          ("ND", r"(?:(?i:nesting depth)|\bND\b)(?: of|:|=)? ?(\d+)"),
                          ("FO", r"(?:(?i:fan-out)|\bFO\b)(?: of|:|=)? ?(\d+)")]:
             for v in re.findall(pat, c):
-                if abs(int(v) - row[key]) > 2:
-                    flags.append(f"{h.group(1)}: prose cites {key} {v}, table says {row[key]} (surface to user, don't auto-fix)")
+                if all(abs(int(v) - r[key]) > 2 for r in rows_for):
+                    flags.append(f"{h.group(1)}: prose cites {key} {v}, table says {[r[key] for r in rows_for]} (surface to user, don't auto-fix)")
         # 3. pattern plausibility
         for pat, (key, lo) in PATTERN_RULES.items():
-            if pat in c and row[key] < lo:
-                flags.append(f"{h.group(1)}: cites {pat} but {key}={row[key]} < {lo}")
+            if pat in c and all(r[key] < lo for r in rows_for):
+                flags.append(f"{h.group(1)}: cites {pat} but {key}={[r[key] for r in rows_for]} < {lo}")
     tp = re.search(r"^topPatterns:\s*\[(.*?)\]", fm, re.M)
     top = re.findall(r"\w+", tp.group(1)) if tp else []
     for name in set(re.findall(r"`?\b(deeply_nested|complex_branching|long_function|god_function|exit_heavy)\b`?", body)):
