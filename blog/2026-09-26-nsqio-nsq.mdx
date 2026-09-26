@@ -5,7 +5,7 @@ description: "In nsqio/nsq, five functions across bench tooling, HTTP handlers, 
 introContent: "I found five functions in nsqio/nsq that are both structurally dense and recently touched at the same time - the combination that turns ordinary complexity into live regression risk this week."
 pubDate: 2026-09-26
 tags: ["oss", "go", "refactoring", "code-health"]
-draft: true
+draft: false
 repo: "nsqio/nsq"
 commit: "85cf10c09c6c3c86160d6f0eb156f62d0efc1648"
 language: "go"
@@ -52,31 +52,31 @@ The split is worth sitting with for a second: 91 fire-quadrant functions versus 
 
 The antipattern mix across the top hotspots is dominated by god-function shape (10 occurrences) and exit-heavy control flow (9 occurrences) - meaning most of what I'm flagging isn't obscure algorithmic complexity, it's functions that do too much and return from too many places. That combination is what makes a function expensive to test: every early return is a code path someone has to hit in a test case, and every added responsibility is one more reason the function gets touched again.
 
-## subWorker (bench/bench_channels/bench_channels.go)
+### `subWorker` — bench/bench_channels/bench_channels.go
 
 <FunctionCard fn='subWorker' file='bench/bench_channels/bench_channels.go' risk='16.13' band='critical' cc='43' nd='4' fo='23' touches='1' />
 
 This is a benchmark harness worker that opens a raw TCP connection, does the NSQ v2 handshake (magic bytes, IDENTIFY, SUBSCRIBE, READY), then loops reading and unpacking framed responses. The excerpt shows a long chain of `if err != nil { panic(err.Error()) }` guards after nearly every network write - that's the exit-heavy pattern showing up literally nine-plus times in one function, each one a distinct path a test would need to cover. With cyclomatic complexity at 43 and nesting depth of 4, and a fan-out of 23 distinct calls (mostly into the `nsq` protocol package), this is also a god function: it owns connection setup, protocol framing, flow control (the `rdy` counter), and response dispatch all in one body. The historical signals here are quiet - zero bug-linked commits and zero reverts against two total commits, with 1 touch in the last 30 days and a last change 22 days ago - so I'd frame this as maintainability debt inside an active file rather than a defect risk. My recommendation: extract the handshake sequence (dial, magic bytes, IDENTIFY, SUBSCRIBE) into its own helper and pull the response-dispatch loop into a second function; that alone would cut the branching in half without touching behavior.
 
-## main (apps/nsq_to_http/nsq_to_http.go)
+### `main` — apps/nsq_to_http/nsq_to_http.go
 
 <FunctionCard fn='main' file='apps/nsq_to_http/nsq_to_http.go' risk='15.68' band='critical' cc='64' nd='3' fo='21' touches='1' />
 
 This is the entry point for the `nsq_to_http` bridge binary, and at cyclomatic complexity 64 it's the single most branch-heavy function in my top five - every flag validation (`--topic`, `--channel`, `--content-type`, `--get`/`--post` mutual exclusivity, `--sample` range checking) is its own conditional path, each ending in a `log.Fatal` call. That's the exit-heavy and long-function patterns compounding: nesting only reaches depth 3, so this isn't deeply nested logic, it's simply a flat wall of sequential validation checks, each one independently branchable and independently testable if pulled out. Fan-out of 21 means it's wiring together the publisher selection, HTTP client construction, and mode selection (`round-robin` vs `hostpool`/`epsilon-greedy`) inline. Five total commits with no bug-linked history and 1 touch in the last 30 days suggests this hasn't caused problems yet, but a function this size in `main` means every new CLI flag added in the future adds directly to that 64. I'd extract a `validateFlags(cfg) error` function to isolate the fatal-exit chain from the wiring logic - that's the highest-leverage single change here.
 
-## subWorker (bench/bench_reader/bench_reader.go)
+### `subWorker` — bench/bench_reader/bench_reader.go
 
 <FunctionCard fn='subWorker' file='bench/bench_reader/bench_reader.go' risk='15.38' band='critical' cc='39' nd='3' fo='29' touches='1' />
 
 A sibling to the channels benchmark worker above, this one drives the reader-side benchmark: same handshake pattern, but with a fan-out of 29 - the highest in my top five - because it also spins up a closing goroutine (`go func() { time.Sleep(td); conn.Close() }()`) alongside the response-read loop. That goroutine plus the main read loop reading from the same connection is a concurrency detail structural metrics can't fully capture: the loop explicitly checks `errors.Is(err, net.ErrClosed)` to distinguish a deliberate timeout-close from a real error, which is the kind of channel/goroutine interaction worth testing directly rather than inferring from complexity alone. Historical signals show a bug-fix rate of 20% across five commits - not alarming, but worth noting since this file has seen at least one commit tagged as a fix. Given the concurrency angle, I'd prioritize a focused test around the close-during-read race before doing any structural extraction here.
 
-## doMPUB (nsqd/http.go)
+### `doMPUB` — nsqd/http.go
 
 <FunctionCard fn='doMPUB' file='nsqd/http.go' risk='15.23' band='critical' cc='33' nd='4' fo='14' touches='1' />
 
 This one sits in the actual daemon, not a benchmark tool, which raises the stakes. `doMPUB` handles the multi-publish HTTP endpoint - parsing either binary-framed or newline-delimited message batches from a request body, with explicit size-limit checks (`MaxBodySize`, `MaxMsgSize`) at multiple points and a `for !exit` loop reading one block at a time. The complex-branching pattern is visible directly in the excerpt: binary versus text mode is a fork near the top, and inside the text-mode branch there's a further set of conditionals handling EOF-as-exit, zero-length message discarding, and per-message size enforcement - that's how cyclomatic complexity 33 and nesting depth 4 accumulate in a single function serving live traffic. Twelve total commits show a bug-fix rate of about 16.7%, which is real historical signal that this endpoint has needed correction before, though it doesn't confirm the current code is defective. Given it's the request path for bulk message ingestion, I'd decompose the binary-mode and text-mode parsing into two named functions (`readBinaryBatch`, `readTextBatch`) so each can be tested against its size-limit edge cases independently.
 
-## New (nsqd/nsqd.go)
+### `New` — nsqd/nsqd.go
 
 <FunctionCard fn='New' file='nsqd/nsqd.go' risk='14.98' band='critical' cc='56' nd='2' fo='29' touches='1' />
 
