@@ -14,7 +14,8 @@ Review, edit, and merge a bot-generated hotspots analysis PR.
 2. **Check out the branch** — `git checkout` the PR branch to get the files locally
 3. **Read the `.mdx` post** — find the new file in `blog/` and read it in full
 4. **Parse the post as the source of truth** — extract the "Top 5 Hotspots" table from the MDX body. This table is ground truth for all cross-checks below. The table columns are: Function, File, Risk, CC, ND, FO. Also read `topPatterns` from the frontmatter.
-5. **Editorial review** — check for the following issues and fix any that are present:
+4b. **Run the lint** — `uv run scripts/lint_post.py --fix blog/<post>.mdx`. It mechanically fixes escaped component tags, section order and `draft: true`, and prints FLAGs for metric mismatches, pattern plausibility, jargon and first-person plural. Resolve or surface every remaining FLAG below.
+5. **Editorial review** (the lint covers the mechanical checks; focus on judgement: title, prose accuracy, voice) — check for the following issues and fix any that are present:
 
    - **Title too long or awkward**: bot titles are often run-on sentences. Shorten to ≤90 chars, use an em-dash for a clean break if needed. Good pattern: `"<Repo>'s <subsystem> carries the highest activity risk — <N> functions to address first"`
    - **Section order mismatch**: the `### functionName` analysis sections in the body must appear in the same order as the rows in the Top 5 Hotspots table (descending by risk score). Reorder sections if they differ.
@@ -23,7 +24,7 @@ Review, edit, and merge a bot-generated hotspots analysis PR.
    - **Unexplained jargon**: remove or replace internal metric abbreviations (e.g. `lrs`, `decay_score`, `churn_index`, `activity_risk`) with plain language like "high recent activity" or "recent commit velocity". CC, ND, FO are defined in the table legend and are fine to use in prose.
    - **`draft: true`**: set to `false` to publish
 
-6. **Commit** — stage only the `.mdx` file, write a commit message summarising each editorial change made, co-authored by Claude
+6. **Commit** — (or run `scripts/merge_pr.sh <number> "<message>"`, which lints, commits, pushes and merges in steps 6–9) stage only the `.mdx` file, write a commit message summarising each editorial change made, co-authored by Claude
 7. **Push** — push to the PR branch
 8. **Merge** — `gh pr merge <number> --squash --delete-branch`
 9. **Switch back to main** — `git checkout main && git pull`
