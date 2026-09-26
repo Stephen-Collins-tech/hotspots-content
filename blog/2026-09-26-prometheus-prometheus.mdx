@@ -1,0 +1,134 @@
+---
+title: "Prometheus's scrape and query engine carry the highest activity-weighted risk"
+titleSeo: "Prometheus code health: scrape.go and engine.go complexity leads refactoring priority"
+description: "In prometheus/prometheus, the scrape appender and PromQL evaluator top the risk list with cyclomatic complexity above 130. Four of the five are actively changing; one is dormant structural debt. All five are the highest-priority review targets."
+introContent: "I looked at where Prometheus's own complexity and commit activity overlap, and five functions rose to the top of that list — four of them are live regression risk right now, code that's both hard to reason about and changing this month, and one is dormant complexity, untouched in 30 days, that will bite whoever touches it next."
+pubDate: 2026-09-26
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "prometheus/prometheus"
+commit: "ea954809ceafceb53ecfa295ab0947753929de9e"
+language: "go"
+hotspots_version: "1.40.0"
+analyzed_at: "2026-09-26T18:31:58Z"
+clone_depth: 100
+hybrid_touch_threshold: 5
+topRisk: 23.12
+topFunction: "append"
+topFile: "scrape/scrape.go"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 10, deeply_nested: 10, exit_heavy: 10, god_function: 10, long_function: 10, cyclic_hub: 1, hub_function: 1, stale_complex: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in Prometheus?"
+    answer: "A god function is one that does too much — high cyclomatic complexity combined with a large number of distinct calls to other functions, meaning it owns both decision logic and orchestration in one place. All five functions in my top five are tagged 'god function' alongside 'long function' and 'complex branching', which is exactly the profile of `eval` in promql/engine.go (complexity 237, fan-out 96) and `append` in scrape/scrape.go (complexity 138, fan-out 54). The practical cost is that no single test can exercise the function in isolation — you end up needing integration-style tests to cover interactions between branches, and any change risks side effects in a part of the function the change author wasn't focused on."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The most direct technique is extract-method: pull each branch of a large switch or if-else chain into its own named function, which turns one function with complexity 138 into, say, six functions with complexity under 25 each. A reasonable threshold is to flag anything above 15 for review and treat anything above 30 as requiring near-term action — both `append` (138) and `eval` (237) in my analysis are well past that line. A concrete first step: in `append`, extract the per-entry-type handling inside the `switch et` loop (series, samples, histogram samples, float-histogram samples) into separate functions — that alone addresses a large share of the branching without touching the surrounding scrape-loop logic."
+  - question: "Is Prometheus actively maintained?"
+    answer: "Yes — four of my top five hotspot functions are in the fire quadrant, meaning they're both structurally complex and actively being edited: `append` was touched 1 time in the last 30 days (last changed 11 days ago), `eval` 3 times (10 days ago), `loadWAL` 1 time (3 days ago), and `checkConfig` 2 times (11 days ago). The fifth, `FromMetrics`, is in the debt quadrant: zero touches in the last 30 days and last changed 33 days ago. That's not a sign of neglect on its own — it's one complex function sitting dormant while the rest of the codebase moves. Active development and high structural debt aren't contradictory findings here — they're two different risk profiles sitting side by side in the same 5,556-function repository."
+  - question: "How do I reproduce this analysis?"
+    answer: "I used the hotspots CLI (github.com/hotspots-dev/hotspots) against prometheus/prometheus at commit ea95480. After `git checkout ea95480`, run `hotspots analyze . --mode snapshot --explain-patterns --force` — the same command runs against any local git repo with no extra configuration needed."
+  - question: "What does activity-weighted risk mean?"
+    answer: "The activity-weighted risk score combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with recent commit frequency, so functions that are both hard to understand and actively changing score highest. `FromMetrics`, with complexity 82 but zero touches in the last 30 days, still scores 19.31 on this measure because its underlying structural complexity is high even though it's currently dormant — that score is close to `loadWAL` at 19.12, which has lower raw complexity (73) but was changed 3 days ago. The prioritization exists to point review effort at where a bug is likely to be introduced this week for actively-changing functions, and at where blast radius is highest for dormant ones — not just at whichever function looks the most tangled on paper."
+---
+
+Prometheus is a 5,556-function Go codebase where my analysis flagged 1,020 functions as critical band, and the top of that list is dominated by one pattern: functions with 70-plus execution paths. The number one hotspot, `append` in scrape/scrape.go, carries an activity-weighted risk score of 23.12 with a cyclomatic complexity of 138 and was last touched just 11 days ago — that combination is what separates a live regression risk from a function that merely looks intimidating. Four of my top five hotspots sit in the 'fire' quadrant, meaning they're actively being changed while carrying god-function-level complexity, so I'd treat this week's PRs against scrape.go, engine.go, db.go, and promtool's config checker with extra review weight before merging. The fifth, `FromMetrics` in the OTLP write path, is a different kind of risk: it's in the 'debt' quadrant, just as complex but untouched for 33 days — the danger there is blast radius the next time someone has to change it, not this week's commits.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `append` | scrape/scrape.go | 23.1 | 138 | 6 | 54 |
+| `eval` | promql/engine.go | 19.5 | 237 | 6 | 96 |
+| `FromMetrics` | storage/remote/otlptranslator/prometheusremotewrite/metrics_to_prw.go | 19.3 | 82 | 7 | 53 |
+| `loadWAL` | tsdb/agent/db.go | 19.1 | 73 | 6 | 38 |
+| `checkConfig` | cmd/promtool/main.go | 19.0 | 81 | 7 | 14 |
+
+## Large Repo Analysis
+
+prometheus is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the last 30 days; other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+<BandChart fire='781' debt='1400' watch='976' ok='2399' />
+
+The quadrant split is the first thing worth sitting with: 781 functions across the codebase are both complex and actively changing, and 1,400 more are complex but currently dormant — structural debt waiting for the next person who has to touch them. My top five hotspots are drawn from the 1,020-function critical band, and four of the five are in the fire quadrant, which is the segment I'd prioritize this sprint over anything in debt.
+
+<PatternCloud patterns='complex_branching:10,deeply_nested:10,exit_heavy:10,god_function:10,long_function:10,cyclic_hub:1,hub_function:1,stale_complex:1' />
+
+Every one of my top five functions is tagged complex branching, deeply nested, exit heavy, god function, and long function simultaneously. That's not five isolated findings — it's one recurring shape: large functions with many independent execution paths, deep conditional nesting, and multiple early returns. In Go specifically, exit-heavy functions with this many branches usually mean a correspondingly large number of explicit error-return statements, since Go's `if err != nil` idiom turns every fallible call into its own branch. That has a direct testing implication: each of those paths is a required test case if you want real coverage, not just line coverage.
+
+### `append` — scrape/scrape.go
+
+<FunctionCard fn='append' file='scrape/scrape.go' risk='23.12' band='critical' cc='138' nd='6' fo='54' touches='1' />
+
+This is the single highest-risk function in the repository, and it's also the only one in my top five carrying both the 'cyclic hub' and 'hub function' patterns, meaning it sits at a coupling center other code depends on heavily. The source shows why: it's a state machine over a streaming parser, decoding one metric family entry at a time inside a `for` loop with a `switch` on entry type, coordinating sample limits, exemplars, histogram variants, and staleness markers all in one body. A cyclomatic complexity of 138 with a fan-out of 54 means this function calls 54 distinct other functions and has well over a hundred distinct paths through it — an enormous surface for a single review to hold in working memory.
+
+<MetricBar label='Cyclomatic Complexity' value='138' threshold='30' max='140' />
+
+The historical signals add useful context without indicting anyone: the file has a bug-fix rate of 17.11% across 76 total commits, with 13 distinct authors touching it in the last 90 days and a review-comment density of 18 — high enough to suggest reviewers already find this code hard to reason about in PRs. It was touched once in the last 30 days and last changed 11 days ago, so it's live, not stale. My recommendation: extract the per-entry-type handling (series, samples, histograms, float histograms) out of the main loop into named helper functions. That won't reduce the real work being done, but it will let each path be tested and reviewed independently instead of as one 138-path monolith.
+
+### `eval` — promql/engine.go
+
+<FunctionCard fn='eval' file='promql/engine.go' risk='19.48' band='critical' cc='237' nd='6' fo='96' touches='3' />
+
+This is the highest raw complexity in the whole data set — cyclomatic complexity of 237, fan-out of 96 — even though its activity-weighted risk score of 19.48 lands slightly below `append`'s. The source excerpt confirms the shape: a large type-switch over PromQL AST node kinds (`AggregateExpr`, `Call`, and presumably others below the excerpt), each branch running its own nested logic for grouping, matrix-argument detection, and recursive evaluation calls back into `eval` itself. That kind of recursive god-function is exactly where a fan-out of 96 becomes a real coupling problem: touching any one AST-node branch risks unintended interaction with how another branch's recursive call is set up.
+
+Three touches in the last 30 days and only 10 days since the last change put this solidly in the fire quadrant. The file's bug-fix rate of 29.17% across 144 commits is the highest of any function in my top five, and one recorded revert stands out — I wouldn't read that as proof this exact function is defective, but it does mean the file it lives in has a real history of changes needing correction. Given 17 distinct authors in the last 90 days, I'd push for splitting each AST-node case into its own well-named evaluation function before the next round of PromQL feature work lands here.
+
+### `FromMetrics` — storage/remote/otlptranslator/prometheusremotewrite/metrics_to_prw.go
+
+<FunctionCard fn='FromMetrics' file='storage/remote/otlptranslator/prometheusremotewrite/metrics_to_prw.go' risk='19.31' band='critical' quadrant='debt' cc='82' nd='7' fo='53' touches='0' />
+
+This is the one debt-quadrant entry in my top five: it hasn't been touched in 33 days, with zero touches in the last 30, so this is not a live regression risk this week — it's structural debt that will have high blast radius whenever someone next needs to modify OTLP-to-Prometheus metric conversion. The nesting depth of 7 is the deepest in my top five, and the source shows why: nested loops over resource metrics, then scope metrics, then individual metrics, with per-iteration error handling via `errors.Join` at each level. That's a lot of accumulated state (earliest/latest timestamp tracking, temporality validation, name-collision bookkeeping) carried across four nesting levels.
+
+With only 3 distinct authors in the last 90 days and one recorded revert against 35 total commits, this reads as narrowly-owned, complex conversion logic that doesn't get much cross-team scrutiny. My recommendation: before the next OTLP schema change forces someone into this function, extract the per-metric-type handling (the `nolint` comment around temporality validation is itself a signal that the logic there was already judged awkward) into a separate reviewable unit.
+
+### `loadWAL` — tsdb/agent/db.go
+
+<FunctionCard fn='loadWAL' file='tsdb/agent/db.go' risk='19.12' band='critical' cc='73' nd='6' fo='38' touches='1' />
+
+This one carries a concurrency dimension the structural numbers alone don't capture. The source shows a producer goroutine decoding WAL records (series, samples, histogram variants) into a channel, feeding a consumer loop that ranges over that channel — classic Go fan-out/fan-in via channels, with a separate error channel for corruption signaling. Getting the decode-then-signal ordering right across that goroutine boundary is exactly the kind of risk that cyclomatic complexity and fan-out (73 and 38 respectively) under-represent, since the metrics count branches and calls, not the timing between two concurrently running code paths.
+
+It was last changed only 3 days ago with one touch in the last 30 days, and the file's bug-fix rate sits at 17.5% across 40 commits with 5 distinct authors recently active. Given the goroutine handoff, I'd want any review here to specifically trace what happens to the decode goroutine if the consumer loop returns early on a corruption error — that's the kind of interaction unit tests on the function in isolation tend to miss.
+
+### `checkConfig` — cmd/promtool/main.go
+
+<FunctionCard fn='checkConfig' file='cmd/promtool/main.go' risk='19.04' band='critical' cc='81' nd='7' fo='14' touches='2' />
+
+The shape here is different from the other four: fan-out of only 14, the lowest in my top five, but nesting depth of 7 ties for the deepest. The source confirms a config-validation flow with rule-file globbing, scrape-config resolution, then a nested loop over scrape configs, over their service-discovery configs, over a type-switch on SD config kind (Kubernetes, file-based, and presumably more), with file-glob handling nested another level inside the file-SD case. That's depth from nested validation logic rather than breadth from calling many collaborators, which changes the fix: this isn't a coupling problem, it's a decompose-conditional problem.
+
+Two touches in the last 30 days and 11 days since last change puts it in the fire quadrant alongside `append`, `eval`, and `loadWAL`. With a bug-fix rate of 18.75% across 48 commits and one recorded revert, I'd flatten the SD-config type-switch into named per-provider validation functions — that alone would cut the nesting depth from 7 to something closer to 4 without changing behavior.
+
+
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 10 |
+| `deeply_nested` | 10 |
+| `exit_heavy` | 10 |
+| `god_function` | 10 |
+| `long_function` | 10 |
+| `cyclic_hub` | 1 |
+| `hub_function` | 1 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`cyclic_hub`](https://hotspots.dev/analyses/patterns/cyclic_hub/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`hub_function`](https://hotspots.dev/analyses/patterns/hub_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/prometheus/prometheus
+cd prometheus
+git checkout ea954809ceafceb53ecfa295ab0947753929de9e
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
