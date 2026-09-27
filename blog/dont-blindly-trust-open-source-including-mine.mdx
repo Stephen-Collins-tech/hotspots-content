@@ -1,0 +1,66 @@
+---
+title: "Don't Blindly Trust Open Source — Including Mine"
+description: "An audit of hotspots' own scoring formula against a year of hotspots-research findings turned up real drift in both directions: one validated signal shipped and then silently went dead, one feature shipped ahead of its own validation, and one AI-proposed fix was flat-out wrong. Here's the full account, and what v1.41.0 fixes."
+pubDate: 2026-09-27
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "hotspots"
+  - "research"
+  - "release"
+draft: false
+introContent: "I asked Claude to audit hotspots' scoring formula against hotspots-research's own findings. It found real drift, then made a real mistake correcting it, then made the same category of mistake again. Here's the whole account, and what v1.41.0 actually fixes."
+qaSection:
+  - question: "What actually changed in hotspots v1.41.0?"
+    answer: "Three things, each tied to a specific confirmed research finding. First, fan_in and cyclic-dependency terms are dropped from the live activity_risk score — hotspots-research found both contribute no measurable ranking value, and removing them is statistically non-inferior. Second, the touch-metrics window widened from 30 to 365 days, because a 365-day window measurably beats 30 days at predicting which files later get bug fixes, with a size-confound check ruling out that it's just counting more commits. That one has a real cost on very active repos, so it's configurable via touch_window_days in .hotspotsrc.json. Third, hotspots train now warns when its default fix-commit label is degenerate (over 80% of functions labeled positive), which happens on mature, high-cadence repos, and points you at --blame as the fix."
+  - question: "Why does this matter if I'm just using the CLI?"
+    answer: "Because the formula producing your CRITICAL/HIGH/MODERATE bands and your top-ranked functions had two real problems: it was giving no benefit from two call-graph terms, and it was measuring recent activity over a window too narrow to catch the pattern that actually predicts future bugs. Neither was a crash or a wrong number — they were the score being less accurate than the underlying research already showed it could be."
+  - question: "What went wrong during the audit itself?"
+    answer: "Three separate mistakes, each caught before it shipped, none of them quietly fixed. First, a finding about a 'blast-radius' scoring axis was added to the fix plan as confirmed research — it was actually a finding the research team had already retracted, with its own notes saying explicitly not to implement it. Second, a promotion brief calling for a fallback behavior in the CLI turned out to already describe what the code does today; the brief was just written before a later, unrelated change made it accurate. Third, and the one I want to be direct about: a proposed 'security mode' flag was based on a real, confirmed research finding, but I never asked whether shipping it made sense for a tool that isn't a security scanner and has no vulnerability database. It doesn't. That one wasn't a research-reading error — it was a product-fit question nobody asked."
+  - question: "Isn't it a bad look to publish your own mistakes?"
+    answer: "I don't think so. The alternative is publishing v1.41.0 with a clean changelog and letting anyone who reads the commit history wonder why a scoring axis was added and retracted in the same doc, or why a security flag never shipped. Both hotspots and hotspots-research keep a durable, dated record of exactly this kind of thing — findings that get walked back, briefs that go stale, claims that don't survive a second look. This post is that same standard applied to a release, not an exception to it."
+  - question: "Should I upgrade to v1.41.0?"
+    answer: "Yes, if you use hotspots' default ranking or hotspots train. The scoring change is a pure accuracy improvement backed by the research above, not a breaking change — command syntax and output shape are unchanged. The one thing to check: if you run hotspots on a very high-commit-velocity repo and care about analysis speed, set touch_window_days lower than the new 365-day default in .hotspotsrc.json, since the wider window does cost real time on those repos specifically."
+---
+
+I had Claude audit `hotspots`' own scoring formula against a year of `hotspots-research`'s own findings — not a hypothetical "does the tool follow best practice," but the literal question: does the code match what the research already confirmed?
+
+It found real drift, in both directions. Then, while turning that audit into a fix, it made a real mistake. Then it nearly made the same kind of mistake a second time. Then it made a third mistake that wasn't the same kind at all. I'm writing all three of them up, along with what actually shipped, because a research project that keeps a dated log of its own retracted findings shouldn't hold its own product release to a lower standard.
+
+---
+
+## What the audit actually found
+
+`hotspots-core`'s live ranking score — the number behind every CRITICAL/HIGH/MODERATE/LOW band — is a formula: static complexity plus a weighted sum of activity signals (churn, touch frequency, recency, call-graph fan-in, cyclic dependency, dependency depth, neighbor churn). Two confirmed findings said parts of it were wrong.
+
+**F160** decomposed that formula against real defect outcomes across a 17-repo, pre-registered gate. Two of its terms — fan-in and cyclic-dependency — contributed no measurable ranking value on their own, and dropping both from the score was statistically non-inferior. Meanwhile complexity itself, added into the score unweighted, was numerically swamping the two terms that actually carried the signal (touch frequency and recency), which together accounted for essentially all of the score's real predictive value.
+
+**F165** tested the touch-frequency window itself — the CLI measured commits in the last 30 days. A 365-day window beat it, monotonically, across every window size tested, with both confidence intervals positive. A follow-up check ruled out the boring explanation (that a wider window just counts more commits and looks better because of file size) — it isn't that.
+
+**META-06** found something different: the default training label for `hotspots train` degrades on mature, high-cadence repositories, where the naive keyword-based fix-commit label can go over 80% positive and stop discriminating anything. The fix (`--blame`, a more precise blame-based label) already existed in the CLI. The warning telling you to use it did not.
+
+Three real gaps: two live in the scoring formula since some inflection point I'd have had to go dig for, one a warning that should have shipped alongside a feature that had been sitting there since it landed.
+
+## What shipped in v1.41.0
+
+- Dropped fan-in and cyclic-dependency from the live score. Both values are still computed and reported everywhere else — CSV output, the coupling view, the trained-ranker feature set — only the default ranking number changed.
+- Widened the touch window from 30 to 365 days. This has a real cost: on a very high-commit-velocity repository, the extra git history scan measurably slows an analysis run (I measured it directly — negligible on a typical repo, up to roughly a second on the busiest one I tested). Because that tradeoff is real, not hypothetical, it's now configurable (`touch_window_days` in `.hotspotsrc.json`) instead of just eating the cost unconditionally.
+- Added the missing warning for degenerate default labels in `hotspots train`, pointing you at `--blame`.
+
+One finding I did *not* act on, on purpose: F160 also showed that complexity's unweighted contribution to the score is actively counterproductive once you control for activity. That's a real, confirmed problem. But the specific number that would justify a fix — how much removing it would help — came from an exploratory analysis the research team's own rules don't treat as confirmed evidence. So it stays a documented, open problem instead of a fix I'd have had to invent the size of myself. There's a follow-up experiment queued to close that properly before anything changes.
+
+## Where it went wrong along the way
+
+**Mistake one.** A separate finding about a "blast-radius" scoring axis — a candidate replacement using two existing signals — got added to the fix plan as confirmed, promotable research. It wasn't. The underlying finding had already been reassessed and marked `overturned`, with an explicit note in the research record: do not implement this without re-validating it first. Claude had read the finding's narrative, which still sounded like a normal refinement, and missed the one-word status tag that said otherwise.
+
+**Mistake two, caught closer to the edge.** A second item — a promotion brief calling for a specific fallback behavior when the CLI's ranker gets suppressed — turned out to already be exactly what the code does today. The brief was accurate when it was written; the codebase had simply moved past it since. Implementing it as written would have been a cosmetic wording change presented as a real fix. This one got caught before any code was written, by checking the actual current source instead of trusting a document about it — the same failure mode as mistake one, corrected earlier in the process the second time around.
+
+**Mistake three was a different kind of wrong.** A finding said hotspots' complexity-scoring approach doesn't transfer well to predicting security vulnerabilities specifically, and recommended a dedicated `--security` mode using a narrower, activity-only feature set. That finding is accurate. Proposing it as something to build was still a mistake — because `hotspots` isn't a security scanner. It has no CVE database, no vulnerability matching, nothing security-specific. Shipping a `--security` flag on the strength of one research result would have quietly implied a product capability that doesn't exist. Confirming a finding is real isn't the same question as whether building from it fits the product, and nobody asked the second question until it was pointed out directly.
+
+## The part I actually want to say out loud
+
+`hotspots` and the research behind it were built with a lot of help from AI coding tools — Claude, mainly, doing exactly the kind of audit described above. Those models were trained on enormous quantities of public code, most of it never reviewed for correctness by anyone in particular. This repository's own research corpus is, at this point, part of that training data pool for whatever comes next.
+
+So: don't blindly trust open source. That's not a swipe at anyone else's project — it's the standing advice this whole audit is an example of, applied to code I wrote, helped by tools trained on code nobody in particular vetted, including, eventually, this code. The fix isn't to stop using AI-assisted tools or to stop shipping open source. It's what this post is: write down what you actually checked, correct what you find, and say so when the correction itself was wrong the first time.
+
+v1.41.0 is on npm, PyPI, crates.io, and Homebrew now. The full account — what shipped, what didn't, and why, including all three mistakes above in more detail than fits here — is public in `hotspots-research`'s own findings log, not just in this post.
