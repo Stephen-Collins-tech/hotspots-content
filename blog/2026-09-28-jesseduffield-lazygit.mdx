@@ -1,0 +1,112 @@
+---
+title: "lazygit's input layer holds untouched complexity across 5 functions"
+titleSeo: "lazygit code health: gocui input handling leads technical debt and refactoring priority"
+description: "Structural analysis of jesseduffield/lazygit finds its heaviest risk concentrated in the gocui input-handling layer, led by a dormant 82-path function that hasn't been touched in 42 days."
+introContent: "The riskiest function in lazygit isn't the one changing every week — it's an 82-path key-handling function that's been sitting untouched for 42 days, waiting for the next person who has to understand it under pressure."
+pubDate: 2026-09-28
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "jesseduffield/lazygit"
+commit: "cfbbf18656c2b246013f64b29eaed5a47e3085e3"
+language: "go"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-09-28T09:47:02Z"
+clone_depth: 100
+topRisk: 17.94
+topFunction: "onKey"
+topFile: "pkg/gocui/gui.go"
+topPatterns: ["exit_heavy", "god_function", "complex_branching", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 8, deeply_nested: 5, exit_heavy: 10, god_function: 9, long_function: 8}
+qaSection:
+  - question: "What is a god function and why does it matter in lazygit?"
+    answer: "A god function is one that takes on too many responsibilities at once, usually visible as high fan-out (many distinct functions called) combined with high cyclomatic complexity. In this scan, 9 of the flagged functions match that pattern, including `performRefresh` with a fan-out of 79 and `onKey` with a fan-out of 29. The practical problem is blast radius: a change to a function with that many outgoing calls can ripple into dozens of code paths that are hard to enumerate from reading the function alone, which makes both review and testing slower and riskier."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The standard technique is extract-method: pull a self-contained branch or loop body out into its own named function so the caller reads as a sequence of steps instead of a wall of conditionals. As a threshold, I'd treat cyclomatic complexity above 15 as worth watching and above 30 as worth scheduling work on — several functions here, like `getBoxDrawingChars` at 83 and `parseOne` at 124, are well past that. A concrete first step: `getBoxDrawingChars` is a boolean truth table disguised as an if-else chain, and replacing it with a lookup table keyed by the four boolean inputs would cut its complexity from 83 to roughly 1 in one pass."
+  - question: "Is lazygit actively maintained?"
+    answer: "Yes — two of the five highest-risk functions I found are in the fire quadrant, meaning they combine high structural complexity with recent activity: `execKeybindings` was touched once in the last year with its last change 26 days ago, and `performRefresh` was touched 3 times in the last year with its last change only 5 days ago. `GetWorktrees` is also in the fire quadrant and was modified the same day as this analysis. At the same time, the top-ranked function overall, `onKey`, sits in the debt quadrant with zero touches in the last year and 42 days since its last change, and `getBoxDrawingChars`, also in the debt quadrant, hasn't moved in 78 days. Active development and accumulated structural debt coexist here — the refresh and worktree-loading logic is clearly being iterated on, while the older gocui input-handling core has stabilized enough that nobody's had reason to touch it."
+  - question: "How do I reproduce this analysis?"
+    answer: "I ran the open-source hotspots CLI against commit `cfbbf18` of `jesseduffield/lazygit`. After `git checkout cfbbf18`, the exact command is `hotspots analyze . --mode snapshot --explain-patterns --force`, and it runs the same way against any local git repository without extra configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with recent commit frequency, so functions that are both hard to understand and actively changing score highest. That's why `onKey`, with 82 execution paths but zero touches in the last year, scores close to `execKeybindings`, which has fewer paths (49) but has actually been touched recently — the two failure modes carry comparable urgency for different reasons. This scoring is meant to focus review effort on near-term regression risk rather than just ranking code by how complicated it looks on paper."
+---
+
+Across lazygit's 4,368 analyzed functions, 419 land in the critical band, and the single riskiest one — `onKey` in `pkg/gocui/gui.go` — carries an activity-weighted risk score of 17.94 despite zero touches in the last 30 days and 42 days since its last change. That's the archaeology story here: the top of the list isn't a live regression risk, it's structural debt with a long fuse. Two of the five hotspots I'd flag first sit in the 'fire' quadrant instead — `execKeybindings` and `performRefresh` — both touched within the last 30 days, and a third, `GetWorktrees`, was changed the same day as this analysis, which means the input-handling and refresh subsystems are both complex and under active edit right now.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `onKey` | pkg/gocui/gui.go | 17.9 | 82 | 6 | 29 |
+| `getBoxDrawingChars` | pkg/gui/presentation/graph/cell.go | 17.2 | 83 | 16 | 1 |
+| `execKeybindings` | pkg/gocui/gui.go | 17.2 | 49 | 6 | 12 |
+| `performRefresh` | pkg/gui/controllers/helpers/refresh_helper.go | 17.1 | 90 | 3 | 79 |
+| `GetWorktrees` | pkg/commands/git_commands/worktree_loader.go | 16.8 | 41 | 4 | 29 |
+
+<BandChart fire='202' debt='1151' watch='204' ok='2811' />
+
+The quadrant split tells its own story: 1,151 functions carry high structural complexity with no recent commits — structural debt sitting quietly — versus 202 in active churn right now. That ratio, roughly 5.7 debt functions for every fire function, is the real headline for lazygit's maintenance backlog. I've picked the five functions below to put in front of a reviewer first, chosen for the combination of complexity and how recently (or not) they've been touched.
+
+<PatternCloud patterns='exit_heavy:10,god_function:9,complex_branching:8,long_function:8,deeply_nested:5' />
+
+Ten of the flagged functions are exit-heavy (multiple return points scattered through the body), nine read as god functions doing too much in one place, and five nest control structures five levels deep or more. That combination — many exits, many branches, deep nesting — is exactly what makes a function expensive to test: every early return is a path someone has to write a case for, and in Go that usually means explicit error checks stacked on top of the business logic.
+
+### `onKey` — pkg/gocui/gui.go
+
+<FunctionCard fn='onKey' file='pkg/gocui/gui.go' risk='17.94' band='critical' cc='82' nd='6' fo='29' touches='0' />
+
+This is the top-ranked function in the whole scan, and it sits in the debt quadrant — 82 independent paths, six levels of nesting, and a fan-out of 29 distinct calls, but zero touches in the last year and 42 days since anyone last modified it. From the source, it's a single `switch` over event types (key events, mouse events) with a long cascade of nested conditionals handling mouse capture, drag gestures, hyperlink clicks, and paste-mode key remapping — all in one function body. The file's history shows a bug-fix rate of about 10.5% across 19 total commits and a single author active in the last 90 days, so this isn't a function with a documented defect trail, but it is one almost nobody currently holds context on. My recommendation: before the next person has to touch this for a new terminal-compatibility fix (the Ghostty paste-handling comment suggests this happens periodically), split the key-event and mouse-event branches into two functions. That alone would cut the paths any single function has to reason about roughly in half.
+
+### `getBoxDrawingChars` — pkg/gui/presentation/graph/cell.go
+
+<FunctionCard fn='getBoxDrawingChars' file='pkg/gui/presentation/graph/cell.go' risk='17.2' band='critical' cc='83' nd='16' fo='1' touches='0' />
+
+This one is a curiosity worth calling out directly: cyclomatic complexity of 83 and a nesting depth of 16, yet a fan-out of just 1. Looking at the source, it's a flat `if/else if` chain checking four booleans (up, down, left, right) to pick box-drawing characters — sixteen branches, one per combination, each returning a literal string pair. The high complexity and nesting numbers here are an artifact of an exhaustive boolean truth table, not tangled logic — there's no hidden coupling since it calls out to nothing else. It's in the debt quadrant: 78 days since its last change, and its one historical commit was itself tagged as a bug fix (a bug-fix rate of 100% on a single-commit history, so treat that as a small-sample signal, not a trend). The fix is mechanical: replace the sixteen-way `if/else if` chain with a lookup table keyed by the four-bit combination of directions. That would drop the complexity to near 1 without changing behavior.
+
+### `execKeybindings` — pkg/gocui/gui.go
+
+<FunctionCard fn='execKeybindings' file='pkg/gocui/gui.go' risk='17.15' band='critical' cc='49' nd='6' fo='12' touches='1' />
+
+This sits in the same file as `onKey`, but in the fire quadrant — one touch in the last year, 26 days since last change, an activity-weighted risk score of 17.15. The source shows it resolving which keybinding handler fires for a given key event, with early-return branches for search-mode keys, parent-view keybinding fallback, and global keybinding fallback layered on top of a loop over all registered keybindings. Forty-nine paths through that resolution logic is a lot of surface for a function that runs on every keypress. The file overall carries the same bug-fix rate as `onKey` (about 10.5% across 19 commits) and a review-comment density of 1.0, meaning reviewers have historically left about as many comments as there are commits on this file — worth reading as a signal that this logic invites scrutiny. Given it's actively being modified, I'd extract the search-mode-key handling into its own helper before the next change lands here, since that block is logically separable from the general keybinding-matching loop.
+
+### `performRefresh` — pkg/gui/controllers/helpers/refresh_helper.go
+
+<FunctionCard fn='performRefresh' file='pkg/gui/controllers/helpers/refresh_helper.go' risk='17.15' band='critical' cc='90' nd='3' fo='79' touches='3' />
+
+The standout number here is fan-out: 79 distinct calls out of one function, the highest of anything in this list, paired with 90 cyclomatic paths. That's a genuine hub function — coordinating scope-based refresh logic, worker-thread versus UI-thread dispatch, generation-guarded state capture, and input-blocking behavior, all visible in the comments as deliberate concurrency safeguards around goroutine and repo-switch races. Three touches in the last year and only 5 days since the last change put this firmly in the fire quadrant. The file has three commits linked to bug fixes out of 33 total (a bug-fix rate of about 15%) and a review-comment density of 3.0 — three comments per commit on average — both consistent with a function that reviewers already treat carefully. Given the low nesting (3) but extreme fan-out, this reads less like tangled conditionals and more like a coordination point with too many responsibilities glued together. I'd look for the natural seams — UI-thread capture, scope-set resolution, and batch-update dispatch look like three separable units from the excerpt — and extract at least one before the next refresh-related feature touches it.
+
+### `GetWorktrees` — pkg/commands/git_commands/worktree_loader.go
+
+<FunctionCard fn='GetWorktrees' file='pkg/commands/git_commands/worktree_loader.go' risk='16.77' band='critical' cc='41' nd='4' fo='29' touches='1' />
+
+Changed the same day as this analysis was run, with a fan-out of 29 and 41 execution paths, this function sits in the fire quadrant and parses `git worktree list --porcelain` output line by line before spinning up a goroutine per worktree to resolve its git directory in parallel via a `sync.WaitGroup`. That parallel-resolution step is worth flagging specifically: structural metrics like cyclomatic complexity don't capture goroutine coordination risk, and a bug here (a race on `current` during line parsing, or a wait-group mismatch) wouldn't necessarily show up as a branching problem. The file shows one bug-linked commit out of four total (a bug-fix rate of 25%), which is a small-sample signal but worth noting given the function was just modified. My recommendation: given it's actively changing and touches concurrent code, add a focused test for the goroutine fan-out path (missing directories, malformed porcelain output) rather than relying on the sequential-parsing tests alone.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 10 |
+| `god_function` | 9 |
+| `complex_branching` | 8 |
+| `long_function` | 8 |
+| `deeply_nested` | 5 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/jesseduffield/lazygit
+cd lazygit
+git checkout cfbbf18656c2b246013f64b29eaed5a47e3085e3
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
