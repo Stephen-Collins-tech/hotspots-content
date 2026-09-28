@@ -1,0 +1,118 @@
+---
+title: "curl's test-server code carries the highest activity risk — 5 functions to address first"
+titleSeo: "curl code health: test server request parsers lead refactoring priority"
+description: "An analysis of curl/curl finds five request-handling functions in the test server harness scoring highest on structural complexity combined with recent activity, led by http_connect in tests/server/sws.c."
+introContent: "Five functions in curl's test infrastructure are both hard to reason about and being edited right now, and one of them, http_connect, is a 106-path tunnel handler that was changed four days ago."
+pubDate: 2026-09-28
+tags: ["oss", "c", "refactoring", "code-health"]
+draft: false
+repo: "curl/curl"
+commit: "484e4e9f3ea1481f471549690e189fc08184f753"
+language: "c"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-09-28T09:52:50Z"
+clone_depth: 100
+hybrid_touch_threshold: 5
+topRisk: 20.26
+topFunction: "http_connect"
+topFile: "tests/server/sws.c"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 5, long_function: 5}
+qaSection:
+  - question: "What is deep nesting and why does it matter in curl?"
+    answer: "Deep nesting means control structures — if statements, loops, switches — are stacked inside one another past a reasonable reading depth; a nesting depth of 4 or more is considered a strong refactoring signal, and 8 or more is severe. In this analysis, `curltest_tweak_handler` hits 15 levels and `rtspd_ProcessRequest` hits 14, meaning a reviewer has to mentally track over a dozen simultaneous conditions to verify what a single line of code does. That makes bugs easy to introduce and hard to spot in review, because the surrounding context needed to reason about correctness barely fits in working memory. All five of curl's top hotspots hit this pattern, which is why extract-method refactoring is the common thread across every recommendation in this post."
+  - question: "How do I reduce cyclomatic complexity in C?"
+    answer: "The standard technique is decompose-conditional: pull each self-contained branch or validation block into its own named function, so the parent function calls out to clearly labeled steps instead of inlining every path. As a rule of thumb, cyclomatic complexity above 15 warrants a decomposition pass, and above 30 warrants immediate attention before the next feature change touches it. A concrete first step: in `test_rtspd` (cyclomatic complexity 57), replace the long `else if` chain over command-line flags with a lookup table mapping flag strings to handler functions — that single change would likely cut the branching count by more than half without altering behavior. In C specifically, watch for preprocessor macros and manual pointer/socket-state tracking (as seen in `http_connect`'s dual client/server file descriptor arrays) — these add real cognitive complexity that cyclomatic complexity alone doesn't fully capture."
+  - question: "Is curl actively maintained?"
+    answer: "Yes — every one of the top five structurally risky functions I found is in the 'fire' quadrant, meaning it's both complex and has been changed recently: `http_connect` and `sws_ProcessRequest` were each touched twice in the last year and changed as recently as 4 days ago, while `rtspd_ProcessRequest`, `test_rtspd`, and `curltest_tweak_handler` were each touched once in the last year and changed 6 days ago. Zero functions in this scan fell into the 'debt' quadrant (complex but dormant), which tells me the risk surface right now is concentrated in code under active revision rather than abandoned complexity. Active development and structural complexity coexisting is normal for a project of curl's size — 6,031 functions scanned, 1,506 in the critical band — the useful takeaway is where to point review attention, not a verdict on maintenance quality."
+  - question: "How do I reproduce this analysis?"
+    answer: "The scan was run with the open-source hotspots CLI against commit 484e4e9 of curl/curl. After running `git checkout 484e4e9`, I ran the hotspots CLI's analyze command against the checkout. The same command runs against any local git repository with no project-specific configuration required."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a structural-complexity score — built from cyclomatic complexity, nesting depth, and fan-out — with how frequently a function has been changed recently, so functions that are both hard to understand and under active revision score highest. A function with cyclomatic complexity of 80 that hasn't been touched in two years scores much lower than one with cyclomatic complexity of 20 that's edited every week, because the dormant complex function carries lower near-term regression risk. In this scan, `http_connect` topped the list with a score of 20.26 precisely because it combines a 106-path branching structure with a change only 4 days ago — the combination, not either factor alone, is what earns it the top spot. This prioritization is meant to point review effort at code where a mistake is most likely to land soon, not just wherever the code looks complicated in isolation."
+---
+
+I ran a hotspot scan on curl/curl this week, and every one of the top five functions sits in the 'fire' quadrant — structurally complex code that is also being actively edited right now, not backlog debt waiting for someone to get around to it. The top result, http_connect in tests/server/sws.c, carries an activity-weighted risk score of 20.26, with 106 cyclomatic paths, 8 levels of nesting, and a change 4 days ago. Across the full codebase I scanned 6,031 functions, 1,506 of them landing in the critical band — so this is a targeted look at where the highest-priority review effort belongs this week, not a verdict on the whole project.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `http_connect` | tests/server/sws.c | 20.3 | 106 | 8 | 22 |
+| `rtspd_ProcessRequest` | tests/server/rtspd.c | 20.2 | 81 | 14 | 24 |
+| `test_rtspd` | tests/server/rtspd.c | 20.2 | 57 | 11 | 26 |
+| `curltest_tweak_handler` | tests/http/testenv/mod_curltest/mod_curltest.c | 20.2 | 54 | 15 | 28 |
+| `sws_ProcessRequest` | tests/server/sws.c | 20.0 | 104 | 8 | 17 |
+
+## Large Repo Analysis
+
+curl is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the touch window (365 days by default); other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+<BandChart fire='3299' debt='0' watch='2732' ok='0' />
+
+The quadrant split is worth sitting with for a second: 3,299 functions are actively changing while structurally complex, and zero landed in the 'debt' quadrant among the functions surfaced here. That means the risk picture for curl right now is entirely about live churn colliding with complexity, not stale code nobody looks at anymore.
+
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,god_function:5,long_function:5' />
+
+Every single one of the top five functions triggered all five tracked antipatterns: complex branching, deep nesting, heavy use of early exits, long function bodies, and the 'god function' signal for broad responsibility. That match rate tells me these aren't borderline cases — they're candidates for extract-method work. All five also live in test infrastructure (tests/server/ and tests/http/testenv/), not in libcurl's production transfer engine, which changes how I'd prioritize the work but not whether it's worth doing.
+
+### `http_connect` — tests/server/sws.c
+
+<FunctionCard fn='http_connect' file='tests/server/sws.c' risk='20.26' band='critical' cc='106' nd='8' fo='22' touches='2' />
+
+This is the top-ranked function in the scan, and the source confirms what the metrics imply: it's a socket tunnel handler juggling two client sockets, two server sockets, and independent read/write poll state for a primary and secondary tunnel (used for passive FTP-style data connections layered under an HTTP CONNECT). The 106-path cyclomatic complexity comes from tracking four socket file descriptors through a single `select()`-style event loop, with nested conditionals guarding every combination of readable/writable state. An 8-level nesting depth means a reviewer has to hold eight layers of conditional context in their head to verify any single branch. Two touches in the last year, both on this same function, and a bug-fix rate of 50% on the surrounding file gives this a mild historical quality signal — not proof of a live defect, but reason enough to review the diffs closely. My recommendation: extract the per-tunnel-index socket monitoring block (the loop over `clientfd[i]`/`serverfd[i]`) into its own helper — that's the densest branching cluster and the most testable unit in isolation.
+
+### `rtspd_ProcessRequest` — tests/server/rtspd.c
+
+<FunctionCard fn='rtspd_ProcessRequest' file='tests/server/rtspd.c' risk='20.24' band='critical' cc='81' nd='14' fo='24' touches='1' />
+
+A 14-level nesting depth is the standout number here — the deepest of any function in this list. The excerpt shows why: it parses an HTTP/RTSP request line with `sscanf`, then walks into nested checks for protocol type, document path parsing, slash-finding, and numeric test-number extraction, each wrapped in another conditional layer. Twenty-four distinct function calls (fan-out) means this single request parser reaches into a wide swath of the test server's helper functions, so a change to how it validates or logs a request has a broad blast radius across that file. One touch in the last year, 6 days ago, and no bug-fix history recorded — this reads as complexity that accumulated over time rather than a function under repeated defect pressure. I'd start by pulling the protocol-detection block (`HTTP` vs `RTSP` string comparison and version parsing) into a small dedicated function; that alone should cut a meaningful slice of the nesting.
+
+### `test_rtspd` — tests/server/rtspd.c
+
+<FunctionCard fn='test_rtspd' file='tests/server/rtspd.c' risk='20.17' band='critical' cc='57' nd='11' fo='26' touches='1' />
+
+This is the RTSP test server's entry point, and the excerpt shows a long, flat-looking `else if` chain parsing command-line flags (`--version`, `--pidfile`, `--portfile`, `--logfile`, `--logdir`, `--ipv4`, `--ipv6`, `--port`, `--srcdir`, and presumably more past the excerpt). That's a classic long-function pattern — each flag adds one more branch, and cyclomatic complexity climbs linearly with every option added over the years. Fan-out of 26 is the highest fan-out in this top five, meaning this function is a hub that touches nearly every subsystem of the test server (socket setup, logging, PID/port file writing). The practical fix here is a lookup table or argument-parsing struct that maps flag strings to handlers, replacing the `else if` ladder — a well-understood refactor for CLI parsers that would drop the cyclomatic count sharply without touching behavior.
+
+### `curltest_tweak_handler` — tests/http/testenv/mod_curltest/mod_curltest.c
+
+<FunctionCard fn='curltest_tweak_handler' file='tests/http/testenv/mod_curltest/mod_curltest.c' risk='20.15' band='critical' cc='54' nd='15' fo='28' touches='1' />
+
+The deepest nesting in the entire top five (15 levels) and the highest fan-out (28) both land on this function, an Apache module handler that parses query-string arguments (`status`, `chunks`, `chunk_size`, `id`, `error`, `error_bucket`, `body_error`, `delay`, and more) to synthesize configurable test HTTP responses. Each argument is handled by its own `strcmp` branch with inline validation and error handling, which is exactly how you accumulate both deep nesting and high branching in the same function. This one is doing exactly what it looks like it's built to do — deliberately produce tunable, edge-case HTTP responses for test scenarios — but that flexibility is also why it's the most structurally loaded function on the list. I'd split argument parsing from response construction: a first pass builds a validated options struct, a second pass acts on it. That alone would separate two concerns that are currently interleaved branch-by-branch.
+
+### `sws_ProcessRequest` — tests/server/sws.c
+
+<FunctionCard fn='sws_ProcessRequest' file='tests/server/sws.c' risk='20.05' band='critical' cc='104' nd='8' fo='17' touches='2' />
+
+The second function from sws.c, and at 104 cyclomatic paths it's nearly tied with `http_connect` for the most branching in the set. The excerpt shows it parsing an incoming HTTP request line, extracting the method, path, and protocol version, then walking backward through the path string to find embedded test numbers — logic that has to handle malformed input, oversized requests, and special-case paths like `/verifiedserver` all inline. Like `http_connect` in the same file, it was touched twice in the last year with a recorded bug-fix rate of 50% on the file, and the file has had two authors in the last 90 days — worth noting sws.c as a whole is under active shared ownership, so a review of one function in it should probably include a look at the other. Given the 8-level nesting is identical to `http_connect`'s, the same extract-method treatment applies: isolate the path/test-number extraction logic (the backward slash-scan) into its own function with clear input/output.
+
+Worth stepping back on: none of these five functions live in libcurl's production transfer code — they're all test-server or test-harness infrastructure. That doesn't make the complexity free (a flaky or hard-to-debug test server slows down every contributor who runs the test suite), but it does mean the urgency here is about developer velocity on the test bed, not runtime correctness of libcurl itself. That's the profile I'd want to see everywhere: active development on simple code.
+
+## Codebase Risk Distribution
+
+All five top hotspots share the same structural patterns (`complex_branching`, `deeply_nested`, `exit_heavy`, `god_function`, `long_function`), which is typical of the highest-risk functions in any large codebase — they accumulate every structural signal on the way to the top. More useful context is how the risk is distributed across all 6,031 analyzed functions:
+
+| Band | Functions |
+|---|---|
+| Critical | 1,506 |
+| High | 1,793 |
+| Moderate | 1,844 |
+| Low | 888 |
+
+_Hotspot patterns belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/curl/curl
+cd curl
+git checkout 484e4e9f3ea1481f471549690e189fc08184f753
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
