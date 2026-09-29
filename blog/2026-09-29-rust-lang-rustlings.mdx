@@ -1,0 +1,113 @@
+---
+title: "Rustlings' CLI core carries the highest activity risk — 5 functions to fix first"
+titleSeo: "rustlings code health: watch and init functions lead refactoring priority"
+description: "In rust-lang/rustlings, the interactive watch loop and the init and main functions combine high structural complexity with active recent change, making them the top refactoring priority. Two other functions in the top five, handle_list and handle_event, are structural debt that has gone untouched for months."
+introContent: "I looked at rust-lang/rustlings and found the exercise watcher's main event loop sitting at the top of the risk list — 37 execution paths deep in a function that was touched twice in the past year and last changed 24 days ago."
+pubDate: 2026-09-29
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "rust-lang/rustlings"
+commit: "a650509c789da1656f813392b16aa1fa043b7f3e"
+language: "rust"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-09-29T09:45:06Z"
+clone_depth: 100
+topRisk: 15.37
+topFunction: "run_watch"
+topFile: "src/watch.rs"
+topPatterns: ["exit_heavy", "long_function", "god_function", "complex_branching", "stale_complex"]
+patternCounts: {complex_branching: 3, deeply_nested: 1, exit_heavy: 10, god_function: 4, long_function: 6, stale_complex: 2}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in rustlings?"
+    answer: "An exit-heavy function is one with multiple return, break, or early-bail points scattered through its body rather than a single controlled exit. In rustlings, 10 of the functions flagged across the critical band carry this pattern, including `init` with several distinct `bail!` calls for different setup failures and `run_watch` with multiple break points inside its event loop. Each exit path is a separate scenario a test suite needs to cover, and missing one means a failure mode goes unverified. It matters here specifically because these are CLI entry and setup functions — the kind of code every user hits on first run, so an uncovered exit path shows up as a bad first impression rather than an obscure edge case."
+  - question: "How do I reduce cyclomatic complexity in Rust CLI code like rustlings?"
+    answer: "The most direct technique is extract-method: pull cohesive chunks of a match arm or nested conditional into their own named function, which is what I'd do first with `handle_list`'s search-mode key handling to cut into its complexity of 55. As a rule of thumb, complexity above 15 is worth splitting opportunistically, and above 30 — where `run_watch`, `main`, and `handle_event` all sit — it warrants a dedicated refactoring pass rather than opportunistic cleanup. A concrete first step: in `handle_list`, moving the `is_searching` branch (roughly a dozen lines handling Esc, Enter, Char, and Backspace) into a `handle_search_key` function removes an entire nested match tier and its associated paths in one commit. Decompose-conditional works well for the nested `ModifyKind`/`AccessKind` matching in `handle_event` too, collapsing it toward a single boolean check."
+  - question: "Is rustlings actively maintained?"
+    answer: "Yes — the fire quadrant contains 18 functions that combine high structural complexity with active recent change, and three of the top five hotspots fall there: `run_watch` (2 touches in the past year, changed 24 days ago), `init` (4 touches, changed today), and `main` (1 touch, changed 28 days ago). At the same time, 29 functions sit in the structural-debt quadrant, including `handle_list` (0 touches in the past year, 132 days since last change) and `handle_event` (0 touches in the past year, 681 days since last change), showing that some complex code has gone untouched for a long stretch. Both things are true at once: the CLI core is under active development while a meaningful amount of older complexity in the list and watch-notification code hasn't been revisited."
+  - question: "How do I reproduce this analysis?"
+    answer: "The hotspots CLI is available on GitHub — run it against rustlings at commit `a650509` by checking out that revision and running `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works unmodified on any local git repository without additional configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk is a score that combines structural complexity (things like cyclomatic complexity, nesting depth, and fan-out) with how frequently a function has been changed recently, so functions that are both hard to follow and currently in motion score highest. I don't have the exact formula, just the resulting scores. That's why `run_watch`, with 37 execution paths and 5 levels of nesting, tops the list at a score of 15.37 despite only 2 touches in the past year, while `handle_event`, with a higher complexity count at 41 paths, scores lower at 13.19 because it hasn't been changed in 681 days. The idea is to separate 'complex code that's currently risky to touch' from 'complex code that's stable and dormant' — the former is where new bugs are most likely to get introduced right now."
+---
+
+Across rustlings' 521 functions, 18 land in the highest-risk quadrant where high structural complexity meets active recent change — live regression risk, not backlog cleanup. The top function, `run_watch` in `src/watch.rs`, carries an activity-weighted risk score of 15.37 with 37 cyclomatic paths and 5 levels of nesting, and it was last touched 24 days ago after 2 commits in the past year. Three of the top five sit in that same actively-changing quadrant: `run_watch`, `init`, and `main`. The other two, `handle_list` and `handle_event`, are just as complex but haven't been touched in 132 and 681 days respectively — structural debt rather than live churn. Anyone touching the CLI entry points or the watch loop this week is working in code that's both hard to reason about and currently moving; anyone touching list navigation or the notify-event filter is working in code that's hard to reason about but has been left alone for a long time.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `run_watch` | src/watch.rs | 15.4 | 37 | 5 | 5 |
+| `handle_list` | src/list.rs | 15.4 | 55 | 4 | 11 |
+| `init` | src/init.rs | 14.3 | 19 | 3 | 12 |
+| `main` | src/main.rs | 14.2 | 37 | 3 | 10 |
+| `handle_event` | src/watch/notify_event.rs | 13.2 | 41 | 3 | 3 |
+
+<BandChart fire='18' debt='29' watch='23' ok='451' />
+
+<PatternCloud patterns='exit_heavy:10,long_function:6,god_function:4,complex_branching:3,stale_complex:2,deeply_nested:1' />
+
+The pattern mix tells its own story before I even open a function: 10 exit-heavy functions across the critical set, meaning multiple early-return paths that each need their own test case, plus 6 long functions and 4 god functions doing too much in one place. That surface area concentrates in a small number of files — `src/watch.rs`, `src/list.rs`, `src/init.rs`, `src/main.rs`, and `src/watch/notify_event.rs` — which happen to be exactly the files that make up rustlings' interactive CLI experience.
+
+### `run_watch` — src/watch.rs
+
+<FunctionCard fn='run_watch' file='src/watch.rs' risk='15.37' band='critical' cc='37' nd='5' fo='5' touches='2' />
+
+This is the top-ranked hotspot in the repo, and it's in the actively-changing quadrant, not the debt pile. `run_watch` drives the interactive exercise-watching loop — it sets up a file watcher, builds the terminal state, and then runs an event loop matching on `WatchEvent` variants (`Input`, `FileChange`, `TerminalResize`, `NotifyErr`, `TerminalEventErr`). The excerpt shows a nested match inside a match: the outer loop dispatches on event type, and the `InputEvent::Next` arm alone nests three levels deep to handle the case where an exercise finishes without being marked done, triggering a full re-check. At 37 cyclomatic paths and 5 levels of nesting, that's the deepest nesting of anything in the top five, and it lines up with the 'deeply_nested' and 'complex_branching' patterns flagged for this function. It was touched twice in the past year and modified 24 days ago, with one author active in the last 90 days and a bug-fix rate of 11% — a sign this is evolving code rather than settled legacy. My recommendation: extract the `InputEvent::Next` handling — including the nested re-check-and-render fallback — into its own function. That alone would cut a meaningful chunk of the nesting depth without touching the surrounding watcher setup.
+
+### `handle_list` — src/list.rs
+
+<FunctionCard fn='handle_list' file='src/list.rs' risk='15.36' band='critical' cc='55' nd='4' fo='11' touches='0' />
+
+This one is structural debt, not live churn — it hasn't been touched in 132 days, with zero commits in the past year and zero distinct authors active in the last 90 days. But at 55 cyclomatic paths and a fan-out of 11, it's the single most complex function in this analysis by cyclomatic complexity, and the code confirms why: it's a keyboard/mouse event dispatcher for the exercise list UI, with a top-level match on `Event::Key` vs `Event::Mouse`, a nested `is_searching` branch that intercepts key codes differently while in search mode, and then a large `match key.code` covering navigation, filters, reset, search entry, and quit. That's the 'god_function' and 'long_function' patterns showing up together — one function owning list navigation, filtering, searching, and selection-to-exercise transition. The file's history shows a bug-fix rate of 25% and a review comment density of 10, a signal that reviewers have historically had a lot to say about this code even without recent commits. Because it's dormant now, the risk here is blast radius the next time someone has to touch list navigation — I'd split the search-mode key handling out as its own function before adding any new list command.
+
+### `init` — src/init.rs
+
+<FunctionCard fn='init' file='src/init.rs' risk='14.26' band='critical' cc='19' nd='3' fo='12' touches='4' />
+
+`init` is in the fire quadrant, and it's the most recently touched function in the entire top five — changed today, with 4 commits in the past year and 2 distinct authors active in the last 90 days. It handles first-time setup: checking whether a `rustlings/` directory already exists, shelling out to `cargo locate-project` and `cargo clippy --version`, validating that the target isn't already inside a workspace, and then creating a new Cargo project as a workspace member. Cyclomatic complexity of 19 with a fan-out of 12 — the highest fan-out in the top five — reflects how much of this function is coordinating external processes and file-system checks rather than doing its own logic. The 'exit_heavy' and 'god_function' patterns fit: several early `bail!` calls cover distinct failure modes (directory exists, clippy missing, already in a workspace), each a separate path a test would need to cover. Given it's actively being modified, I'd pull the `cargo locate-project` plus workspace-validation block into its own function — it's a self-contained unit with clear inputs and outputs and would drop both the complexity count and the fan-out on `init` itself.
+
+### `main` — src/main.rs
+
+<FunctionCard fn='main' file='src/main.rs' risk='14.15' band='critical' cc='37' nd='3' fo='10' touches='1' />
+
+`main` ties `run_watch` for the highest cyclomatic complexity in the top five at 37, though with shallower nesting (3 vs 5). It's the CLI entry point — parsing args, handling the `Init` and `Dev` subcommands early via a labeled block (`'priority_cmd`), checking for the exercises directory, parsing the info file, setting up the editor and app state, showing the welcome message conditionally on first run, and then dispatching into the interactive or one-shot command paths. That's a lot of sequential responsibility in one function, exactly what the 'god_function' and 'long_function' patterns are flagging. It's been touched once in the past year and last changed 28 days ago — modest activity, but the review comment density of 17.67 stands out as the highest of any function in this dataset, suggesting reviewers have scrutinized this code closely even with a low commit count. I'd extract the welcome-message display block and the `notify_exercise_names` leak-and-build logic into named helpers — both are self-contained enough to pull out without touching the subcommand dispatch at the top.
+
+### `handle_event` — src/watch/notify_event.rs
+
+<FunctionCard fn='handle_event' file='src/watch/notify_event.rs' risk='13.19' band='critical' cc='41' nd='3' fo='3' touches='0' />
+
+This is the other debt-quadrant function in the top five, and it's the most dormant of the group — 681 days since it was last changed, with zero commits in the past year. It filters raw file-system events from the `notify` crate before forwarding relevant ones to the watch loop: nested matches on `EventKind`, then `ModifyKind`, `AccessKind`, and their sub-variants, discarding everything that isn't a real content or rename change, then mapping surviving paths back to exercise indices by filename. At 41 cyclomatic paths, this is the highest complexity in the entire top five, driven almost entirely by exhaustively matching the `notify` crate's event taxonomy — the 'stale_complex' pattern is the right label here, since this is complexity that's been sitting untouched for nearly two years. The bug-fix rate of 33% across its 3 total commits is worth noting given the low volume, but with fan-out of only 3, this function isn't pulling in much external coupling — its risk is concentrated entirely in the branching itself. If the watch subsystem gets touched again, I'd flatten the nested `ModifyKind`/`AccessKind` matches using a single guard function that returns a boolean 'is relevant event', since most of the current nesting exists just to reach a `return` or fall through.
+
+On the Rust-specific side, none of these five functions show `unsafe` blocks in the excerpts I have, but `main`'s use of `.leak()` on a boxed slice for the notify handler thread is a lifetime-extension pattern worth flagging in review even though it's deliberate — the comment in the source calls it out as intentional, but it's exactly the kind of ownership decision that can mask complexity that cyclomatic count alone won't show.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 10 |
+| `long_function` | 6 |
+| `god_function` | 4 |
+| `complex_branching` | 3 |
+| `stale_complex` | 2 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/rust-lang/rustlings
+cd rustlings
+git checkout a650509c789da1656f813392b16aa1fa043b7f3e
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
