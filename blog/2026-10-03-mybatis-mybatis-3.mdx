@@ -1,0 +1,121 @@
+---
+title: "mybatis-3's ArrayUtil carries the highest activity risk — 3 functions to address first"
+titleSeo: "mybatis-3 code health: ArrayUtil and MapperMethod lead technical debt refactoring priorities"
+description: "Three of the five highest-risk functions in mybatis-3 sit in ArrayUtil.java, followed by MapperMethod.execute and PooledDataSource.popConnection, all structural debt untouched for 434 days."
+introContent: "One small utility file, ArrayUtil.java, accounts for three of the five riskiest functions in mybatis-3, and all three get their score from the same repeated type-dispatch ladder. I walk through why that matters and where the other two hotspots, in the mapper binding and connection pool code, fit in."
+pubDate: 2026-10-03
+tags: ["oss", "java", "refactoring", "code-health"]
+draft: true
+repo: "mybatis/mybatis-3"
+commit: "34147d0bd2f5ed0016ef367c92b25e174149326b"
+language: "java"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-03T09:04:34Z"
+clone_depth: 100
+topRisk: 15.87
+topFunction: "equals"
+topFile: "src/main/java/org/apache/ibatis/reflection/ArrayUtil.java"
+topPatterns: ["deeply_nested", "exit_heavy", "complex_branching", "god_function", "long_function"]
+patternCounts: {deeply_nested: 5, exit_heavy: 4, complex_branching: 2, god_function: 1, long_function: 1, stale_complex: 1}
+qaSection:
+  - question: "What is a deeply nested function and why does it matter in mybatis-3?"
+    answer: "A deeply nested function places conditionals and loops many levels inside one another, so a reader must track every enclosing condition at once to understand a given line. Nesting depth of 4 or more starts to hurt readability, and depth of 8 or more is a strong refactoring signal. In mybatis-3, all five of my top hotspots are flagged as deeply nested, with depths of 6 or 7, including `equals`, `hashCode` and `toString` in ArrayUtil.java and `popConnection` in PooledDataSource.java. Each extra level multiplies the combinations a reviewer has to consider and the test cases needed to cover them."
+  - question: "How do I reduce cyclomatic complexity and nesting in java?"
+    answer: "The standard technique is extract-method, combined with replacing conditional ladders with a lookup or polymorphic dispatch. As a rule of thumb, a cyclomatic complexity above 15 warrants splitting and above 30 warrants immediate attention, and nesting beyond 4 levels is worth flattening with early returns or helper methods. A concrete first step in mybatis-3 is the repeated component-type ladder in ArrayUtil.java: extracting one shared resolver for `equals`, `hashCode` and `toString` removes most of the branching from all three. For `popConnection`, pulling each connection acquisition strategy into its own method would cut the nesting and the single function's responsibilities roughly in half."
+  - question: "Is mybatis-3 actively maintained?"
+    answer: "In this snapshot, none of the functions fall in the fire quadrant: all 425 flagged functions are debt, meaning complex but not currently being changed. The five highest-risk functions each have 0 touches in the last year and 434 days since last change: `equals` (15.87), `hashCode` and `toString` (15.48 each), `execute` (15.31) and `popConnection` (15.24), all in the debt quadrant, and their files show a single commit in the available history. That says these specific hotspots are stable, not that the project is inactive; I only analyzed structure and recent activity at this commit, so I would not draw conclusions about overall project health. Active development and structural debt are not mutually exclusive, and here the debt sits in code that has been left alone."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub against a local clone of mybatis/mybatis-3. I analyzed commit 34147d0, so run `git checkout 34147d0`, then `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity with recent change activity, so functions that are both hard to understand and actively changing score highest. In this mybatis-3 snapshot, the top scores are 15.24 to 15.87 and all five functions are dormant, so the ranking reflects structure and blast radius rather than live churn. The prioritization helps teams focus refactoring where it most reduces the chance of introducing bugs in the next change."
+---
+
+ArrayUtil.java holds 3 of the 5 highest-risk functions in mybatis-3: equals, hashCode and toString, with activity-weighted risk scores between 15.48 and 15.87. That makes the file, not any single method, the unit I would review. All three are structural debt that hasn't been changed in 434 days, so the risk is blast radius when someone next touches them, not live churn. mybatis-3 is a Java SQL mapping framework; this snapshot covers 6,914 functions, of which 104 are critical, and the other two top hotspots are MapperMethod.execute and PooledDataSource.popConnection.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `equals` | src/main/java/org/apache/ibatis/reflection/ArrayUtil.java | 15.9 | 9 | 7 | 23 |
+| `hashCode` | src/main/java/org/apache/ibatis/reflection/ArrayUtil.java | 15.5 | 7 | 7 | 21 |
+| `toString` | src/main/java/org/apache/ibatis/reflection/ArrayUtil.java | 15.5 | 7 | 7 | 21 |
+| `execute` | src/main/java/org/apache/ibatis/binding/MapperMethod.java | 15.3 | 10 | 6 | 26 |
+| `popConnection` | src/main/java/org/apache/ibatis/datasource/pooled/PooledDataSource.java | 15.2 | 11 | 7 | 42 |
+
+<BandChart fire='0' debt='425' watch='0' ok='6489' />
+
+<PatternCloud patterns='deeply_nested:5,exit_heavy:4,complex_branching:2,god_function:1,long_function:1,stale_complex:1' />
+
+The quadrant split is the first thing I noticed. No function in this snapshot lands in the fire quadrant. All 425 flagged functions are debt: structurally complex and currently quiet. Every one of my top five has an identical 434 days since last change, and a file-level history of a single commit with zero bug-linked commits, zero reverts, and zero distinct authors in the last 90 days. I am not arguing any of this code is defective. I am arguing that these are the functions where the next change will be hardest to reason about and hardest to test.
+
+### `equals` — ArrayUtil.java
+
+<FunctionCard fn='equals' file='src/main/java/org/apache/ibatis/reflection/ArrayUtil.java' risk='15.87' band='critical' cc='9' nd='7' fo='23' touches='0' />
+
+I would start with `equals`, which has the highest activity-weighted risk score in the repository at 15.87, with a nesting depth of 7 and a fan-out of 23. From the excerpt, it compares two objects, handling nulls, class mismatches, and non-array objects first, then branches on the array's component type: one path for long, int, short, char, byte, boolean, float and double, and a fallback for object arrays. Each branch is a one-line call into the matching Arrays comparison, so no single branch is hard to read. The risk lives in the ladder as a whole. A cyclomatic complexity of 9, 7 levels of nesting and 23 distinct calls force a reader to hold a long chain of mutually exclusive checks in mind, and the exit-heavy shape (many early returns) means each path needs its own test case.
+
+The function has not been touched in 434 days, so I frame this as maintainability debt, not an active regression risk. My recommendation is a data-driven dispatch: map each primitive component type to a small comparison strategy, so the ladder collapses to a lookup plus one fallback. That would cut both the nesting and the number of branches a reviewer has to verify.
+
+**`hashCode` and `toString` — ArrayUtil.java**
+
+<FunctionCard fn='hashCode' file='src/main/java/org/apache/ibatis/reflection/ArrayUtil.java' risk='15.48' band='critical' cc='7' nd='7' fo='21' touches='0' />
+
+<FunctionCard fn='toString' file='src/main/java/org/apache/ibatis/reflection/ArrayUtil.java' risk='15.48' band='critical' cc='7' nd='7' fo='21' touches='0' />
+
+These two share an identical profile: an activity-weighted risk score of 15.48, a cyclomatic complexity of 7, a nesting depth of 7, and a fan-out of 21. The excerpts show the same structure as `equals`: a null check, a non-array shortcut, then the same component-type ladder calling the matching Arrays method. I treat the three as one finding, because the duplication is the real issue. The same eight-way type dispatch is written out three times in one 100-line class, so any fix, such as adding a new array type or changing how arrays are handled, has to be applied consistently across all three, and nothing in the structure enforces that.
+
+This is a good refactoring candidate precisely because it is small and stable. Neither function has been changed in 434 days, so there is no in-flight work to collide with. I would extract a single component-type resolver, have all three methods share it, then confirm behavior with a parameterized test over each primitive type plus null and mismatched-class cases. The file would end up with one place where the dispatch lives.
+
+### `execute` — MapperMethod.java
+
+<FunctionCard fn='execute' file='src/main/java/org/apache/ibatis/binding/MapperMethod.java' risk='15.31' band='critical' cc='10' nd='6' fo='26' touches='0' />
+
+`execute` in MapperMethod.java has an activity-weighted risk score of 15.31, a cyclomatic complexity of 10, a nesting depth of 6, and a fan-out of 26. Based on the excerpt, it switches on the command type (insert, update, delete, select, flush) and delegates. The select case carries its own chain of checks on the method's return shape: void with a result handler, many results, a map, a cursor, or a single result with optional wrapping. A final guard rejects a null result for a primitive return type.
+
+The fan-out of 26 is the number I would focus on. In a Java framework like this, the effective coupling is wider than static analysis shows, since this method sits between mapper interfaces and the SqlSession and is reached through dynamic proxies. Anything that changes the contract of a mapper method lands here. The select branch is the natural extraction point: pulling it into its own method would reduce the switch to a flat dispatch and give the return-shape logic its own focused tests. The function is unchanged for 434 days, so I would do this before the next feature that touches mapper return types, not after.
+
+### `popConnection` — PooledDataSource.java
+
+<FunctionCard fn='popConnection' file='src/main/java/org/apache/ibatis/datasource/pooled/PooledDataSource.java' risk='15.24' band='critical' cc='11' nd='7' fo='42' touches='0' />
+
+<MetricBar label='Fan-out' value='42' threshold='15' max='45' />
+
+`popConnection` has the highest fan-out in my top five at 42, alongside a cyclomatic complexity of 11 and a nesting depth of 7. It is the only function here flagged as a god function, a long function, and stale complex, and the excerpt shows why. Inside a retry loop under a lock, it takes an idle connection, creates a new one, claims an overdue connection (with a rollback attempt and statistics updates), waits on a condition, and finally validates the connection it ended up with. That is several distinct responsibilities in one method, with pool statistics bookkeeping and debug logging threaded through each branch.
+
+This is the function where I would be most cautious about blast radius, because connection pooling is concurrency-sensitive and the method holds a lock while it runs. I would extract methods along the existing comments: one per acquisition strategy (idle, create, claim overdue, wait), with the statistics updates grouped behind a small helper. I would do that only after writing strong tests around the overdue-claim and interrupted-wait paths, since those are the least obvious to verify. With 434 days since last change, there is room to do it deliberately.
+
+**What I would do in order**
+
+Given one afternoon, I would do the ArrayUtil consolidation: it is low-risk, self-contained, and removes three of the five hotspots in one change. `popConnection` and `execute` are higher-value but need more care, so I would schedule them after the test coverage work.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `deeply_nested` | 5 |
+| `exit_heavy` | 4 |
+| `complex_branching` | 2 |
+| `god_function` | 1 |
+| `long_function` | 1 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/mybatis/mybatis-3
+cd mybatis-3
+git checkout 34147d0bd2f5ed0016ef367c92b25e174149326b
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
