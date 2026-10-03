@@ -1,0 +1,129 @@
+---
+title: "tower's test and polling layers carry the highest activity risk: 5 functions first"
+titleSeo: "tower code health: stale complex polling code and a 41-path stress test lead refactoring priorities"
+description: "Four of tower's five riskiest functions are untouched structural debt, led by a 352-day-old balance stress test with 41 execution paths and 8 levels of nesting, while one load-balancer function is changing right now."
+introContent: "The riskiest function in tower is a test that hasn't been touched in 352 days, and two of the polling functions behind it have sat untouched for more than three years. I would treat this as a maintenance inventory rather than a fire drill."
+pubDate: 2026-10-03
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "tower-rs/tower"
+commit: "df06d70dbea345facbffb5881fe8647f53bf424d"
+language: "rust"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-03T09:08:04Z"
+clone_depth: 100
+topRisk: 16.75
+topFunction: "stress"
+topFile: "tower/tests/balance/main.rs"
+topPatterns: ["complex_branching", "god_function", "long_function", "stale_complex", "exit_heavy"]
+patternCounts: {complex_branching: 2, deeply_nested: 1, god_function: 2, long_function: 2, stale_complex: 2, exit_heavy: 2}
+qaSection:
+  - question: "What is a god function and why does it matter in tower?"
+    answer: "A god function is one that does too many things at once, usually visible as a very high fan-out (the number of distinct functions it calls) combined with high complexity. It matters because it is hard to test in isolation, and a change to any one responsibility can break another. In tower, 2 of the flagged functions carry this pattern: `stress` in `tower/tests/balance/main.rs` has a fan-out of 26, and `poll` in `tower/src/buffer/worker.rs` has a fan-out of 10. Both are also flagged as stale complex, so they have gone a long time without a change: 352 days for `stress` and 1565 days for `poll`."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The core technique is extract-method, often paired with decompose-conditional: pull each branch of a large `match` or `if` chain into a named function and leave the original as a short dispatcher. As a rough threshold, I would split a function once it passes 15 paths and treat 30 or more as urgent. In tower the clearest first step is `stress`, which has 41 paths: moving the 'ready', 'use', 'add', and 'remove' branches into helpers that take a shared state struct should cut both the path count and the nesting depth of 8 substantially. For `Future` and `Service` state machines like `poll_ready` in `tower/src/reconnect/mod.rs`, giving each state its own method is the equivalent move."
+  - question: "Is tower actively maintained?"
+    answer: "The data shows active work in one corner and dormancy elsewhere. The live-risk function `poll_ready` in `tower/src/balance/p2c/service.rs` was touched once in the last year and changed 0 days ago. By contrast, 38 functions are structural debt, and `poll_ready` in `tower/src/reconnect/mod.rs` has gone 1565 days without a change (0 touches in the last year), while `stress` has gone 352 days and `poll` in `tower/src/retry/future.rs` has gone 1398 days, also with 0 touches in the last year. Active development and accumulated untouched complexity are not mutually exclusive, and this repository shows both."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository and check out the analyzed commit with `git checkout df06d70`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity with how recently and how often a function changes, so functions that are both hard to understand and actively changing tend to score highest. A complex but dormant function carries lower near-term regression risk. This prioritization helps teams focus refactoring effort where it reduces the probability of bugs being introduced right now, not just where the code looks complicated in the abstract. In tower, `stress` leads at 16.75 with no touches in the last year, so structural complexity clearly weighs heavily in the score."
+---
+
+The highest-scoring function in tower is `stress` in `tower/tests/balance/main.rs`, with an activity-weighted risk score of 16.75, and it hasn't been changed in 352 days. That is the archaeology problem in this repository: 38 of 619 functions sit in the structural debt quadrant, and `poll_ready` in `tower/src/reconnect/mod.rs` has gone 1565 days without a change while carrying 26 independent execution paths. I read this as accumulated maintenance cost rather than an emergency, because whoever next touches these functions inherits the full structural cost at once. Of the 12 critical functions in the tree, only one in my top five is actively changing: `poll_ready` in `tower/src/balance/p2c/service.rs`.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `stress` | tower/tests/balance/main.rs | 16.7 | 41 | 8 | 26 |
+| `poll_ready` | tower/src/reconnect/mod.rs | 12.2 | 26 | 3 | 5 |
+| `poll` | tower/src/retry/future.rs | 11.6 | 15 | 4 | 5 |
+| `poll_next` | tower/src/util/call_all/common.rs | 11.4 | 14 | 3 | 5 |
+| `poll_ready` | tower/src/balance/p2c/service.rs | 11.1 | 13 | 3 | 6 |
+
+<BandChart fire='2' debt='38' watch='1' ok='578' />
+
+<PatternCloud patterns='complex_branching:2,deeply_nested:1,god_function:2,long_function:2,stale_complex:2,exit_heavy:2' />
+
+The quadrant split was the first thing I noticed. Of 619 functions, 578 are low-risk and inactive, 38 are complex but dormant, 2 land in the live-risk quadrant, and 1 sits in the watch quadrant. A small active surface sits on top of a much larger pile of untouched complexity. None of this says the code is wrong. It says that when someone does need to modify these paths, the cost of understanding them will be paid all at once.
+
+Two of the five functions below are polling state machines in the `Future` and `Service` style (`poll_ready` in the reconnect module, `poll` in the retry future), and a third is a stream implementation. Rust async code of this shape leans on pinning, projection, and a `loop` that re-enters a `match` on state. Ownership and lifetime mechanics in code like this can hide risk that cyclomatic complexity understates, so I read the CC figures below as a floor.
+
+### `stress` — main.rs
+
+<FunctionCard fn='stress' file='tower/tests/balance/main.rs' risk='16.75' band='debt' cc='41' nd='8' fo='26' touches='0' />
+
+<MetricBar label='Cyclomatic Complexity' value='41' threshold='10' max='60' />
+
+I would start with `stress` because it packs 41 execution paths, 8 levels of nesting, and a fan-out of 26 into one function, and it hasn't been changed in 352 days. It is a randomized test that drives the p2c `Balance` service through 100,000 iterations of adding services, readying them, and sending requests. In the excerpt I can see nested random branches that choose between readying a service, using one, adding one, and removing one, with bookkeeping counters and a retired-services list tracked by hand. The ND of 8 is the strongest signal: a reader has to hold the whole decision tree in their head to know what state the counters are in at any given line.
+
+The flagged patterns (complex branching, deeply nested, god function, long function, stale complex) all point the same way. The file has 4 total commits, no bug-linked commits, no reverts, and a bug-fix rate of 0%, so I frame this as maintainability debt rather than a defect signal. Pull request reviews on this file average 1.67 comments each, so reviewers have said something about it. My recommendation is extract-method: pull the 'ready a service', 'use a service', 'add a service', and 'remove a service' branches into small helpers that take the shared state as a struct. That alone should take nesting from 8 to roughly 3. Because the test is randomized, a failure is hard to reproduce, and a flatter structure makes a failing seed far easier to diagnose.
+
+### `poll_ready` — reconnect/mod.rs
+
+<FunctionCard fn='poll_ready' file='tower/src/reconnect/mod.rs' risk='12.21' band='debt' cc='26' nd='3' fo='5' touches='0' />
+
+This is the oldest critical function in my top five: 1565 days since last change, 26 execution paths, yet a modest nesting depth of 3 and fan-out of 5. The excerpt shows a `loop` over a three-state machine (idle, connecting, connected) with several early returns and a `break` on connection error. That is the exit-heavy pattern. Every return and break is another path a test has to cover, which is why CC reaches 26 while nesting stays at 3.
+
+The file has 3 total commits, a bug-fix rate of 0%, and no reverts, so the signal is structural rather than historical. One detail I would flag for the next developer: a failed connection sets the stored error and breaks out of the loop, but the function then returns a ready result, with the error surfacing later in `call`. The metrics can't tell me whether that is intended, but a two-step handoff like this bites people who don't know the file. I would split each state arm into its own small method returning a step result, so the loop body becomes a short dispatch and each transition can be tested on its own.
+
+### `poll` — future.rs
+
+<FunctionCard fn='poll' file='tower/src/retry/future.rs' risk='11.55' band='debt' cc='15' nd='4' fo='5' touches='0' />
+
+The retry future's `poll` has 15 execution paths and a nesting depth of 4, and it hasn't been changed in 1398 days. It drives a three-state machine (called, waiting, retrying) inside a loop and consults the retry policy after each response. The excerpt includes a long comment explaining an assumption that `poll_ready` on the retry wrapper is equivalent to `poll_ready` on the inner service, made to avoid adding an `Unpin` bound to the policy. I take that comment as a sign that the function holds a deliberate design compromise, which makes it a poor candidate for casual cleanup.
+
+The file has 4 total commits, no bug-linked commits, and a bug-fix rate of 0%. Review comment density is 2.0 per review, the highest of the five. Reviewers clearly engaged with this code, and I weigh that as a reason for care, not for a rewrite. My recommendation is narrower than for the others: before touching it, write the state transitions down as a table in a doc comment, then move the 'decide whether to retry' branch into its own function. The pinning and projection constraints limit how far this can be split, so I would aim for a smaller win here.
+
+### `poll_next` — common.rs
+
+<FunctionCard fn='poll_next' file='tower/src/util/call_all/common.rs' risk='11.36' band='debt' cc='14' nd='3' fo='5' touches='0' />
+
+`poll_next` in the call-all utility has 14 execution paths and has gone 698 days without a change. It is also the only function in my top five whose file carries a nonzero bug-fix rate: 50% across 6 total commits, with no bug-linked commits and no reverts. The signal is file-level, so I would not read it as proof of a defect in this function, but it does mean the file has seen fix-style work before, and that raises my review priority above the other dormant functions.
+
+The excerpt shows a loop that drains completed responses, checks an end-of-stream flag, pulls the next request, checks the service for readiness, and finally dispatches. Several `continue`, `return`, and `ready!` exits make this the exit-heavy pattern again. One comment notes that the end-of-stream flag is set after a readiness error so the service is not called again. That is an ordering dependency a refactor could easily break. I would name each phase of the loop (drain responses, fill the request slot, dispatch) as its own helper, keeping the control flow in `poll_next` while moving the bodies out.
+
+### `poll_ready` — service.rs
+
+<FunctionCard fn='poll_ready' file='tower/src/balance/p2c/service.rs' risk='11.09' band='fire' cc='13' nd='3' fo='6' touches='1' />
+
+This is the only live-risk function in my top five. Its activity-weighted risk score is 11.09, it was touched once in the last year, and it was changed 0 days ago. A CC of 13 is lower than the others, but this is the one being edited now, so any change lands on code that already has several nested decision points. The excerpt shows the function first reconciling discovered services, then promoting pending ones to ready, then looping to validate a previously selected index or pick a new one using power-of-two-choices selection. The comments mention that an eviction can reorder the ready set via `swap_remove` and leave a cached index pointing at a different endpoint.
+
+That comment points at a correctness dependency between this function and the discovery-update logic it calls. The file has 7 total commits, a bug-fix rate of 14%, no bug-linked commits, and no reverts. I would not call that a defect signal, but a recent change about a stale cached index is a reminder that correctness here depends on state shared across several functions. I would review this function together with its discovery-update helper and keep the index-reset invariant covered by a test.
+
+**What I would do first**
+
+The order I would work in: first, flatten `stress` before anyone has to debug a failing seed. Second, review the p2c `poll_ready` while it is fresh in the maintainers' heads. Third, add transition tables to the reconnect and retry state machines, since those have gone over three years without a change and the context for their design is the part most likely to be lost. In the context-only list, `poll` in `tower/src/buffer/worker.rs` (flagged as a god function and stale complex) belongs in the same queue after those.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 2 |
+| `god_function` | 2 |
+| `long_function` | 2 |
+| `stale_complex` | 2 |
+| `exit_heavy` | 2 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/tower-rs/tower
+cd tower
+git checkout df06d70dbea345facbffb5881fe8647f53bf424d
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
