@@ -1,0 +1,147 @@
+---
+title: "uvicorn's protocol send paths carry the highest activity risk: 5 functions first"
+titleSeo: "uvicorn code health: protocol send functions lead the refactoring priority list"
+description: "Four of uvicorn's five riskiest functions are ASGI send methods spread across the HTTP and WebSocket protocol implementations, each with cyclomatic complexity between 44 and 62."
+introContent: "uvicorn has the same god function written four times: a send method per protocol, each branching on ASGI message type with cyclomatic complexity from 44 to 62. Three of the four (the WebSocket and httptools ones) haven't been touched in over a month, which makes them structural debt rather than live churn; the HTTP/2 one changed 12 days ago."
+pubDate: 2026-10-04
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: true
+repo: "encode/uvicorn"
+commit: "724f82fdba1765fe5f821a3ebed6da5c1ddcb386"
+language: "python"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-04T09:37:59Z"
+clone_depth: 100
+topRisk: 16.86
+topFunction: "send"
+topFile: "uvicorn/protocols/websockets/websockets_sansio_impl.py"
+topPatterns: ["long_function", "god_function", "exit_heavy", "complex_branching", "deeply_nested"]
+patternCounts: {exit_heavy: 7, god_function: 10, long_function: 11, complex_branching: 5, deeply_nested: 3}
+qaSection:
+  - question: "What is a god function and why does it matter in uvicorn?"
+    answer: "A god function is one that does too many distinct jobs, which usually shows up as very high branch counts and wide coupling to other code. In uvicorn, 10 functions carry that pattern, including all five in my top list: the `send` methods mix handshake logic, header validation, framing decisions, and body writing in single bodies with cyclomatic complexity between 44 and 62, and `handle_events` in `h11_impl.py` does the same at complexity 37. The practical cost is testing and change safety, since each independent path is a potential test case and a change to one concern can disturb another. Fan-out of 34 in the sansio WebSocket `send` shows how many collaborators a single edit can affect."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "Use extract-method and decompose-conditional: pull each branch of a large dispatch into a named function and leave the original as a thin router. A cyclomatic complexity above 15 deserves a look and above 30 deserves prompt attention; uvicorn's `send` in `httptools_impl.py` sits at 61. A concrete first step there is to split the response-start path from the response-body path, then move the header-scanning loop into a helper that returns the framing decision. That should substantially reduce the count in the parent function and give each piece its own focused tests."
+  - question: "Is uvicorn actively maintained?"
+    answer: "The data says yes, with an important qualification. Two of my top five functions are in the fire quadrant: the HTTP/2 `send` was last changed 12 days ago with 2 touches in the last year, and the h11 `handle_events` was last changed 4 days ago with 2 touches in the last year. Elsewhere, the three debt-quadrant `send` methods in my top five have gone 33, 44, and 61 days without a change and have 0 touches in the last year. Active development and accumulated structural complexity coexist here, and the analysis does not suggest one implies the other is neglected."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the repository, run `git checkout 724f82f`, and use the hotspots CLI from GitHub. The command is `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A function with cyclomatic complexity 80 that hasn't been touched in two years scores lower than one with complexity 20 that changes weekly, because the dormant one has lower near-term regression risk. This helps teams aim refactoring at code where a mistake is most likely to be introduced soon, rather than at whatever merely looks complicated in the abstract. In uvicorn, the HTTP/2 `send` scores 16.11 and is changing now, with its last change 12 days ago, while the sansio WebSocket `send` scores 16.86 as structural debt, with 44 days since its last change."
+---
+
+The riskiest function in uvicorn is the WebSocket `send` in `websockets_sansio_impl.py`, and it hasn't been changed in 44 days, so I read it as structural debt rather than an emergency: cyclomatic complexity of 47, nesting depth of 5, fan-out of 34, and whoever touches it next inherits all of that with no recent changes to learn from. The pattern repeats across my top five functions, drawn from 368 analyzed with 30 in the critical band: four of the five are `send` methods for different protocol implementations. I would start with that family because the same state machine is written once per protocol, and any fix has to be reasoned about four times.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `send` | uvicorn/protocols/websockets/websockets_sansio_impl.py | 16.9 | 47 | 5 | 34 |
+| `send` | uvicorn/protocols/websockets/wsproto_impl.py | 16.4 | 44 | 5 | 23 |
+| `send` | uvicorn/protocols/http/httptools_impl.py | 16.2 | 61 | 4 | 24 |
+| `send` | uvicorn/protocols/http/zttp_h2_impl.py | 16.1 | 62 | 3 | 25 |
+| `handle_events` | uvicorn/protocols/http/h11_impl.py | 15.7 | 37 | 3 | 27 |
+
+<BandChart fire='9' debt='97' watch='3' ok='259' />
+
+<PatternCloud patterns='long_function:11,god_function:10,exit_heavy:7,complex_branching:5,deeply_nested:3' />
+
+The distribution is lopsided. Of 368 functions, 97 sit in the debt quadrant (complex but not recently changed) and only 9 are in the fire quadrant (complex and changing now). Most of uvicorn's structural risk is dormant: code that works today and will be expensive to change tomorrow. The two fire functions in my top five are the exceptions, and I will flag them when I get there.
+
+One caveat before the individual sections. High activity-weighted risk means a function is structurally complex and, where the quadrant says so, also changing. It does not mean the code is defective or that the maintainers have done something wrong. A protocol server has to handle a lot of message types, and some of this branching is the nature of the job. What the data can tell me is where the branching is concentrated.
+
+### `send` — websockets_sansio_impl.py
+
+<FunctionCard fn='send' file='uvicorn/protocols/websockets/websockets_sansio_impl.py' risk='16.86' band='debt' cc='47' nd='5' fo='34' touches='0' />
+
+This is the top-ranked function, with an activity-weighted risk score of 16.86, and it is in the debt quadrant: zero touches in the last year and 44 days since last change. I would start here because it combines the highest fan-out in my top five (34 distinct functions called) with a nesting depth of 5.
+
+<MetricBar label='Fan-out' value='34' threshold='15' max='40' />
+
+From the source excerpt, the function handles the full lifecycle of outbound ASGI messages for a WebSocket connection: the handshake phase (accept, close-as-reject, and an HTTP-response-during-handshake path) and the post-handshake phase (data frames and close). Before any of that, it waits on a write flow-control event and raises on disconnect. That is at least two distinct state machines, handshake and established connection, folded into one method and distinguished by flags like whether the handshake is complete and whether an initial response exists.
+
+The file-level history is quiet: 14 total commits, no bug-linked commits, no reverts, and a bug-fix rate of 0%. The notable number is four distinct authors in the last 90 days, the widest ownership spread in my top five. I read this as maintainability debt, not a defect signal. My recommendation is extract-method along the state boundary: pull the handshake branch and the established-connection branch into separate methods, and move the repeated access-logging call into a helper. That alone would cut the nesting and make each message type independently testable.
+
+### `send` — wsproto_impl.py
+
+<FunctionCard fn='send' file='uvicorn/protocols/websockets/wsproto_impl.py' risk='16.44' band='debt' cc='44' nd='5' fo='23' touches='0' />
+
+This is the same method for the other WebSocket backend, with cyclomatic complexity of 44, nesting depth of 5, and fan-out of 23. It has gone 61 days without a change, the longest dormancy of any function in my top five, and it is debt, not live churn.
+
+The excerpt shows the same two-phase structure as its sibling: handshake handling (accept with optional per-message-deflate extension, close as 403 rejection, and a custom HTTP response path with a status range check) followed by data and close handling. The resemblance to the sansio version is close enough that I would treat the two as one refactoring problem. The file has 6 total commits, one distinct author in the last 90 days, and a bug-fix rate of about 17%, which is one bug-fix-tagged commit out of six. No reverts and no bug-linked commits. I would not read much into one tagged commit, but it is the only non-zero defect-adjacent signal among the debt functions in my top five. If I had to choose which WebSocket `send` to refactor first, I would pick this one, on that thin historical evidence plus the fact that a single author recently touched it, which concentrates knowledge.
+
+The concrete step: extract the three handshake branches into named methods (accept, reject-on-close, reject-with-response) and leave `send` as a dispatcher on message type.
+
+### `send` — httptools_impl.py
+
+<FunctionCard fn='send' file='uvicorn/protocols/http/httptools_impl.py' risk='16.20' band='debt' cc='61' nd='4' fo='24' touches='0' />
+
+Cyclomatic complexity of 61 is the second-highest in my top five, the kind of number that means a test suite needs dozens of cases to cover every path. The function is 33 days since last change and has zero touches in the last year, so it is debt.
+
+<MetricBar label='Cyclomatic Complexity' value='61' threshold='30' max='70' />
+
+The excerpt shows an HTTP/1.1 response writer. In the first phase it validates the message type, builds the status line and headers, checks each header name and value against regular expressions, and interprets content-length, transfer-encoding, and connection headers to decide between fixed-length and chunked encoding. In the second phase it writes body data, with different handling for HEAD requests and chunked responses. Header parsing policy, framing policy, and body writing all live in one function, which explains the high branch count despite nesting staying at 4.
+
+The file has 6 total commits, one distinct author in the last 90 days, no reverts, and no bug-linked commits. The exit-heavy pattern flagged here matters in practice: early returns on disconnect plus multiple raise paths each demand their own test case. My recommendation is to split the response-start path from the response-body path, and pull the header-scanning loop into a function that returns the framing decision. That loop is the densest part of the branching and is easy to unit-test once isolated.
+
+### `send` — zttp_h2_impl.py
+
+<FunctionCard fn='send' file='uvicorn/protocols/http/zttp_h2_impl.py' risk='16.11' band='fire' cc='62' nd='3' fo='25' touches='2' />
+
+Here is the first of the two fire-quadrant functions, and the distinction matters. It has the highest cyclomatic complexity in my top five at 62, an activity-weighted risk score of 16.11, two touches in the last year, and was last changed 12 days ago. Unlike the three above, this one is changing now, so the complexity is a live regression risk and not a backlog item.
+
+From the excerpt, this is an HTTP/2 response writer. Beyond the start-and-body structure shared with the HTTP/1.1 version, it has an early-hint path for informational responses, filters forbidden headers, special-cases the TE header, tracks expected content length with checks for both over-length and under-length bodies, and handles trailers. The file has only 4 total commits, one distinct author in the last 90 days, no reverts, and no bug-linked commits.
+
+A small commit history on a function this size is the argument for acting now: its history is short, so the cheapest time to extract the header-filtering and content-length-accounting logic is before more cases accrete. I would extract those two concerns into helpers and add tests for the over-length and under-length error paths specifically, since those are the branches most likely to be skipped.
+
+### `handle_events` — h11_impl.py
+
+<FunctionCard fn='handle_events' file='uvicorn/protocols/http/h11_impl.py' risk='15.68' band='fire' cc='37' nd='3' fo='27' touches='2' />
+
+The second fire-quadrant function is also the freshest: 4 days since last change, two touches in the last year, and an activity-weighted risk score of 15.68. It is the only non-`send` function in my top five, and it is the HTTP/1.1 event loop built on the h11 library.
+
+The excerpt shows a loop that pulls protocol events and branches on their type: invalid-request handling that sends a 400, need-more-data, a paused state for HTTP pipelining, and the request event itself. The request branch is where the weight sits. It parses the target into path and query string, builds the ASGI scope dictionary, checks whether to upgrade to WebSocket, enforces the concurrency limit with a 503 fallback app, constructs a request-response cycle object, and schedules the application as an asyncio task, with an opt-in branch that resets context variables. Fan-out of 27 reflects that breadth. Two distinct authors in the last 90 days and 5 total commits, no reverts and no bug-linked commits.
+
+I would extract the scope construction into its own function and the task-scheduling block into another. Scope building is pure data assembly and trivially testable once separated; the task creation with its context-reset option is the piece most likely to keep changing, so isolating it limits how much of the surrounding event loop needs retesting each time. A similar `handle_events` exists in `zttp_impl.py` (also fire, activity-weighted risk score 12.80, last changed 4 days ago), so whichever refactoring shape I pick should be checked against both.
+
+**What the rest of the list tells me**
+
+The functions just outside my top five reinforce the pattern. The `send` in `zttp_impl.py` scores 15.15 with cyclomatic complexity of 57 and is in the debt quadrant at 33 days since last change, so it is a fifth `send`-shaped function in the critical band. I would treat it as part of the same refactoring family.
+
+**What I would do, in order**
+
+1. Start with the HTTP/2 `send` and the h11 `handle_events`, because they are the only two of my five that are changing now. Extract before the next feature lands.
+2. Treat the two WebSocket `send` methods as one project. The shared handshake-versus-established split suggests a common shape that could be refactored in parallel.
+3. Schedule the HTTP/1.1 `send` refactor around its header-scanning loop, since a complexity of 61 will make every future edit to that function expensive.
+4. Before touching any of the debt functions, write characterization tests for each message-type branch. With no recent changes and no bug history, nothing in the data suggests these are broken; the risk is that they will be hard to modify safely.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 11 |
+| `god_function` | 10 |
+| `exit_heavy` | 7 |
+| `complex_branching` | 5 |
+| `deeply_nested` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/encode/uvicorn
+cd uvicorn
+git checkout 724f82fdba1765fe5f821a3ebed6da5c1ddcb386
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
