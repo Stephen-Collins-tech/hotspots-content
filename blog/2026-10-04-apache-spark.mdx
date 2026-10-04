@@ -1,0 +1,130 @@
+---
+title: "Spark's Python runtime carries the highest activity risk — 5 functions to address first"
+titleSeo: "apache/spark code health: PySpark worker and Connect client refactoring priorities"
+description: "All five top hotspots in apache/spark sit in the Python layer, spread across the worker, daemon, and Spark Connect client, with cyclomatic complexity from 33 to 115 and fan-out up to 163."
+introContent: "Five functions in PySpark's worker, daemon, and Spark Connect client are both heavy with branching and changing within the last 8 days. I walked through each one and what I would do first."
+pubDate: 2026-10-04
+tags: ["oss", "scala", "refactoring", "code-health"]
+draft: false
+repo: "apache/spark"
+commit: "2f4102c8117a087aba1324d52b268f7966670136"
+language: "scala"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-04T09:47:52Z"
+clone_depth: 100
+hybrid_touch_threshold: 5
+topRisk: 20.14
+topFunction: "manager"
+topFile: "python/pyspark/daemon.py"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 5, long_function: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in spark?"
+    answer: "A god function is one function that takes on many unrelated responsibilities, which shows up as high cyclomatic complexity, a long body, and a large fan-out. It is hard to test in isolation, and a change to one responsibility can affect another that shares the same scope. In spark, all five of the top hotspots carry this pattern, with fan-out values from 45 for `_execute_and_fetch_as_iterator` to 163 for `read_udfs`. The more distinct functions a body calls, the more places a behavior change can ripple to."
+  - question: "How do I reduce cyclomatic complexity in scala?"
+    answer: "The main technique is extract-method, often paired with decompose-conditional: pull each coherent branch group into a named function and leave the original as a short sequence of calls. As a rough guide, a cyclomatic complexity above 15 warrants splitting and above 30 warrants immediate attention. A concrete first step in this analysis is `createDataFrame`, with a cyclomatic complexity of 115: move schema normalization into its own function that returns the resolved schema and column count, which takes a large block of branches out of the main body. Add tests for each input type first so the extraction does not change behavior. The hotspots in this snapshot are Python files, but the same extraction technique applies to the Scala and Java code in the repository."
+  - question: "Is spark actively maintained?"
+    answer: "The data says yes. All five top functions are in the 'fire' quadrant, and they were last changed between 1 day ago (`read_udfs`) and 8 days ago (`manager`, `createDataFrame`, `_execute_and_fetch_as_iterator`). `read_udfs` was touched 4 times in the last year, `read_udtf` twice, and `manager`, `createDataFrame`, and `_execute_and_fetch_as_iterator` once each. Across the repository, 3,205 functions are in the 'fire' quadrant and none are in 'debt', so the complex code flagged here is not sitting in the 'debt' quadrant. Active development and high structural complexity coexist here."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit 2f4102c of apache/spark. Then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has recently been committed to, so functions that are both hard to understand and actively changing score the highest. A complex function that has not been touched in two years scores lower than a moderately complex one touched every week, because the dormant one has lower near-term regression risk. This helps teams spend refactoring effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract. It is a prioritization signal, not a verdict on code quality."
+---
+
+If you ship a PySpark change this week, you are probably working near code that is both hard to reason about and still moving. In the apache/spark snapshot at commit 2f4102c, I count 3,205 functions in the 'fire' quadrant out of 18,283 analyzed, and the five highest-ranked are all Python: `manager` in python/pyspark/daemon.py (activity-weighted risk score of 20.14), `read_udtf` (19.57), `createDataFrame` (19.30), `_execute_and_fetch_as_iterator` (19.00), and `read_udfs` (18.89). All five were last changed between 1 and 8 days ago. I would treat this as a live review problem, not a backlog item. Spark has 902 functions in the critical band, so the five below are only the top of a long list.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `manager` | python/pyspark/daemon.py | 20.1 | 76 | 10 | 52 |
+| `read_udtf` | python/pyspark/worker.py | 19.6 | 63 | 6 | 110 |
+| `createDataFrame` | python/pyspark/sql/connect/session.py | 19.3 | 115 | 6 | 56 |
+| `_execute_and_fetch_as_iterator` | python/pyspark/sql/connect/client/core.py | 19.0 | 33 | 7 | 45 |
+| `read_udfs` | python/pyspark/worker.py | 18.9 | 101 | 5 | 163 |
+
+## Large Repo Analysis
+
+spark is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the touch window (365 days by default); other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+<BandChart fire='3205' debt='0' watch='15078' ok='0' />
+
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,god_function:5,long_function:5' />
+
+The quadrant split was the first thing I noticed. Every one of the 18,283 functions falls into either 'fire' or 'watch', with none in 'debt' or 'ok'. All five top hotspots also carry the same five patterns: complex branching, deep nesting, heavy exit counts, god-function shape, and long bodies. I read that as a shared design style in the PySpark runtime, not five unrelated accidents.
+
+One caution on the history signals. For all five functions, the file-level data shows zero bug-linked commits, zero reverts, and a bug-fix rate of 0%. Total commit counts on these files are small (1 for three of them, 7 for the two in worker.py), so there is little history to read. I would not treat the clean record as evidence of safety, nor as evidence of risk. These are maintainability findings.
+
+### `manager` — daemon.py
+
+<FunctionCard fn='manager' file='python/pyspark/daemon.py' risk='20.14' band='fire' cc='76' nd='10' fo='52' touches='1' />
+
+I would start with `manager`: it has the highest activity-weighted risk score (20.14) and the deepest nesting of the five, at 10 levels. Per the excerpt, it sets up a process group, chooses between a Unix domain socket, an IPv6 loopback socket, and an IPv4 loopback socket based on environment variables, rewires stdin and stdout, installs signal handlers, and then runs a polling loop that decides which file descriptors are ready. Socket setup, signal policy, and the polling loop are three different responsibilities sharing one scope, with a cyclomatic complexity of 76 and a fan-out of 52.
+
+The function was touched once in the last year and last changed 8 days ago, with a single author in the last 90 days. A single recent touch is a modest activity level, so the score is driven mostly by structure. The excerpt already contains two nested helpers, `shutdown` and `handle_sigterm`. I would extend that approach: pull socket creation into a function that returns the listener and its address, and move the polling setup into its own function. Those two seams would take some of the branching out of the main body. A nesting depth of 10 inside a daemon that manages worker processes is what I would want to reduce first.
+
+### `read_udtf` — worker.py
+
+<FunctionCard fn='read_udtf' file='python/pyspark/worker.py' risk='19.57' band='fire' cc='63' nd='6' fo='110' touches='2' />
+
+`read_udtf` has a fan-out of 110, the second highest in this set. It has 2 touches in the last year, was last changed 3 days ago, and its file has seen 4 distinct authors in the last 90 days. From the excerpt, it picks a serializer based on the evaluation type, unpickles an analyze result, validates that the handler is a class and that the return type is a struct, and then inspects the handler's constructor signature to decide how to build instances. It also defines a nested `UDTFWithPartitions` class inside the function body.
+
+The constructor-signature checks show why the complexity count is high: each combination of 'has an analyze result' and 'constructor arity' leads to a different branch or error. Those would be testable as a small decision table, but only if they are separated from the rest of the function. I would extract the handler-construction logic into its own function and move `UDTFWithPartitions` to module level, so it can be tested without going through the full reader. With 110 distinct callees, any change here has wide coupling, and four recent authors in the same file raise the odds of overlapping edits.
+
+### `createDataFrame` — session.py
+
+<FunctionCard fn='createDataFrame' file='python/pyspark/sql/connect/session.py' risk='19.30' band='fire' cc='115' nd='6' fo='56' touches='1' />
+
+`createDataFrame` in the Spark Connect session has the highest cyclomatic complexity in the set at 115: 115 independent paths and, in principle, that many test cases. It was touched once in the last year and last changed 8 days ago, by a single author in the last 90 days. The excerpt shows where the count comes from. The function validates the data argument, warns about two parameters Connect ignores, normalizes the schema from several possible types (string, atomic type, struct, list, tuple), checks numpy array dimensionality, handles the empty-input case, and then reads a long batch of session configuration keys before any conversion work begins.
+
+The front half is argument normalization, and that is the cheapest part to separate. I would move schema resolution into a function that returns the schema, the column names, and the column count, and move the config batch into a small helper that returns a typed settings object. After that, the conversion paths for pandas, numpy, Arrow, and plain Python data can each stand on their own. Because this is a public API entry point, I would write characterization tests first, one per input type, so the behavior stays pinned through the extraction.
+
+### `_execute_and_fetch_as_iterator` — core.py
+
+<FunctionCard fn='_execute_and_fetch_as_iterator' file='python/pyspark/sql/connect/client/core.py' risk='19.00' band='fire' cc='33' nd='7' fo='45' touches='1' />
+
+This one has the lowest cyclomatic complexity of the five (33), but a nesting depth of 7 and a fan-out of 45. It was touched once in the last year and last changed 8 days ago. The excerpt shows a nested generator, `handle_response`, that checks one response field after another (metrics, observed metrics, schema, SQL command result, stream operation results) and yields a different item type for each. Inside the observed-metrics branch there is a further split between error handling, a special Python accumulator path with its own try/except around unpickling, and ordinary observation updates.
+
+This is a dispatch-on-field shape, and I would treat it that way. Each response field could get its own small handler function, leaving the nested generator as a short sequence of calls. The accumulator-metric branch is the deepest part and the one with a swallowed unpickling error, so I would extract it first and give it a direct test. The risk here is not the raw path count but the depth: at 7 levels, it is hard to see which conditions are in force at a given line.
+
+### `read_udfs` — worker.py
+
+<FunctionCard fn='read_udfs' file='python/pyspark/worker.py' risk='18.89' band='fire' cc='101' nd='5' fo='163' touches='4' />
+
+`read_udfs` is the most actively changing of the five, with 4 touches in the last year and a last change just 1 day ago, in a file with 4 distinct authors in the last 90 days. It also has the highest fan-out in the set at 163 distinct callees, and a cyclomatic complexity of 101, with a nesting depth of 5. If I had to name the function where one change is most likely to land on top of another, this is it.
+
+The excerpt shows two coexisting dispatch styles. At the top sits a registered-handler path: if an evaluation type has a handler class, the function builds the UDFs, constructs the handler, and returns early. Below that is a long legacy chain that lists a large group of evaluation types in one membership test, picks among several Arrow serializers, falls back to a batched pickle serializer, and then has per-type branches such as the grouped-aggregate path with its nested `grouped_func`. The handler registry looks like the direction the code is already moving. I would keep migrating evaluation types into handler classes one at a time, with each migration deleting a branch from the legacy chain. Of everything in this post, that incremental path seems the least risky, since it is already established in the function.
+
+**What I would do with this list**
+
+The two worker.py functions, `read_udtf` and `read_udfs`, share a file, 7 total commits, and 4 recent authors, so I would review them together. The other three each have one author and one touch in the last year, so the immediate risk there is lower even though the structure is just as dense.
+
+## Codebase Risk Distribution
+
+All five top hotspots share the same structural patterns (`complex_branching`, `deeply_nested`, `exit_heavy`, `god_function`, `long_function`), which is typical of the highest-risk functions in any large codebase — they accumulate every structural signal on the way to the top. More useful context is how the risk is distributed across all 18,283 analyzed functions:
+
+| Band | Functions |
+|---|---|
+| Critical | 902 |
+| High | 2,303 |
+| Moderate | 7,892 |
+| Low | 7,186 |
+
+_Hotspot patterns belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/apache/spark
+cd spark
+git checkout 2f4102c8117a087aba1324d52b268f7966670136
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
