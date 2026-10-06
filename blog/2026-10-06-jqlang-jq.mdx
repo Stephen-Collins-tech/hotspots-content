@@ -1,0 +1,125 @@
+---
+title: "jq's main() and f_format carry the highest activity risk — 5 functions"
+titleSeo: "jq code health: main(), f_format and jq_next lead the technical debt and refactoring priority list"
+description: "In jqlang/jq, four of the five riskiest functions are structural debt that was last changed between 91 and 365 days ago, led by main() in src/main.c with a cyclomatic complexity of 113 and a nesting depth of 38."
+introContent: "The riskiest function in jq's codebase hasn't been touched in 91 days, and it is the program's own entry point, with 113 execution paths and 38 levels of nesting. Four of the top five hotspots are dormant debt, and the one that is live is the bytecode interpreter."
+pubDate: 2026-10-06
+tags: ["oss", "c", "refactoring", "code-health"]
+draft: true
+repo: "jqlang/jq"
+commit: "f13c1effbf7322e42afcc999d7e3d1509d3f38c9"
+language: "c"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-06T00:25:21Z"
+clone_depth: 100
+topRisk: 20.2
+topFunction: "main"
+topFile: "src/main.c"
+topPatterns: ["god_function", "complex_branching", "deeply_nested", "long_function", "exit_heavy"]
+patternCounts: {complex_branching: 7, deeply_nested: 7, exit_heavy: 5, god_function: 8, long_function: 7, stale_complex: 4}
+qaSection:
+  - question: "What is a god function and why does it matter in jq?"
+    answer: "A god function does too many jobs: it has many execution paths, calls many other functions directly, and often runs for hundreds of lines. That makes it hard to test in isolation, because a single test has to set up state for everything the function touches, and a change in one branch can break an unrelated one. In jq I found 8 god functions across the analyzed hotspots, including `main` in src/main.c, which directly calls 74 distinct functions, and `jq_next` in src/execute.c, which calls 56. Because jq is written in C with manual memory management, each extra path is also another place to get a cleanup wrong."
+  - question: "How do I reduce cyclomatic complexity in C?"
+    answer: "The main technique is extract-method: move a coherent chunk of branching into its own named function, and use a dispatch table in place of a long if/else chain on a string or enum. A function above a cyclomatic complexity of about 15 warrants splitting, and above 30 warrants immediate attention. A concrete first step in jq is `f_format` in src/builtin.c, which has a cyclomatic complexity of 61: write one small handler per format (json, csv, tsv, html, uri) and select it by name, which would cut the main body's path count by more than half. For `main`, moving the argument-parsing loop into a function that fills an options struct is the equivalent first step."
+  - question: "Is jq actively maintained?"
+    answer: "The data shows a split picture. Six functions are in the fire quadrant, including `jq_next` in src/execute.c, which had 2 touches in the last year and was last changed 12 days ago, and several linker functions (`process_dependencies`, `load_library`, `load_program`) with 1 touch in the last year and a last change 12 days ago. At the same time, 231 functions sit in the debt quadrant: `main` in src/main.c was last changed 91 days ago with 0 touches in the last year, `f_format` 210 days ago, and `expand_call_arglist` in src/compile.c, the most dormant function in my top five, 365 days ago. Active development and high structural debt are not mutually exclusive: the recent work appears concentrated in the interpreter and linker, while the CLI, builtins, and compiler core sit quietly with high complexity."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the exact commit I analyzed, f13c1ef, with `git checkout f13c1ef`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A very complex function that hasn't been touched in a year scores lower than a moderately complex one changed every week, because the dormant one has less near-term regression risk. In jq, `main` scores 20.2 even though it is dormant, because its complexity is so extreme, which is why I treat it as a refactoring candidate rather than an emergency. This helps focus refactoring on the places where it most reduces the chance of introducing bugs now, though dormant debt still deserves a scheduled cleanup."
+---
+
+The function I would worry about first in jq hasn't been changed in 91 days: `main` in src/main.c, with a cyclomatic complexity of 113, nesting depth of 38, fan-out of 74, and an activity-weighted risk score of 20.2. It is a refactoring candidate rather than an emergency, because nobody is editing it right now, but whoever touches it next inherits a very large blast radius. Across the 673 functions I analyzed in jq, 91 land in the critical band, and 231 sit in the debt quadrant against only 6 in the fire quadrant, so the story here is accumulated structural debt rather than active churn.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `main` | src/main.c | 20.2 | 113 | 38 | 74 |
+| `f_format` | src/builtin.c | 19.4 | 61 | 12 | 26 |
+| `jq_next` | src/execute.c | 18.5 | 112 | 5 | 56 |
+| `run_jq_tests` | src/jq_test.c | 17.6 | 44 | 6 | 31 |
+| `expand_call_arglist` | src/compile.c | 17.5 | 31 | 7 | 18 |
+
+<BandChart fire='6' debt='231' watch='2' ok='434' />
+
+<PatternCloud patterns='god_function:8,complex_branching:7,deeply_nested:7,long_function:7,exit_heavy:5,stale_complex:4' />
+
+Before the individual functions, I want to point at the distribution above. Of 673 functions, 231 are high-complexity code that has gone quiet, and only 6 are complex and changing at the same time. That ratio suggests jq's hard code was written, stabilized, and mostly left alone. High activity-weighted risk here means complex code that deserves review attention, not that anyone is doing anything wrong. Four of my five hotspots are in the debt quadrant, so I am framing them as overdue refactoring candidates with a high blast radius when next touched, not as live regression risk.
+
+### `main` — main.c
+
+<FunctionCard fn='main' file='src/main.c' risk='20.2' band='debt' cc='113' nd='38' fo='74' touches='0' />
+
+<MetricBar label='Max Nesting Depth' value='38' threshold='4' max='40' />
+
+I would start with `main` because it combines the highest cyclomatic complexity in the top five (113, against 112 for `jq_next`) with a nesting depth of 38, far beyond the point where I consider a function a strong refactoring candidate. It hasn't been changed in 91 days and has zero touches in the last year, so this is structural debt rather than active churn. From the source excerpt, it does the whole job of a command-line program in one body: locale and platform setup guarded by preprocessor blocks (OpenBSD pledge, Windows console mode), initializing the jq state, and then a long loop over `argv` that decides whether each argument is an option, the program text, a file, or a string or JSON positional argument. A fan-out of 74 means it directly calls 74 distinct functions, so a change to option handling can ripple into input setup, output formatting, and exit-code logic.
+
+The file-level history adds some weight. The file has 2 bug-linked commits out of 4 total (a bug-fix rate of 50%) and no reverts, and pull request review comment density is high at 26.0. That is a small sample, so I read it as a hint that changes here attract scrutiny, not proof of defects. There are 0 distinct authors in the last 90 days, which fits the dormancy. The patterns flagged are god function, long function, deeply nested, complex branching, and exit heavy. The exit-heavy flag matters in a function with `goto out` style cleanup, because every exit path is a separate test case for resource release. My recommendation: extract the argument-parsing loop into its own function that fills an options struct, and move the platform-specific setup into a small init routine. That alone should cut both nesting and complexity by more than half and makes option parsing testable without launching the whole program.
+
+### `f_format` — builtin.c
+
+<FunctionCard fn='f_format' file='src/builtin.c' risk='19.41' band='debt' cc='61' nd='12' fo='26' touches='0' />
+
+I would look at `f_format` second, with a cyclomatic complexity of 61, nesting depth of 12, and fan-out of 26. It last changed 210 days ago and has zero touches in the last year. The excerpt shows it implementing jq's `@format` strings as one long if/else chain on the format name: json, text, csv, tsv, html, uri, and more below the excerpt. The CSV/TSV branch has its own switch over value kinds, and the URI branch builds an escaped byte buffer by hand. Every format is a separate branch with its own memory-release obligations, which is why the function carries the exit-heavy and stale-complex flags alongside god function.
+
+The historical signals are more notable than for `main`. The file has 4 bug-linked commits out of 18 total, a bug-fix rate of 50%, and no reverts, with 3 distinct authors in the last 90 days. That is a busier file than `main`'s, which tells me other code in builtin.c is still changing even though this function is quiet. Those counts don't show the function is defective, but a function with 61 execution paths in a file with that history deserves a careful review before the next format is added. The obvious refactor is a dispatch table: one small function per format, selected by name, so adding or fixing a format touches one handler and not a 61-path body.
+
+### `jq_next` — execute.c
+
+<FunctionCard fn='jq_next' file='src/execute.c' risk='18.48' band='fire' cc='112' nd='5' fo='56' touches='2' />
+
+`jq_next` is the only fire-quadrant function in my top five, and the one I would watch most closely. It has a cyclomatic complexity of 112, fan-out of 56, an activity-weighted risk score of 18.48, 2 touches in the last year, and was last changed 12 days ago. That makes it both structurally complex and recently changed, the combination that produces regressions. Its nesting depth is only 5, a different shape from `main`: the complexity here comes from breadth, not depth. The excerpt shows the core of the bytecode interpreter, a loop that fetches an opcode, optionally prints debug traces, remaps the opcode when backtracking, and then enters a large switch with cases like ERRORK and LOADK, each manipulating the value stack and frame state.
+
+A switch-based interpreter loop naturally has a high path count, and I would not call that a defect in itself. The history is what concerns me. The file has 2 bug-linked commits out of 6 total, a bug-fix rate of 83%, with no reverts and 1 distinct author in the last 90 days. A rate that high on a small number of commits is a signal to review carefully, not a verdict. In C, where stack manipulation and reference counting are manual, each added opcode path is also a leak or double-free opportunity that cyclomatic complexity does not fully capture. I would not try to break up the dispatch loop itself. Instead I would pull the debug-trace block out into its own helper, which removes a chunk of branching with no behavior change, and make sure every opcode case has a test that exercises both forward execution and the backtracking variant.
+
+### `run_jq_tests` — jq_test.c
+
+<FunctionCard fn='run_jq_tests' file='src/jq_test.c' risk='17.56' band='debt' cc='44' nd='6' fo='31' touches='0' />
+
+`run_jq_tests` is the test runner, with a cyclomatic complexity of 44, nesting depth of 6, and fan-out of 31. It hasn't been changed in 330 days. I rank it below the production-path functions because a complicated test harness is a maintenance cost rather than a user-facing risk, but it matters more than most test code because the whole suite funnels through it. From the excerpt, it reads a test file line by line, handles skip and take counters, distinguishes tests that must fail from tests that must compile, compares expected error messages, and uses `goto fail` style jumps for cleanup. That is a parser, a state machine, and a reporter in one function.
+
+The file history is the quietest of the five: 0 bug-linked commits out of 4, no reverts, and 0 distinct authors in the last 90 days. I would frame this as maintainability debt. The practical risk is that a bug in the runner could silently skip or mis-score tests, and with 44 paths it is hard to be confident about every combination of skip, take, and must-fail state. I would split the line-reading and directive parsing from the compile-and-compare step, so the expected-error-message logic can be tested by itself.
+
+### `expand_call_arglist` — compile.c
+
+<FunctionCard fn='expand_call_arglist' file='src/compile.c' risk='17.48' band='debt' cc='31' nd='7' fo='18' touches='0' />
+
+`expand_call_arglist` has a cyclomatic complexity of 31, nesting depth of 7, and fan-out of 18, and it is the most dormant function in my list at 365 days since its last change. It lives in the compiler and walks instructions to resolve bindings: it rewrites references to `ENV` and named arguments into constants, emits 'is not defined' errors for unbound symbols, and expands closure argument lists. The excerpt shows a switch on the kind of function being called, with recursion into itself for C-function arguments and a comment marking a FIXME on an assertion. Those are the marks of code that was made to work and then left.
+
+The file history shows 2 bug-linked commits out of 4 total, a bug-fix rate of 25%, no reverts, and 1 distinct author in the last 90 days. I read that as modest. I still include the function because of the combination of recursion, deep nesting, and error reporting mixed with rewriting: every one of the 31 paths is a case where the compiler could accept or reject a program. Since the compiler decides what every jq program means, a mistake here affects all users. I would split the binding-resolution step from the argument-expansion step, which separates error reporting from instruction rewriting, and add targeted tests for the undefined-symbol messages before touching anything else.
+
+Across these five, the pattern flags god function, long function, and deeply nested appear again and again. Four of five sit in the debt quadrant, so the practical plan is to refactor them in a quiet period rather than waiting for a feature to force a change under pressure. The other fire-quadrant entries outside this top five have much lower complexity, so I would keep them on a watch list rather than a refactoring list.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 8 |
+| `complex_branching` | 7 |
+| `deeply_nested` | 7 |
+| `long_function` | 7 |
+| `exit_heavy` | 5 |
+| `stale_complex` | 4 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/jqlang/jq
+cd jq
+git checkout f13c1effbf7322e42afcc999d7e3d1509d3f38c9
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
