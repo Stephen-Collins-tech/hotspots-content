@@ -1,0 +1,144 @@
+---
+title: "rustfmt's rewrite routines carry the highest activity risk: 5 functions to fix first"
+titleSeo: "rustfmt code health: format_expr, rewrite_result and write_list lead the refactoring priority list"
+description: "Five god functions across src/types.rs, src/comment.rs, src/lists.rs, src/expr.rs and src/items.rs are both highly complex and changed within the last three weeks of the analyzed commit."
+introContent: "I found 51 functions in rustfmt that are both structurally complex and recently changed, and the top five are all large rewrite routines last touched within 19 days. If your formatting change is landing this week, check whether it touches one of them."
+pubDate: 2026-10-06
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "rust-lang/rustfmt"
+commit: "4368801afb97ceeeedfde872317dc0e699aea08b"
+language: "rust"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-06T00:18:00Z"
+clone_depth: 100
+topRisk: 17.3
+topFunction: "rewrite_result"
+topFile: "src/types.rs"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 9, exit_heavy: 9, god_function: 8, long_function: 8, deeply_nested: 5, stale_complex: 3, hub_function: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in rustfmt?"
+    answer: "A god function is a single function that does too many jobs: it has a very large number of branches, calls many other functions and runs for a long stretch of code. It matters because every added responsibility makes the function harder to test in isolation, and a change in one branch can affect behavior in another. In rustfmt all 5 of the top hotspots are god functions, including `format_expr` in src/expr.rs with a fan-out of 32 (it calls 32 distinct functions) and `rewrite_result` in src/types.rs with a cyclomatic complexity of 68. Each of those has to be reviewed as a whole even when only one case changes."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The main technique is extract-method: move each large match arm or nested block into a named function so the parent becomes a thin dispatcher. A cyclomatic complexity above 15 is a reasonable point to start splitting, and above 30 I would treat it as needing attention now. A concrete first step in rustfmt is pulling the reference-type handling out of `rewrite_result` in src/types.rs, or the fenced code-block handling out of `handle_line` in src/comment.rs. Either extraction should remove a meaningful share of the function's paths, and the compiler and the existing tests can verify it."
+  - question: "Is rustfmt actively maintained?"
+    answer: "The data says yes. All five top hotspots are in the fire quadrant, and `rewrite_result` in src/types.rs and `format_expr` in src/expr.rs were each touched 3 times in the last year, the most of any function in the top five, with the most recent change 7 days before the analyzed commit for `rewrite_result` and 12 days before for `format_expr`. `rewrite_fn_base` in src/items.rs has 11 distinct authors in the last 90 days, which suggests contributions are spread across people. Active development and structural debt are not mutually exclusive: 313 functions sit in the debt quadrant, and some, like `version_sort` in src/sort.rs, have gone 572 days without a change."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the hotspots CLI from GitHub, check out rustfmt at commit 4368801 with `git checkout 4368801`, and run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without extra configuration. Results for your own checkout will differ if you analyze a later commit, since recent-activity numbers depend on the date of the analysis."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A function with cyclomatic complexity 80 that has not been touched in two years scores lower than a function with complexity 20 that is touched every week, because the dormant one has less near-term regression risk. In rustfmt, `rewrite_result` in src/types.rs scores 17.3, while the structurally similar `rewrite_macro_inner` in src/macros.rs, a debt-quadrant function with 0 touches in the last year and 53 days since its last change, scores 15.72. The score is a way to decide where review effort goes first, not a measure of whether code is defective."
+---
+
+Of the 2,430 functions I analyzed in rustfmt, 108 land in the critical band, and 51 of them sit in the fire quadrant: complex AND changed recently. That is the live-risk set for anyone shipping a formatting change this week, and the top five are all in it. The leader is `rewrite_result` in src/types.rs with an activity-weighted risk score of 17.3, cyclomatic complexity 68, fan-out 25, and a last change just 7 days before the analyzed commit. `handle_line`, `write_list`, `format_expr` and `rewrite_fn_base` follow within about 1.2 points. I would start with `rewrite_result`, since it pairs the highest complexity in the list with the most recent change.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `rewrite_result` | src/types.rs | 17.3 | 68 | 4 | 25 |
+| `handle_line` | src/comment.rs | 17.1 | 55 | 5 | 20 |
+| `write_list` | src/lists.rs | 17.0 | 53 | 5 | 18 |
+| `format_expr` | src/expr.rs | 17.0 | 54 | 4 | 32 |
+| `rewrite_fn_base` | src/items.rs | 16.1 | 41 | 4 | 24 |
+
+<BandChart fire='51' debt='313' watch='55' ok='2011' />
+
+<PatternCloud patterns='complex_branching:9,exit_heavy:9,god_function:8,long_function:8,deeply_nested:5,stale_complex:3,hub_function:1' />
+
+First, a framing point. High activity-weighted risk means a function is hard to reason about and is being edited. It does not mean the function is buggy. None of the five functions below shows a bug-linked commit in the file-level history I have, and nothing here is a judgment of the maintainers. What the numbers say is that each change to these functions carries more review and testing burden than a change to a typical function in this repository.
+
+All five top hotspots are in the fire quadrant, and all five carry the god-function, long-function, complex-branching and exit-heavy patterns. That fits what a formatter does: it has to walk every syntactic form the language has, so the big dispatch functions grow with the language. The cost is maintenance. Every new syntax form adds another branch to a function that already has dozens.
+
+### `rewrite_result` — types.rs
+
+<FunctionCard fn='rewrite_result' file='src/types.rs' risk='17.3' band='fire' cc='68' nd='4' fo='25' touches='3' />
+
+This is the top-ranked function, and the one I would review first. It sits in src/types.rs and, judging by the excerpt, rewrites type syntax: trait objects with and without the `dyn` keyword, raw pointers, references and pinned references with optional lifetimes and comment handling between tokens. A cyclomatic complexity of 68 means 68 independent paths, each a potential test case. A fan-out of 25 means it coordinates a lot of other formatting helpers.
+
+<MetricBar label='Cyclomatic Complexity' value='68' threshold='10' max='70' />
+
+The history is mixed. It was touched 3 times in the last year and last changed 7 days before the analyzed commit, so it is live. The file has 34 commits in total with a bug-fix rate of about 15%, no bug-linked commits and no reverts, and 6 distinct authors in the last 90 days. I read that as an active, shared hot spot rather than a known trouble spot. The nesting depth of 4 is modest; the risk comes from breadth of branching, not depth.
+
+My recommendation: split the match by type kind. The reference and pinned-reference arm already looks like it carries its own lifetime handling, mutability handling and comment-preservation logic, which makes it a natural extract-method candidate. Moving each arm into a named helper would reduce the top-level function to dispatch and make each type form testable on its own.
+
+### `handle_line` — comment.rs
+
+<FunctionCard fn='handle_line' file='src/comment.rs' risk='17.13' band='fire' cc='55' nd='5' fo='20' touches='1' />
+
+`handle_line` in src/comment.rs processes one line of a comment at a time. From the excerpt it manages item blocks, fenced code blocks inside doc comments (including re-formatting Rust code blocks with a cloned configuration) and comment-line separators, all through `&mut self` state. Cyclomatic complexity is 55 with nesting depth 5, which is where control flow starts to get hard for me to hold in my head. The nested branches inside the code-block arm are where I would expect that to bite.
+
+It was touched once in the last year, 19 days before the analyzed commit, so it is in the fire quadrant but on a slower cadence than the top function. The file has only 6 commits in total, a bug-fix rate of about 17% (one of those commits) and a pull-request review comment density of 3.75, the second highest among the five. I would read that as reviewers engaging closely with a small number of changes. The function is exit-heavy, so each of the many return paths needs coverage.
+
+Recommendation: extract the code-block handling into its own method. It builds a modified config, formats the snippet and falls back to the raw buffer. That is a self-contained unit, and removing it should cut both complexity and nesting depth noticeably.
+
+**`write_list` and `format_expr` — lists.rs and expr.rs**
+
+These two share an activity-weighted risk score of 16.99 but have very different change profiles, so I treat them separately.
+
+<FunctionCard fn='write_list' file='src/lists.rs' risk='16.99' band='fire' cc='53' nd='5' fo='18' touches='1' />
+
+`write_list` in src/lists.rs is the shared routine for laying out comma-separated lists. It is a generic `pub(crate)` function over an iterator of items, with a loop whose body branches on the layout tactic (horizontal, vertical, mixed and special-macro cases), separator placement and post-comment handling. Cyclomatic complexity is 53 with nesting depth 5. The file has just 2 commits in total, no bug-fix commits and a single author in the last 90 days, so the historical signal is thin. This is a complexity finding more than a churn finding, and the last change was 19 days before the analyzed commit.
+
+I would split the per-tactic spacing logic out of the loop body into a helper, which also gets the nesting depth below 5.
+
+<FunctionCard fn='format_expr' file='src/expr.rs' risk='16.99' band='fire' cc='54' nd='4' fo='32' touches='3' />
+
+`format_expr` in src/expr.rs is the central dispatcher over expression kinds: arrays, literals, calls, parenthesized expressions, binary and unary operators, struct literals and more. Its fan-out of 32 is the highest of the five, which is what I would expect from a function that delegates to a dedicated rewriter per expression kind. It was touched 3 times in the last year and last changed 12 days before the analyzed commit. The file has 39 commits with a bug-fix rate of about 28%, the highest of the five, though there were no bug-linked commits or reverts, and 8 distinct authors in the last 90 days.
+
+<MetricBar label='Fan-out' value='32' threshold='15' max='35' />
+
+I would put this one second in priority behind `rewrite_result`. It shows the same recent activity, more authors and a higher bug-fix rate. The high fan-out means a change to any delegated rewriter can surface here. My recommendation is to keep the match as the dispatch layer but move arms that contain inline logic (the literal fallback and the binary-operator fallback, for instance) into named helpers, so each match arm becomes a one-line delegation.
+
+### `rewrite_fn_base` — items.rs
+
+<FunctionCard fn='rewrite_fn_base' file='src/items.rs' risk='16.07' band='fire' cc='41' nd='4' fo='24' touches='1' />
+
+`rewrite_fn_base` in src/items.rs formats function signatures: the `fn` keyword, generics, the return type, parameters, brace placement and where-clauses. It has the lowest complexity of the five (cyclomatic complexity 41) but the strongest historical signal. The file has 58 commits, the most of the five, with 11 distinct authors in the last 90 days, the widest ownership spread in the group, and the only recorded revert (one). Pull-request review comment density is 4.2, the highest here. The file's bug-fix rate is about 19%, with no bug-linked commits.
+
+A revert, wide authorship and heavy review discussion on a complex function is the combination that most deserves a second reviewer. None of it proves a defect in this function, but it is the signature of a place where intent is hard to agree on. The function was touched once in the last year, 19 days before the analyzed commit. The excerpt shows layout decisions driven by budgets (one-line versus multi-line parameters, snuggled angle brackets), so I would extract the width-budget computation and the signature-layout decision into separate helpers and test each against the budget edge cases.
+
+**Context from the debt quadrant**
+
+The top five are all fire, but the debt quadrant holds 313 functions, and several are structurally comparable to the top five but quieter. Some have gone 572 days without a change while carrying nesting depths of 6 and 7. I would treat these as overdue for refactoring and high blast radius when next touched, not as active risks.
+
+One naming trap: rustfmt uses the same method name, `rewrite_result`, for its trait implementations across files (src/types.rs, src/attr.rs, src/patterns.rs). The one in src/types.rs is the fire-quadrant entry; the other two are debt. When reading any report or stack trace, check the file path before drawing conclusions.
+
+The watch quadrant, 55 functions, is a different story. Its entries are active but structurally modest, so I would only monitor them.
+
+**Rust-specific caveat**
+
+Cyclomatic complexity can understate risk in Rust. Ownership and lifetime handling are invisible to it, and the excerpts show heavy `&mut self` state in `handle_line` and generic trait bounds in `write_list`. I did not see unsafe blocks in any of the excerpts, so I am not raising that here, but borrow-heavy code with this many branches is harder to restructure than the raw numbers suggest. Plan refactors in small extractions that the compiler can verify at each step.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 9 |
+| `exit_heavy` | 9 |
+| `god_function` | 8 |
+| `long_function` | 8 |
+| `deeply_nested` | 5 |
+| `stale_complex` | 3 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`hub_function`](https://hotspots.dev/analyses/patterns/hub_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/rust-lang/rustfmt
+cd rustfmt
+git checkout 4368801afb97ceeeedfde872317dc0e699aea08b
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
