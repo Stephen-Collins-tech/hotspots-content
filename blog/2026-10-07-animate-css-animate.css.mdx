@@ -1,0 +1,80 @@
+---
+title: "animate.css's docs build script carries the highest activity risk"
+titleSeo: "animate.css code health: compileAnimationlist technical debt and refactoring priority"
+description: "The only high-band function in animate.css is compileAnimationlist in docsSource/compileAnimationList.js, a 17-call docs build helper that hasn't been changed in 1,135 days."
+introContent: "The riskiest code in animate.css isn't CSS at all. It's a documentation build script that nobody has modified in over three years and that calls 17 other functions. I look at what that means for the next person who has to touch it."
+pubDate: 2026-10-07
+tags: ["oss", "css", "refactoring", "code-health"]
+draft: true
+repo: "animate-css/animate.css"
+commit: "3f8ab233dbbd9d2fe577528d2296382954be3d1a"
+language: "css"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-07T10:06:22Z"
+clone_depth: 100
+topRisk: 8.1
+topFunction: "compileAnimationlist"
+topFile: "docsSource/compileAnimationList.js"
+qaSection:
+  - question: "What is high fan-out and why does it matter in animate.css?"
+    answer: "Fan-out is the count of distinct functions a function calls directly, and a value of 15 or more is a strong signal of broad coupling. High fan-out makes a function harder to test in isolation, because each call is a dependency to stub or accept, and a change in any of those dependencies can ripple back unexpectedly. In animate.css, `compileAnimationlist` in `docsSource/compileAnimationList.js` has a fan-out of 17 even though its cyclomatic complexity is only 3, so the risk here is coupling, not branching."
+  - question: "How do I reduce fan-out in css projects like animate.css?"
+    answer: "The technique is extract-method: pull cohesive groups of calls into named helper functions so the original function coordinates a few steps instead of making 17 calls itself. A fan-out above 15 is a reasonable trigger for review. For `compileAnimationlist`, the first step I would take today is moving the two template closures out to module level and extracting the file-read-and-parse step into its own function, which should cut the main function's direct calls roughly in half."
+  - question: "Is animate.css actively maintained?"
+    answer: "The scored code does not show recent activity: the top function, `compileAnimationlist`, sits in the debt quadrant with zero touches in the last year and 1,135 days since its last change, and no function in the analysis falls in the fire quadrant. That describes the docs tooling in the analyzed commit, not the stylesheet itself or the project's release status, which this data doesn't cover. Low recent activity and structural debt can coexist: the function is quiet, but its coupling means the next change will carry more risk than its low complexity suggests."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit 3f8ab23 of animate-css/animate.css. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with recent commit frequency, so functions that are both hard to understand and actively changing score highest. A very complex function that hasn't been touched in two years scores lower than a moderately complex one that changes every week, because its near-term regression risk is lower. That helps teams focus refactoring where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+The highest-risk function in animate.css, `compileAnimationlist` in `docsSource/compileAnimationList.js`, hasn't been changed in 1,135 days, which makes it structural debt rather than an emergency. Its activity-weighted risk score is 8.1, the only function in the high band across 28 analyzed functions, with zero touches in the last year. I would start here because the next developer to open this file will be working from three-year-old context with a fan-out of 17.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `compileAnimationlist` | docsSource/compileAnimationList.js | 8.1 | 3 | 1 | 17 |
+
+<BandChart fire='0' debt='1' watch='0' ok='27' />
+
+The quadrant split tells the story: 27 of 28 functions sit in the lowest-priority quadrant, one is structural debt, and none are in the fire quadrant. Nothing here is a live regression risk. What I have is a single dormant function whose risk is about what happens when someone finally has to change it. This is a CSS library, so the function count is small, and the scored code is the JavaScript tooling around the stylesheets, not the animations themselves.
+
+### `compileAnimationlist` — compileAnimationList.js
+
+<FunctionCard fn='compileAnimationlist' file='docsSource/compileAnimationList.js' risk='8.1' band='high' cc='3' nd='1' fo='17' touches='0' />
+
+This function sits in the debt quadrant. It hasn't been changed in 1,135 days and has zero touches in the last year, so I would not describe it as actively changing. Its risk comes almost entirely from coupling, not from branching.
+
+The numbers are lopsided. Cyclomatic complexity is 3 and nesting depth is 1, both low. Fan-out is 17, and that is where the score comes from.
+
+<MetricBar label='Fan-out' value='17' threshold='10' max='20' />
+
+The source excerpt shows what the function does. It reads the animate.css source file from disk, uses two regular expressions to pull out group headings and animation class names, builds a map of group to item list, then renders that map to HTML strings through template literals for list items and sections. All of it lives in one function body, with the item template, the section template, and the compile step defined as inner closures.
+
+The fan-out figure reflects how many distinct calls are packed into that body: path joining, synchronous file reads, regex matching, string replacement, array iteration, key enumeration, and string joining. None of these is exotic, but they all sit in one place, and several depend on each other's output format.
+
+Here is where I think the real blast radius sits. The parsing logic relies on the formatting of comments inside the main stylesheet. The regular expressions match slash-delimited lines, and the code treats a failed item match as a signal that the line is a group heading. That is an implicit contract with the stylesheet's comment layout. If the source file's comment style changes, this function is the most likely place for it to break, and the failure could be silent: a mis-grouped or missing animation in the generated docs page rather than a thrown error. I am inferring that from the excerpt, not from a test run, so treat it as a review prompt.
+
+The file-level history is quiet. The file has one commit in total, no bug-linked commits, a bug-fix rate of 0%, no reverts, zero distinct authors in the last 90 days, and zero pull-request review comment density. Nothing in that history suggests defects. I read this as maintainability debt, not a quality problem: the function has simply not been changed.
+
+My recommendation is to split it along the seams already visible in the code. Extract the parsing step (file read plus regex matching into a group map) into one function, and move the item and section templates out of the closure into module-level functions. That separates the file-format dependency from the HTML rendering, lets each piece be tested with a small string fixture instead of the real stylesheet, and brings fan-out in the main function well below its current 17. Do this before the next docs change, not during it.
+
+**What I would not worry about**
+
+There are no functions in the fire or watch quadrants, and the data lists no additional context functions. The remaining 16 moderate-band and 11 low-band functions are all in the lowest-priority quadrant. I have no per-function data for them in this analysis, so I won't make claims about them beyond that classification.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/animate-css/animate.css
+cd animate.css
+git checkout 3f8ab233dbbd9d2fe577528d2296382954be3d1a
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
