@@ -1,0 +1,136 @@
+---
+title: "Bokeh's test runner and deserializer carry the highest activity risk"
+titleSeo: "bokeh code health: test runner and deserializer lead refactoring priority"
+description: "In bokeh/bokeh, the BokehJS test runner and the core deserializer are both complex and changed within the last 4 days, while three other critical functions in test, hover, and UI-event code sit as unchanged structural debt."
+introContent: "Two of the five riskiest functions in bokeh's TypeScript layer were changed 4 days ago, and one of them is the test runner. The other three are high-complexity debt that has gone 68 days without a change."
+pubDate: 2026-10-08
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "bokeh/bokeh"
+commit: "ea3190fef885413e24ad0f5ac6ea3b945e5ccea0"
+language: "typescript"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-08T10:23:01Z"
+clone_depth: 100
+topRisk: 20.24
+topFunction: "run_tests"
+topFile: "bokehjs/test/devtools/devtools.ts"
+topPatterns: ["complex_branching", "exit_heavy", "deeply_nested", "god_function", "long_function"]
+patternCounts: {complex_branching: 10, deeply_nested: 9, exit_heavy: 10, god_function: 8, long_function: 8}
+qaSection:
+  - question: "What is a god function and why does it matter in bokeh?"
+    answer: "A god function takes on many unrelated responsibilities and calls a wide range of other functions, so a change to any one concern risks the others. Eight of the top hotspots in bokeh show this pattern, including `run_tests`, which calls 60 distinct functions, and `render_entries`, which calls 35. These functions are hard to test in isolation, and any edit can ripple into code paths the author did not intend to touch. The fix is to split by responsibility so each piece can be tested on its own."
+  - question: "How do I reduce cyclomatic complexity in TypeScript?"
+    answer: "Use extract-method and decompose-conditional: pull each branch of a large if-else chain or switch into its own named function, and replace repeated branch shapes with a table or a parameterized helper. I would act on any function above a CC of 15 and treat anything above 30 as urgent; in this analysis `__trigger` sits at 69 and `run_tests` at 59. A concrete first step for `__trigger` is a single gesture-dispatch helper that replaces the three near-identical pan, pinch, and rotate blocks. In TypeScript, also be aware that type narrowing inside deep branches adds implicit control flow that CC understates."
+  - question: "Is bokeh actively maintained?"
+    answer: "The data says yes for part of the code: `run_tests` (2 touches in the last year) and `_decode` in the deserializer (1 touch in the last year) were both last changed 4 days ago, and 232 functions overall are in the fire quadrant. The three debt-quadrant functions in my top five, `check_matching_defaults`, `render_entries`, and `__trigger`, have 0 touches in the last year and were last changed 68 days ago. Active development and high structural debt are not mutually exclusive, and this repository shows both."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the repository, run `git checkout ea3190f`, and then run `hotspots analyze . --mode snapshot --explain-patterns --force` using the hotspots CLI from GitHub."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how recently and how often it has changed, so functions that are both hard to understand and actively changing score highest. This helps teams focus refactoring effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+In bokeh/bokeh at commit ea3190f, 232 of 9,098 functions sit in the 'fire' quadrant: structurally complex and actively changing, with 479 rated critical overall. Anyone shipping BokehJS code this week is working near them. The top function, `run_tests` in `bokehjs/test/devtools/devtools.ts`, has an activity-weighted risk score of 20.24 and a CC of 59, and was last changed 4 days ago, so it is a live regression risk rather than a backlog item. The deserializer's `_decode` (score 18.62, also changed 4 days ago) is the second fire-quadrant function in my top five, and I would review both before the three debt-quadrant functions.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `run_tests` | bokehjs/test/devtools/devtools.ts | 20.2 | 59 | 7 | 60 |
+| `check_matching_defaults` | bokehjs/test/defaults/index.ts | 19.2 | 56 | 10 | 23 |
+| `render_entries` | bokehjs/src/lib/models/tools/inspectors/hover_tool.tsx | 18.7 | 32 | 8 | 35 |
+| `_decode` | bokehjs/src/lib/core/serialization/deserializer.ts | 18.6 | 46 | 10 | 5 |
+| `__trigger` | bokehjs/src/lib/core/ui_events.ts | 18.6 | 69 | 7 | 25 |
+
+<BandChart fire='232' debt='1361' watch='869' ok='6636' />
+
+<PatternCloud patterns='complex_branching:10,exit_heavy:10,deeply_nested:9,god_function:8,long_function:8' />
+
+The split shapes how I read this list. 232 functions are in the fire quadrant, while 1,361 are debt: complex but not changing lately. Of my top five, two are fire and three are debt. I would spend review attention on the fire pair first, because those are the ones where a new change lands on top of heavy branching. The debt trio is the cleanup queue for the next time someone has to touch that code.
+
+All five carry the same cluster of patterns: complex branching, exit-heavy control flow, deep nesting, and long bodies. Four of the five also have a god-function shape (`_decode` in the deserializer is the exception). None of them show any historical defect signal in the file-level data: every one has zero bug-linked commits, a bug-fix rate of 0%, and zero reverts. So I frame these as maintainability and regression-surface problems, not as places with a track record of failure.
+
+### `run_tests` — devtools.ts
+
+<FunctionCard fn='run_tests' file='bokehjs/test/devtools/devtools.ts' risk='20.24' band='fire' cc='59' nd='7' fo='60' touches='2' />
+
+I would start with `run_tests`. It has the highest activity-weighted risk score in the repo's top five (20.24), a CC of 59, and was last changed 4 days ago, with 2 touches in the last year. The fan-out of 60 stands out: the function calls 60 distinct functions, so it is coupled to a very large part of the test harness.
+
+<MetricBar label='Cyclomatic Complexity' value='59' threshold='10' max='70' />
+
+From the excerpt, the function does several unrelated jobs in one body. It clears stale report files under a baselines directory, defines browser initialization and a retry-based browser recovery routine as inner closures, collects tests from the page, optionally randomizes them with a seed, and validates test descriptions, all inside a nested try structure that reaches a depth of 7. The exit-heavy pattern shows up as `throw` paths and an early `fail` helper that throws an `Exit` with a code. Each is a separate outcome a test of the runner would need to cover.
+
+The file has only 3 commits in total and a single author in the last 90 days, so ownership is narrow. That cuts both ways: coordinating a refactor is easy, but a function this central gets little review spread. I would extract along the seams the code already draws, pulling the report cleanup, the browser recovery loop, and test discovery and validation into named functions with their own tests. That alone would take a large share of the branches and most of the nesting out of the main body.
+
+### `check_matching_defaults` — index.ts
+
+<FunctionCard fn='check_matching_defaults' file='bokehjs/test/defaults/index.ts' risk='19.18' band='debt' cc='56' nd='10' fo='23' touches='0' />
+
+This one is debt: 0 touches in the last year, and unchanged for 68 days. It is a structural risk with high blast radius when next touched, not a function under active churn. The nesting depth of 10 is the sharpest number here, well past the point where I stop trusting my own reading of a function.
+
+<MetricBar label='Max Nesting Depth' value='10' threshold='4' max='12' />
+
+By its name and the excerpt, it compares Python-side and BokehJS-side default values for models. A run of special cases (graph renderers, date tickers, a dev-mode font substitution) appears as sequential `continue` branches. The function then defines helpers inside the loop and recurses into itself for nested objects and arrays, and that combination drives the depth. I would hoist `is_object`, `is_vector`, and `compare_recursively` out of the loop body into module-level functions and turn the special cases into a small table of skip rules. The file has 2 commits and one author, so a refactor here would be low-friction.
+
+### `render_entries` — hover_tool.tsx
+
+<FunctionCard fn='render_entries' file='bokehjs/src/lib/models/tools/inspectors/hover_tool.tsx' risk='18.75' band='debt' cc='32' nd='8' fo='35' touches='0' />
+
+Also debt, also unchanged for 68 days with 0 touches in the last year. It has a CC of 32, nesting of 8, and fan-out of 35, and it lives in the hover tool, which is user-facing interaction code.
+
+The excerpt shows the shape. After looking up the selection and converting screen coordinates to data coordinates, the function branches on the glyph's type, handling patch views, area views, and line and step views as separate arms. Inside the line arm it switches on a line policy (interpolate, previous, next, nearest, none). Each new glyph type or hit-test policy adds a branch to this one function. I would split it by glyph family, with one function per arm returning its collected tooltip data, and give the line-policy switch its own function. A fan-out of 35 also suggests the glyph-type imports and helpers are a coupling surface worth checking whenever someone adds a glyph.
+
+### `_decode` — deserializer.ts
+
+<FunctionCard fn='_decode' file='bokehjs/src/lib/core/serialization/deserializer.ts' risk='18.62' band='fire' cc='46' nd='10' fo='5' touches='1' />
+
+This is my second live-risk function: an activity-weighted risk score of 18.62, 1 touch in the last year, and a last change 4 days ago. Its profile differs from `run_tests`. Fan-out is only 5, so it is not coupled widely, but a CC of 46 and a nesting depth of 10 make it dense.
+
+The excerpt reads as a decoder for the serialized wire format: a chain of tests on reference, value, field, expression, and type markers, followed by a large switch over type names (ref, symbol, number, array, set, map, bytes, slice, date, value, field, expr, typed array, ndarray, object). The `value`, `field`, and `expr` arms repeat the same optional transform-and-units spread, which adds duplication to an already branchy function. A `_decoders` lookup is consulted before the switch, so the dispatch is partly table-driven and partly hand-written.
+
+Because this is serialization, I read a CC of 46 as a test-coverage burden: every branch is a message shape that needs a round-trip case. I would finish what the registry started. Move the remaining switch arms into that decoder table so `_decode` becomes a small dispatcher, and extract the shared transform-and-units handling into one helper. The Python counterpart, `_decode` in `src/bokeh/core/serialization.py`, is in my context list and was also changed 4 days ago, so I would review the two as a pair.
+
+### `__trigger` — ui_events.ts
+
+<FunctionCard fn='__trigger' file='bokehjs/src/lib/core/ui_events.ts' risk='18.62' band='debt' cc='69' nd='7' fo='25' touches='0' />
+
+`__trigger` has the highest CC of the five, at 69, and has gone 68 days without a change, with 0 touches in the last year. It is the clearest case of structural debt with high blast radius: it handles input events for the plot, and the file has a single commit in its history.
+
+<MetricBar label='Cyclomatic Complexity' value='69' threshold='30' max='80' />
+
+The excerpt shows a repeated pattern. For pan, then pinch, then rotate, the function branches on the event type, finds the first view that supports the gesture, remembers it as the current view, and routes later events to that view, calling `preventDefault` and returning along the way. The same start, continue, end structure appears once per gesture, which is why the CC climbs so high. That repetition is a gift for refactoring: a single gesture-dispatch helper parameterized by gesture kind would replace the copies, and each future gesture (the excerpt is cut off, so I can't see the rest) would stop adding a new branch here. Because it is unchanged, I would do this before the next gesture or input-handling change rather than during it.
+
+**What I would do with this list**
+
+Among the context-only functions, some rendering and interaction code (`_paint`, `zoom`) is also changing alongside the serialization and test-infrastructure code above, while others (`css4_parse`, `_encode`) have been unchanged for 68 days. By contrast, the watch-quadrant functions I looked at are active but structurally small, and I would leave them alone.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 10 |
+| `exit_heavy` | 10 |
+| `deeply_nested` | 9 |
+| `god_function` | 8 |
+| `long_function` | 8 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/bokeh/bokeh
+cd bokeh
+git checkout ea3190fef885413e24ad0f5ac6ea3b945e5ccea0
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
