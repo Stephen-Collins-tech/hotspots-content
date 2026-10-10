@@ -50,3 +50,10 @@ Functions 1–2: full treatment. Functions 3–5: proportionally shorter unless 
 - If one function is a clear outlier (CC 10× the next): name the gap explicitly.
 - If functions share a pattern: group the language — "both X and Y show…" — rather than repeating the same framing independently for each.
 - Avoid sentence templates that repeat across sections: every `### functionName` section should open differently.
+
+## Git hooks
+
+Enable on a fresh clone: `git config core.hooksPath .githooks`. The pre-push hook runs
+`drift-check` (from dev-tools) and warns — never blocks — if this checkout has fallen
+behind `origin/main`. This repo merges analysis PRs frequently, so a checkout left idle
+for a bit falls behind fast; the warning is a nudge to pull before trusting this file.
