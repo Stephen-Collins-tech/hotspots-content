@@ -1,0 +1,131 @@
+---
+title: "Deno's console inspector carries the highest activity risk — 5 functions to address first"
+titleSeo: "deno code health: format_raw and four debt-quadrant functions lead refactoring priority"
+description: "The five riskiest functions in denoland/deno are all structural debt, spread across Rust console formatting, a Jupyter kernel, Node polyfills, and V8 error conversion, each unchanged for 48 days."
+introContent: "The five highest-risk functions in deno haven't been touched in 48 days, and they are exactly the sort of code nobody wants to open next. I looked at what that dormancy means for the next developer who has to change them."
+pubDate: 2026-10-10
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "denoland/deno"
+commit: "a18ce33715e30cd2b0d99c7e322ef11a65490e4d"
+language: "rust"
+hotspots_version: "1.42.1"
+analyzed_at: "2026-10-10T10:10:36Z"
+clone_depth: 100
+topRisk: 20.16
+topFunction: "format_raw"
+topFile: "ext/web/console/inspect.rs"
+topPatterns: ["long_function", "complex_branching", "deeply_nested", "exit_heavy", "god_function"]
+patternCounts: {complex_branching: 10, deeply_nested: 10, exit_heavy: 10, god_function: 9, long_function: 11, hub_function: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in deno?"
+    answer: "A god function is one that does too many unrelated jobs, usually showing up as high fan-out (many distinct functions called), high complexity, and a long body. It matters because a change to any one of its responsibilities risks breaking the others, and testing it means setting up everything at once. In deno, 9 of the top hotspots carry this pattern, including `format_raw` with a fan-out of 60 and `startJupyterKernel` with a fan-out of 59."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "Use extract-method and decompose-conditional: pull each branch of a large match or if-else chain into its own function, and let the original function dispatch to them. As a rule of thumb, a cyclomatic complexity above 15 warrants splitting, and above 30 warrants prompt attention. A first step you can take today is to take `format_raw` (cyclomatic complexity 115) and move the array, proxy, and iterator branches into separate functions that share the formatting context. Rust's `match` on enums also helps, since moving variant-specific logic into methods on the variant removes whole branches from the caller."
+  - question: "Is deno actively maintained?"
+    answer: "Yes, and the data shows it alongside heavy structural debt. 141 functions are in the fire quadrant, meaning both complex and recently changed, and several were touched as recently as today, such as the url.ts polyfill function (1 touch in the last year, last changed today) and `parse` in querystring.js (1 touch in the last year, last changed today). The five top hotspots, by contrast, are all debt-quadrant functions with 0 touches in the last year and 48 days since their last change, so the most complex code is not the code being modified most often. Active development and high structural debt are not mutually exclusive, and this repository shows both."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the hotspots CLI from GitHub, then check out commit a18ce33 of denoland/deno. Run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how recently and how often a function has changed, so functions that are both hard to understand and actively changing score the highest. A dormant function can still score high when its structure is extreme, as `format_raw` does at 20.16 with 0 touches in the last year, but it is a blast-radius risk rather than a live regression risk. This prioritization helps teams separate code that is likely to break now from code that will be expensive to change later."
+---
+
+The riskiest function in denoland/deno, `format_raw` in `ext/web/console/inspect.rs`, hasn't been changed in 48 days. Its cyclomatic complexity of 115, nesting depth of 17, and fan-out of 60 make it costly for whoever touches it next, not an emergency today. Across the 29,620 functions in this Rust codebase, 1,932 land in the critical band, and all five of the top hotspots sit in the debt quadrant with the same 48-day gap since their last change. I would treat this list as a refactoring queue to work through before the next development push, not as a list of things on fire.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `format_raw` | ext/web/console/inspect.rs | 20.2 | 115 | 17 | 60 |
+| `startJupyterKernel` | cli/js/jupyter_kernel.js | 19.8 | 50 | 8 | 59 |
+| `objectComparisonStart` | ext/node/polyfills/internal/util/comparisons.ts | 19.8 | 91 | 16 | 38 |
+| `<anonymous>` | ext/node/polyfills/path/_win32.ts | 19.5 | 78 | 8 | 27 |
+| `inner_from_v8_exception` | libs/core/error.rs | 19.4 | 44 | 8 | 46 |
+
+<BandChart fire='141' debt='4644' watch='224' ok='24611' />
+
+<PatternCloud patterns='long_function:11,complex_branching:10,deeply_nested:10,exit_heavy:10,god_function:9,hub_function:1' />
+
+Start with the quadrant split. Of 29,620 functions, 4,644 are debt (complex, quiet) against 141 in the fire quadrant (complex and actively changing). That ratio is not a criticism of anyone. Most of the structural risk in this repository is sitting still, waiting for the next person to change it. All five of my top hotspots are in that group, and every one of them carries the same set of patterns: long function, complex branching, deeply nested, exit heavy, and god function.
+
+The historical context is thin. Each of these files shows only one or two total commits in the enrichment data, so I would not read much into the bug-fix rates attached to them. A 100% bug-fix rate on a single commit is a sample size problem, not a finding. The structural numbers carry my argument here; the history is a footnote.
+
+### `format_raw` — inspect.rs
+
+<FunctionCard fn='format_raw' file='ext/web/console/inspect.rs' risk='20.16' band='debt' cc='115' nd='17' fo='60' touches='0' />
+
+<MetricBar label='Nesting Depth' value='17' threshold='4' max='20' />
+
+I would start with `format_raw`: it has the highest activity-weighted risk score in the repository at 20.16, a cyclomatic complexity of 115, and a nesting depth of 17. It has not been changed in 48 days and has 0 touches in the last year, so this is structural debt with a high blast radius when next touched. The file path suggests it renders values for console output, and the excerpt bears that out. It takes a V8 scope, intrinsics, a formatting context, a value, a recursion counter, and optional proxy details, then branches on constructor names, to-string tags, iterators, and proxies.
+
+Two things stand out in the source excerpt. The function carries an explicit `#[allow(clippy::too_many_arguments)]` with a reason string, so the seven-parameter signature is a known compromise rather than an accident. And it works against V8 handles and scopes, where Rust's ownership and lifetime annotations (`'s`, `'i`) can hide complexity that a cyclomatic count alone understates. With a fan-out of 60, a change to any of the helpers it calls, such as `get_constructor_name` or `format_value`, can alter its behavior.
+
+My recommendation: extract the type-specific branches (arrays, proxies, iterable objects) into separate functions that each take the shared formatting context. A 115-path function needs a test per path, and splitting by value kind lets each kind carry its own tests.
+
+### `startJupyterKernel` — jupyter_kernel.js
+
+<FunctionCard fn='startJupyterKernel' file='cli/js/jupyter_kernel.js' risk='19.82' band='debt' cc='50' nd='8' fo='59' touches='0' />
+
+Next is `startJupyterKernel`, which scores 19.82 with a cyclomatic complexity of 50, nesting of 8, and fan-out of 59, unchanged for 48 days. The excerpt shows why the fan-out is so high. The function sets up four router sockets and a publish socket, generates a session ID, starts a heartbeat, and then defines nested helper functions (`publishStatus`, `publishIopub`, `iopubDrainer`, `kernelInfo`) inside its own body. It acts as a constructor, a protocol handler, and a message dispatcher in one closure.
+
+The closure structure is the bigger problem, more than the raw complexity. State such as the execution count, the current parent header, and the shutdown flag is shared across all the inner functions, so any of them can alter what the others see. I would lift the inner functions into a small kernel class or module-level functions that take that state explicitly, then give each socket handler (shell, control, stdin) its own function. That cuts the nesting and makes each handler testable without standing up the whole kernel.
+
+### `objectComparisonStart` — comparisons.ts
+
+<FunctionCard fn='objectComparisonStart' file='ext/node/polyfills/internal/util/comparisons.ts' risk='19.77' band='debt' cc='91' nd='16' fo='38' touches='0' />
+
+`objectComparisonStart` has a cyclomatic complexity of 91 and nesting of 16, second only to `format_raw` in nesting depth among my top five. It sits in the Node polyfill layer and, from the excerpt, compares two objects under strict, loose, and partial modes, then branches on arrays, dates, regular expressions, and typed array views. That is a deep-equality routine, and deep-equality routines tend to grow one type check at a time.
+
+The exit-heavy pattern matters here because nearly every branch returns false early. Each early return is a separate test case, and the mode flag multiplies them. I would split it by value type, with one comparer each for arrays, dates, regular expressions, and buffer views, and keep the mode check at the top as a dispatch. Since this file mirrors Node's own assertion behavior, I would also confirm the existing tests cover each mode against each type before changing anything.
+
+**`<anonymous>` — _win32.ts**
+
+<FunctionCard fn='&lt;anonymous&gt;' file='ext/node/polyfills/path/_win32.ts' risk='19.48' band='debt' cc='78' nd='8' fo='27' touches='0' />
+
+The fourth entry is an immediately invoked function wrapping the whole Windows path module, which is why the name is anonymous. It scores 19.48 with a cyclomatic complexity of 78, nesting of 8, and fan-out of 27, and it hasn't changed in 48 days. The excerpt shows the wrapper importing constants and helpers through `core.loadExtScript` and defining a reserved-names list (`CON`, `PRN`, `AUX`, `COM1` and so on) plus helpers like `isWindowsReservedName`.
+
+Because the scored unit is the whole wrapper, the 78 paths are spread across everything inside it, including path normalization, joining, and resolving. The practical reading is that this is a module-level aggregate, not a single tangled function. I would check which inner functions actually carry the complexity, then split those out as named top-level functions inside the module. The next hotspot report would then point at a specific function instead of an anonymous wrapper.
+
+### `inner_from_v8_exception` — error.rs
+
+<FunctionCard fn='inner_from_v8_exception' file='libs/core/error.rs' risk='19.42' band='debt' cc='44' nd='8' fo='46' touches='0' />
+
+Fifth is `inner_from_v8_exception` in `libs/core/error.rs`, scoring 19.42 with a cyclomatic complexity of 44, nesting of 8, and fan-out of 46, unchanged for 48 days. It converts a V8 exception into Deno's own error type, and the excerpt shows it handling a depth limit, a user-supplied format callback, `Error` instances, `cause` chains, and cycle detection through a set of already-seen objects. The comments in the source explain the cycle behavior in detail, which tells me the logic is deliberate and subtle: formatters depend on the repeated error appearing once more to label circular references.
+
+That subtlety is why I would be careful here. The function recurses, clones the seen set per path, and reads properties like `stack` specifically to trigger `prepareStackTrace`, so ordering matters. This file also has the only mixed history in my top five, with a bug-fix rate of 50% across 2 total commits, a small sample but slightly more than the others. I would extract the cause-chain handling and the message-formatting step into separate functions, and add tests for the cycle and truncation paths before any other change.
+
+**Fire-quadrant functions I am watching**
+
+I am not writing sections for them, but the context list shows where live risk sits. `<anonymous>` in `ext/node/polyfills/url.ts` has a high cyclomatic complexity with an activity-weighted risk score of 18.82 and was touched once in the last year, most recently today. An anonymous function in `ext/node/polyfills/querystring.js` scores 19.02 with nesting of 9. Several other critical functions in the context list are also in the fire quadrant. If I were choosing where a regression is most likely this month, it would be these, not the five above.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 11 |
+| `complex_branching` | 10 |
+| `deeply_nested` | 10 |
+| `exit_heavy` | 10 |
+| `god_function` | 9 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`hub_function`](https://hotspots.dev/analyses/patterns/hub_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/denoland/deno
+cd deno
+git checkout a18ce33715e30cd2b0d99c7e322ef11a65490e4d
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
