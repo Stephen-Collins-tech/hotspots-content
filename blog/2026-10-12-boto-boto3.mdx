@@ -1,0 +1,123 @@
+---
+title: "boto3's resource layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "boto3 technical debt: resource model and params refactoring priorities"
+description: "The five riskiest functions in boto3 sit in the resource layer (session.py, resources/model.py, resources/params.py) and the docs utilities, and all five are structural debt rather than active churn."
+introContent: "All five of boto3's top-ranked functions are structural debt, not live churn, and four of them sit in the resource machinery that turns JSON definitions into Python objects. I would treat that as a refactoring queue for the next time someone touches resources."
+pubDate: 2026-10-12
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "boto/boto3"
+commit: "3557491c6c13cc69596d5391f77b7febef579065"
+language: "python"
+hotspots_version: "1.42.1"
+analyzed_at: "2026-10-12T10:35:14Z"
+clone_depth: 100
+topRisk: 8.91
+topFunction: "resource"
+topFile: "boto3/session.py"
+topPatterns: ["god_function", "long_function", "deeply_nested", "complex_branching"]
+patternCounts: {god_function: 1, long_function: 1, deeply_nested: 1, complex_branching: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in boto3?"
+    answer: "A god function coordinates too much: it calls many other functions or takes on many responsibilities, so a change to it can ripple into many places. In boto3 the flagged example is `resource` in `boto3/session.py`, which calls 15 distinct functions and accepts ten optional parameters. In Python, runtime dispatch makes that coupling harder to see than the count suggests. Because it is the entry point for creating service resources, a regression there would surface for many users at once."
+  - question: "How do I reduce cyclomatic complexity and nesting in Python?"
+    answer: "Use extract-method and guard clauses. Cyclomatic complexity above 15 warrants splitting, and nesting depth of 4 or more is already a signal worth acting on. A concrete first step is `get_resource_public_actions` in `boto3/docs/utils.py`: its four stacked conditions, nested to depth 5, can become a single predicate or a series of early continues, roughly halving the nesting. For `build_param_structure` (complexity 12), pulling the index parsing into its own function separates parsing from structure-building and makes each part testable on its own."
+  - question: "Is boto3 actively maintained?"
+    answer: "This snapshot can't answer that on its own. All five top functions are in the debt quadrant, and across the whole repository the data shows 42 debt functions and 306 in the ok quadrant, with none in fire or watch, meaning no function combines complexity with heavy recent activity. The top functions have no touch counts or days-since-last-change values in the data, and each file shows a single recorded commit, so I can't cite a dormancy figure. What I can say is that the highest-risk code is structurally complex without being in the middle of active change, which is a fair description of stable, mature code that carries accumulated debt."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub and check out the commit I analyzed, 3557491, with `git checkout 3557491`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so code that is both hard to understand and actively changing scores highest. A very complex function that hasn't been touched for years scores lower than a moderately complex one that changes every week, because the near-term chance of introducing a regression is lower for the dormant one. In boto3 every top function is in the debt quadrant, so the scores here, between 8.70 and 8.91, reflect structure more than churn. The score tells me where review effort pays off first, not where bugs are."
+---
+
+The riskiest code in boto3 looks like debt rather than active churn: all 42 high-band functions out of 348 are in the debt quadrant, and none are in the fire quadrant. The data has no touch count or days-since-last-change figures for the top five, so I can't say how long they have sat untouched. Each file has only a single commit on record, though, and that is a shape I watch for: complex code that the next developer will meet with little change history to lean on. I would start with `resource` in `boto3/session.py` (an activity-weighted risk score of 8.91, fan-out of 15), then work through the resource model and parameter-building code.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `resource` | boto3/session.py | 8.9 | 6 | 2 | 15 |
+| `get_resource_public_actions` | boto3/docs/utils.py | 8.9 | 6 | 5 | 4 |
+| `_get_related_resources` | boto3/resources/model.py | 8.8 | 10 | 3 | 5 |
+| `build_param_structure` | boto3/resources/params.py | 8.8 | 12 | 4 | 8 |
+| `_get_has_definition` | boto3/resources/model.py | 8.7 | 7 | 4 | 7 |
+
+<BandChart fire='0' debt='42' watch='0' ok='306' />
+
+<PatternCloud patterns='god_function:1,long_function:1,deeply_nested:1,complex_branching:1' />
+
+This result has an unusual shape. The scores are tightly clustered, between 8.70 and 8.91 across the top five, so the ranking is a soft ordering, not a cliff. None of these functions are extreme by raw complexity: the highest cyclomatic complexity is 12. What puts them on top is the combination of branching, nesting, and fan-out, in code that sits on the path every boto3 user takes. All five have a single commit recorded against their files and no bug-linked commits, reverts, or review-comment activity, so I read this as maintainability debt, not a defect signal. The data doesn't say these functions are broken, and I'm not claiming they are.
+
+### `resource` — session.py
+
+<FunctionCard fn='resource' file='boto3/session.py' risk='8.91' band='debt' cc='6' nd='2' fo='15' />
+
+This method creates a service resource by name, and it is where I would start. Cyclomatic complexity is only 6 and nesting depth only 2, so the control flow is simple. The problem is fan-out: it calls 15 distinct functions, the widest coupling of anything in the top five. The signature takes the service name plus ten optional parameters (region, API version, SSL settings, endpoint URL, three credential fields, and a config object), and the excerpt shows a docstring far longer than the logic. The long-function and god-function flags here come from parameter handling and coordination, not branching.
+
+In Python, with duck typing and runtime dispatch, a fan-out of 15 likely understates the real coupling, because the types behind those calls are resolved at runtime. My recommendation: extract the credential and client-config handling into a helper that returns a prepared set of arguments, so `resource` reads as a short orchestration. That would cut the fan-out and make each piece testable without constructing a full session.
+
+### `get_resource_public_actions` — utils.py
+
+<FunctionCard fn='get_resource_public_actions' file='boto3/docs/utils.py' risk='8.90' band='debt' cc='6' nd='5' fo='4' />
+
+This one is the opposite profile: low fan-out of 4, cyclomatic complexity of 6, but nesting depth of 5. The excerpt shows why. It filters the members of a resource class through a chain of conditions (not underscore-prefixed, not capitalized, not a wait-until method, and finally an is-resource-action check), each nested inside the previous. Four sequential tests that must all pass don't need four levels of indentation, so nesting is where I would start.
+
+This is the cheapest fix in the list. Flatten it with guard clauses, or fold the name checks into a single predicate, and nesting drops from 5 to roughly 2 with no change in behavior. Because it lives in the docs utilities, I would expect the impact to fall mainly on documentation generation.
+
+### `_get_related_resources` — resources/model.py
+
+<FunctionCard fn='_get_related_resources' file='boto3/resources/model.py' risk='8.81' band='debt' cc='10' nd='3' fo='5' />
+
+Cyclomatic complexity of 10 is the moderate line, and this function sits right on it. Per the excerpt, a boolean switches between returning sub-resources and returning references; the function loops over the model's relationship definitions, then runs an inner loop over identifiers to decide whether the resource requires data. That boolean flag is the design smell: one function doing two jobs, with the selection logic repeated at the end as two mirrored conditions.
+
+I would split out one helper that determines whether a relationship requires data, and let the `subresources` and `references` properties each filter on the result. That removes the flag parameter and the mirrored branches, and each caller reads as one line of intent.
+
+### `build_param_structure` — resources/params.py
+
+<FunctionCard fn='build_param_structure' file='boto3/resources/params.py' risk='8.80' band='debt' cc='12' nd='4' fo='8' />
+
+This has the highest cyclomatic complexity in the group at 12, with nesting depth of 4 and fan-out of 8. The docstring calls it a reverse JMESPath implementation: it turns a path-like string into a nested structure by walking down the parts, uses a regular expression to detect list indexing, and mutates the params in place. The excerpt shows the branching: wildcard indexes, explicit indexes, append-style indexes, list creation, padding with empty dicts, and a last-item check repeated in both the list and dict branches.
+
+The complex-branching flag is earned. With in-place mutation and a moving position pointer, a bug here would be quiet and path-dependent, so every branch is a required test case. I would extract the index parsing into its own function, so the main loop only decides between list and dict, and then write tests per path shape (plain key, wildcard, explicit index, append) before changing anything else.
+
+### `_get_has_definition` — resources/model.py
+
+<FunctionCard fn='_get_has_definition' file='boto3/resources/model.py' risk='8.70' band='debt' cc='7' nd='4' fo='7' />
+
+The second function from `model.py` has cyclomatic complexity of 7, nesting depth of 4, and fan-out of 7. Its docstring and excerpt say the service resource gets special treatment: it synthesizes a relationship to every defined resource so calls like `s3.Object('bucket-name', 'key')` work even though the JSON doesn't declare them. The code loops over resource definitions, loops again over the declared relationships to find renamed or aliased matches, and builds a fallback definition when none match. A loop inside a loop with a conditional on the inside explains the nesting.
+
+Together with `_get_related_resources`, this gives `resources/model.py` two of the five slots, and the two are coupled: `_get_related_resources` consumes the output of `_get_has_definition`. I would pull the fallback-definition construction into its own function and refactor the pair as a unit, since changing the shape of one affects the other.
+
+**What I would do with this list**
+
+The scores are close enough that grouping matters more than order. The two `model.py` functions and `build_param_structure` form the resource-definition path, and I would review them together. `get_resource_public_actions` is the quick win. `resource` has the most coupling, so it deserves the most careful test coverage before it is split. Nothing here is on fire, which is the useful part: this is the time to do the work, while no one is mid-change in these functions.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 1 |
+| `long_function` | 1 |
+| `deeply_nested` | 1 |
+| `complex_branching` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/boto/boto3
+cd boto3
+git checkout 3557491c6c13cc69596d5391f77b7febef579065
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
