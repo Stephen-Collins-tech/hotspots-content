@@ -1,0 +1,142 @@
+---
+title: "Glow's TUI layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "charmbracelet/glow code health: Update, handleDocumentBrowsing and refactoring priorities"
+description: "Glow's top five hotspots are all high-branching message and argument handlers in ui/ and main.go, led by Update in ui/ui.go with a cyclomatic complexity of 58."
+introContent: "Glow's highest-risk code is a pair of Bubble Tea message handlers, each with a cyclomatic complexity of 58, that have not changed in 52 days. The one top-five function that is changing right now is the CLI entry point, executeCLI."
+pubDate: 2026-10-13
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "charmbracelet/glow"
+commit: "8b0600fa445535b9c53194c0d4f7fe3cf700ef3e"
+language: "go"
+hotspots_version: "2.0.1"
+analyzed_at: "2026-10-13T10:24:43Z"
+clone_depth: 100
+topRisk: 16.03
+topFunction: "Update"
+topFile: "ui/ui.go"
+topPatterns: ["exit_heavy", "god_function", "long_function", "complex_branching", "stale_complex"]
+patternCounts: {exit_heavy: 9, god_function: 6, complex_branching: 2, long_function: 3, stale_complex: 1}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in glow?"
+    answer: "An exit-heavy function has many distinct return or exit points, so each one is a separate path a test has to reach. In Go this is amplified by explicit error handling: every failed call tends to add its own early return. The pattern appears 9 times across glow's analyzed functions, including `sourceFromArg` with its many separate error returns for protocol, status, open and absolute-path failures, and the Bubble Tea `Update` functions with their many quit and batch returns."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The main technique is extract-method, often combined with decompose-conditional: pull each case of a large switch into its own named function and leave the original as a dispatcher. A cyclomatic complexity above 15 is a reasonable trigger to split a function, and above 30 deserves immediate attention. Glow's `handleDocumentBrowsing`, at 58, could take a first step today by moving the section-switching branches (tab, shift+tab, L, H), which repeat the same guard and wrap-around arithmetic, into one helper, and the navigation and open-document keys into others."
+  - question: "Is glow actively maintained?"
+    answer: "The data shows a mix. Among the top five, `executeCLI` is in the fire quadrant with 1 touch in the last year and 10 days since last change, and several functions in `utils/textsize.go` were touched 10 days ago, which points to active work on text sizing. The other four top functions are debt-quadrant with 0 touches in the last year: `Update` in `ui/ui.go`, `handleDocumentBrowsing` and the pager's `update` last changed 52 days ago, and `sourceFromArg` last changed 546 days ago. Active development and structural debt coexist here, and 21 fire functions against 41 debt functions says both are true of the codebase."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis uses the hotspots CLI, available on GitHub, run against charmbracelet/glow at commit 8b0600f. Run `git checkout 8b0600f`, then `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with recent commit frequency, so functions that are both hard to understand and actively changing score highest. Recent activity raises a function's score, so a complex function that is also changing is weighted more heavily. This helps focus refactoring effort where it reduces the chance of introducing bugs now, though dormant complex functions like glow's `Update` in `ui/ui.go` still deserve a planned refactor before their next change."
+---
+
+The highest activity-weighted risk score in glow is 16.03, belonging to `Update` in `ui/ui.go`, and it sits in the debt quadrant: cyclomatic complexity of 58, fan-out of 23, and 52 days since last change. That makes it structural debt with a large blast radius when next touched, not a live regression risk. Of the 145 functions I analyzed in glow at commit 8b0600f, 33 land in the critical band. Four of the five functions I would review first are debt-quadrant message and argument handlers; the fifth, `executeCLI` in `main.go`, is the only one in the fire quadrant.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `Update` | ui/ui.go | 16.0 | 58 | 4 | 23 |
+| `handleDocumentBrowsing` | ui/stash.go | 15.4 | 58 | 3 | 28 |
+| `sourceFromArg` | main.go | 14.7 | 29 | 4 | 15 |
+| `update` | ui/pager.go | 14.6 | 35 | 3 | 25 |
+| `executeCLI` | main.go | 14.4 | 29 | 2 | 29 |
+
+<BandChart fire='21' debt='41' watch='18' ok='65' />
+
+<PatternCloud patterns='exit_heavy:9,god_function:6,long_function:3,complex_branching:2,stale_complex:1' />
+
+The quadrant split tells me how to read this repository. Of 145 functions, 41 are debt and 21 are fire. The top five are not a uniform group: four have not been touched in the last year, and one was touched once, 10 days ago. I would treat them as two kinds of work: a planned refactor for the debt functions, and a close-review habit for the one function that is both complex and moving.
+
+One caveat before the details. High activity-weighted risk means structurally complex and, to varying degrees, recently active. It does not mean the code is buggy, and nothing here is a judgement on the maintainers. A Bubble Tea `Update` function that switches on message and key types will naturally accumulate branches. The question is whether the branching has outgrown what can be tested and reasoned about comfortably.
+
+### `Update` — ui.go
+
+<FunctionCard fn='Update' file='ui/ui.go' risk='16.03' band='debt' cc='58' nd='4' fo='23' touches='0' />
+
+I would start with `Update`. It has the highest activity-weighted risk score in the repository (16.03) and the deepest nesting in the top five (4), on top of a cyclomatic complexity of 58.
+
+<MetricBar label='Cyclomatic Complexity' value='58' threshold='10' max='60' />
+
+From the source excerpt, this is the root model's message handler. It opens with a fatal-error short circuit, then switches on message type, with a nested switch on key strings inside the key-press case (escape, r, q, left/h/delete, ctrl+z, ctrl+c) and further cases for window size, local file search, fetched markdown, and rendered content. The metrics fit that shape: a type switch containing a key switch containing state checks, with many early `return m, tea.Quit` and `return m, tea.Batch(...)` exits. That is the exit-heavy pattern, and every distinct return is a path someone has to cover in a test. Fan-out of 23 means it also reaches into the stash model, the pager model, styles, file finding, and Glamour rendering. That is the god-function pattern: a change to any of those collaborators can ripple back here.
+
+It was last changed 52 days ago and has zero touches in the last year, so this is overdue-for-refactoring territory rather than an active churn problem. The file-level history is mild: 7 commits total, no bug-linked commits, no reverts, a bug-fix rate of 43%, and one distinct author in the last 90 days. I read that as maintainability debt, not a defect signal. I would extract the key-press branch into its own method and move per-message-type handling into small functions (window size, local file search, markdown fetched, content rendered), leaving `Update` as a dispatcher.
+
+### `handleDocumentBrowsing` — stash.go
+
+<FunctionCard fn='handleDocumentBrowsing' file='ui/stash.go' risk='15.4' band='debt' cc='58' nd='3' fo='28' touches='0' />
+
+`handleDocumentBrowsing` matches `Update` on cyclomatic complexity (58) and has a fan-out of 28, second only to `executeCLI` among the five, with an activity-weighted risk score of 15.4. It last changed 52 days ago, so it shares `Update`'s status: structural debt, not an active hotspot.
+
+The excerpt shows a long key-press switch: cursor movement (k/j and their ctrl and arrow variants), jump to start and end (home/g, end/G), clearing a filter, next and previous section (tab, shift+tab, L, H), a file re-find on F, opening an editor on e, and opening a document on enter. Several branches repeat the same guard (no sections, or the filter is in the filtering state) and the same wrap-around index arithmetic for sections, which makes a good extraction candidate. The function is flagged as exit-heavy, god-function and long-function, and the long-function flag is the one I would act on first. Extract-method into one handler per key group (navigation, section switching, document opening) would cut the metric substantially without changing behavior.
+
+The file's history shows a bug-fix rate of 80% over 5 commits, with no bug-linked commits and no reverts, and 2 distinct authors in the last 90 days. That is a small sample, so I take it as a nudge to review this one with a little more care than `Update`, not as evidence the function is defective.
+
+### `sourceFromArg` — main.go
+
+<FunctionCard fn='sourceFromArg' file='main.go' risk='14.71' band='debt' cc='29' nd='4' fo='15' touches='0' />
+
+`sourceFromArg` is the stalest of the five. It hasn't been changed in 546 days, which is why it carries the stale-complex pattern alongside complex branching, exit-heavy and god-function. Its cyclomatic complexity is 29, with nesting depth 4 and fan-out of 15.
+
+The excerpt shows why. It resolves a command-line argument into a markdown source by trying a sequence of strategies: stdin when the argument is a dash, a GitHub or GitLab README URL, a generic HTTP(S) URL with a protocol check and status check, a directory walked for README-style filenames, and finally a plain file open with an absolute-path conversion. Go's explicit error handling shows up as many separate error returns (unsupported protocol, failed GET, bad status, missing markdown source, failed open, failed absolute path), and each one is a path to test. The directory-walk branch also uses a closure with its own error-to-abort convention, which adds nesting depth that cyclomatic complexity alone does not capture.
+
+Because the function is dormant, the risk is blast radius when someone next needs to add an input type. The file has 10 commits, a bug-fix rate of 60%, no bug-linked commits and no reverts, and a pull-request review comment density of 3.1, the highest in the top five. I would split it into one resolver per input kind (stdin, URL, directory, file) behind a small ordered list, so adding a new kind does not mean editing a 29-path function.
+
+### `update` — pager.go
+
+<FunctionCard fn='update' file='ui/pager.go' risk='14.59' band='debt' cc='35' nd='3' fo='25' touches='0' />
+
+The pager's `update` mirrors the root `Update` at a smaller scale: cyclomatic complexity of 35, nesting depth of 3, fan-out of 25, and 52 days since last change. It is a debt-quadrant function with an activity-weighted risk score of 14.59.
+
+The excerpt shows a key switch (quit or escape back to browse state, top and bottom, half-page up and down, open editor at an approximate line, copy to clipboard, reload, toggle help) followed by cases for rendered content, reload, editor finished, window size, and status-message timeout, ending with a pass-through to the viewport's own update. Two branches stand out as worth isolating. The editor branch computes a line number from scroll percentage and logs it, and the copy branch writes through two clipboard mechanisms. Both are side-effecting logic sitting inside a dispatcher, and pulling each into a named method would make the key switch read as a table.
+
+History is mild: 8 commits at file level, a bug-fix rate of 50%, no bug-linked commits, no reverts, and one distinct author in the last 90 days.
+
+### `executeCLI` — main.go
+
+<FunctionCard fn='executeCLI' file='main.go' risk='14.4' band='fire' cc='29' nd='2' fo='29' touches='1' />
+
+`executeCLI` is the only fire-quadrant function in the top five, and that changes the argument. It was touched once in the last year, 10 days ago, so it is both complex and recently changed, with an activity-weighted risk score of 14.4. Nesting depth is a shallow 2, but its fan-out of 29 is the highest in the top five, just above `handleDocumentBrowsing`'s 28.
+
+The excerpt shows a function that reads the full source, strips frontmatter, derives a base URL, decides whether the input is code or markdown, builds a Glamour renderer with style, word wrap and base URL options, optionally wraps code in a fenced block, renders, applies text sizing, and then branches into three display modes: external pager (parsing the pager command from the environment), the TUI, or a plain write to the output writer. That is read, transform, render and display in one function, and each stage has its own error return, which accounts for the exit-heavy flag.
+
+The recent change lines up with the text-sizing work visible elsewhere in the data: the `ApplyTextSizing` call here sits alongside other functions in `utils/textsize.go` that also show one touch 10 days ago. I would put the review focus on the seam between `executeCLI` and the text-sizing helpers, since new behavior is landing in a function that already couples to 29 others. The first refactor is easy to name: separate render (everything up to `ApplyTextSizing`) from display (the three-way switch), so each can be tested without the other. File-level history shows 10 commits, a bug-fix rate of 60%, no bug-linked commits and no reverts, and one distinct author in the last 90 days.
+
+**What sits just below the top five**
+
+The next group shows where activity is concentrated. Several fire-quadrant functions in `utils/textsize.go` and `ui/pager.go` each show one touch 10 days ago, which reads as one feature under active development rather than scattered churn.
+
+**What I would do first**
+
+If I had a single sprint, I would extract the key-press branches from `Update`, `handleDocumentBrowsing` and `update` into named handlers. Those three account for the biggest share of structural risk and none is changing right now, which makes this a safe time to refactor. Separately, I would add targeted tests around `executeCLI` and the text-sizing code while that feature is still moving.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 9 |
+| `god_function` | 6 |
+| `long_function` | 3 |
+| `complex_branching` | 2 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/charmbracelet/glow
+cd glow
+git checkout 8b0600fa445535b9c53194c0d4f7fe3cf700ef3e
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
