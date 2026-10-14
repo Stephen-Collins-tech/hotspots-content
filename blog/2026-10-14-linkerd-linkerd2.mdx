@@ -1,0 +1,132 @@
+---
+title: "linkerd2's Kubernetes pod-resolution code carries the highest activity risk — 5 functions to address first"
+titleSeo: "linkerd2 code health: pod-resolution and policy lookup functions lead refactoring priority"
+description: "Four of linkerd2's five riskiest Go functions are pod-resolution and policy-lookup code in pkg/k8s and controller/k8s, with cyclomatic complexity from 30 to 62 and 65 days since last change."
+introContent: "Every one of the five riskiest functions in linkerd2 has sat untouched for 65 days, and each carries cyclomatic complexity between 30 and 62. I looked at what that dormant complexity means for whoever has to change them next."
+pubDate: 2026-10-14
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "linkerd/linkerd2"
+commit: "28fefed6669bcadbce60bb025669e084cc58e1bb"
+language: "go"
+hotspots_version: "2.0.1"
+analyzed_at: "2026-10-14T08:45:24Z"
+clone_depth: 100
+topRisk: 17.22
+topFunction: "AuthorizationsForResource"
+topFile: "pkg/k8s/policy.go"
+topPatterns: ["complex_branching", "god_function", "long_function", "exit_heavy", "deeply_nested"]
+patternCounts: {complex_branching: 5, deeply_nested: 3, god_function: 4, long_function: 4, exit_heavy: 4}
+qaSection:
+  - question: "What is a god function and why does it matter in linkerd2?"
+    answer: "A god function does too many jobs: it is long, branches heavily, and calls a wide range of other functions, so a change to any of those responsibilities means editing the same body. In linkerd2, 4 of the top 5 hotspots carry that flag. `GetPodsFor` in `pkg/k8s/api.go` has a fan-out of 45 and cyclomatic complexity of 62, which means 62 independent paths that each deserve a test. The blast radius is the real problem: a change to any one resource type's handling sits in the same function as all the others."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "Use extract-method, and for type switches or kind-based branching, decompose the conditional into one helper per case. A cyclomatic complexity above 15 is worth splitting, and above 30 deserves prompt attention. In linkerd2, `GetPodsFor` in `controller/k8s/api.go` has a type switch with a repeated fetch-owner, read-selector, list-children shape per case; pulling each case into its own small function would cut the main function's complexity by well over half. Go's explicit error returns also add branches, so moving validation and error-message building into separate functions is a cheap first step."
+  - question: "Is linkerd2 actively maintained?"
+    answer: "The data on the top hotspots shows dormancy: all five have 0 touches in the last year and 65 days since last change, and none of the 3,619 functions is in the fire quadrant. The four watch-quadrant functions I saw are Rust test and runtime helpers, each with 1 touch in the last year and the most recent change between 0 and 3 days ago, so development is clearly continuing elsewhere in the repo. Active development and structural debt are not mutually exclusive, and this snapshot shows both: recent work in small functions and a large pool of 1,078 complex functions that are not currently being changed."
+  - question: "Which linkerd2 functions should I maintain or refactor first?"
+    answer: "I would start with the five debt-quadrant functions, all of which have 0 touches in the last year and 65 days since last change: `AuthorizationsForResource` (activity-weighted risk score 17.22, cyclomatic complexity 59), `TapByResource` (17.08, 53), `GetPodsFor` in `pkg/k8s/api.go` (16.69, 62), `getEndpointByHostname` (16.35, 30), and `GetPodsFor` in `controller/k8s/api.go` (16.2, 58). None is changing now, so this is structural debt to pay down before the next feature work lands in them, not a live regression risk. The four watch-quadrant Rust helpers, each with 1 touch in the last year, are active but have cyclomatic complexity of 1 and do not need refactoring."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub, run `git checkout 28fefed` in a clone of linkerd/linkerd2, and then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been committed to recently. Functions that are both hard to understand and actively changing score highest, because that combination is where new regressions are most likely to be introduced. A function that is complex but dormant scores lower than one that is equally complex and changing every week, which is why this repo's top scores of 16 to 17 all come from debt-quadrant functions: they are structurally heavy, and the score tells me to refactor them before the next development push, not that they are changing now."
+---
+
+The riskiest function in linkerd/linkerd2 is `AuthorizationsForResource` in `pkg/k8s/policy.go`: cyclomatic complexity 59, nesting depth 7, fan-out 28, and it hasn't been changed in 65 days. That makes this a time-bomb rather than an emergency, and the next developer to open it inherits all of that complexity cold. Across 3,619 functions, 418 are critical and 1,078 sit in the debt quadrant, while zero are in the fire quadrant, so my argument here is about structural debt with high blast radius when next touched, not live churn.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `AuthorizationsForResource` | pkg/k8s/policy.go | 17.2 | 59 | 7 | 28 |
+| `TapByResource` | viz/tap/api/grpc_server.go | 17.1 | 53 | 5 | 36 |
+| `GetPodsFor` | pkg/k8s/api.go | 16.7 | 62 | 4 | 45 |
+| `getEndpointByHostname` | controller/api/destination/watcher/workload_watcher.go | 16.4 | 30 | 6 | 15 |
+| `GetPodsFor` | controller/k8s/api.go | 16.2 | 58 | 4 | 28 |
+
+<BandChart fire='0' debt='1078' watch='4' ok='2537' />
+
+<PatternCloud patterns='complex_branching:5,god_function:4,long_function:4,exit_heavy:4,deeply_nested:3' />
+
+The quadrant split is the most useful framing for this repo. There are no fire-quadrant functions at all. The 1,078 debt-quadrant functions are complex and quiet, and all five of my top hotspots belong to that group. Each was last changed 65 days before this snapshot. That uniformity suggests the five were touched together in one sweep and none has been revisited since. The few watch-quadrant functions in the data (`change_access_policy`, `grpc`, `gen_pod`, `ns_audit`) are Rust test and runtime helpers with cyclomatic complexity of 1. They are active but structurally trivial, so they are not refactoring candidates.
+
+The external history on these files is thin. Bug-linked commits, reverts, and bug-fix rates are all zero, and total commit counts are 1 or 2 per file. I read that as an absence of a defect signal, not proof of quality. These are maintainability debt items, and the case for refactoring them rests on structure, not on a bug record.
+
+### `AuthorizationsForResource` — policy.go
+
+<FunctionCard fn='AuthorizationsForResource' file='pkg/k8s/policy.go' risk='17.22' band='debt' cc='59' nd='7' fo='28' touches='0' />
+
+I would start with `AuthorizationsForResource` because it combines the deepest nesting in the list (7) with cyclomatic complexity of 59 and fan-out of 28, and it hasn't been changed in 65 days. Its activity-weighted risk score is 17.22. From the excerpt, it resolves pods for a resource, then walks ServerAuthorization resources, then walks AuthorizationPolicy resources, matching each against the pods via Server lookups. Two distinct authorization models share one function body, with a per-namespace server cache and a lookup path through label selectors layered on top.
+
+The error handling is what I would flag first. Several failure branches print to standard error and continue, while two others print and call `os.Exit(1)` from inside what is otherwise a library function returning an error. A function that can terminate the process is hard to test and surprising to any caller. The log-and-continue branches also mean partial results come back silently when a lookup fails.
+
+My recommendation: split it into one function that collects ServerAuthorization matches and one that collects AuthorizationPolicy matches, each returning an error to the caller. Move the `os.Exit` calls out to the CLI layer. That alone should cut nesting depth substantially and make each half testable with a fake client.
+
+### `TapByResource` — grpc_server.go
+
+<FunctionCard fn='TapByResource' file='viz/tap/api/grpc_server.go' risk='17.08' band='debt' cc='53' nd='5' fo='36' touches='0' />
+
+`TapByResource` in `viz/tap/api/grpc_server.go` has cyclomatic complexity of 53, nesting depth of 5, and fan-out of 36, with an activity-weighted risk score of 17.08 and no change in 65 days. It is a gRPC streaming handler. The excerpt shows a run of up-front request validations that each return an invalid-argument status, then object lookup, then pod classification into tap-enabled, tap-disabled, and tap-not-enabled groups, then a multi-line error message built when no pods qualify, then rate division across pods and match construction. The excerpt cuts off before the streaming logic, and since this is a streaming handler in Go, goroutine and channel interactions probably fill the remainder. Structural metrics cannot see those, so the real risk may be higher than the numbers suggest.
+
+The exit-heavy pattern matters here: every early return is a path that needs a test. The validation block and the no-pods error-message builder are the easiest seams. I would extract request validation into its own function and the diagnostic message builder into another, which would remove a large share of the branches without touching the streaming core.
+
+### `GetPodsFor` — controller/k8s/api.go
+
+<FunctionCard fn='GetPodsFor' file='controller/k8s/api.go' risk='16.2' band='debt' cc='58' nd='4' fo='28' touches='0' />
+
+The second `GetPodsFor` lives in `controller/k8s/api.go` as a method on `API`, with cyclomatic complexity 58, nesting depth 4, fan-out 28, an activity-weighted risk score of 16.2, and 65 days since last change. It does the same conceptual job as the one in `pkg/k8s/api.go`, but takes a typed Kubernetes object and uses informer listers instead of a clientset. The excerpt shows a type switch over namespaces, cron jobs, daemon sets, deployments, replica sets, jobs, replication controllers, services, and stateful sets, with the same owner-reference recursion pattern.
+
+I would treat the pair as one finding. Two parallel implementations of pod resolution, with combined cyclomatic complexity of 58, mean a behavior change in one has to be weighed against the other. From the data alone I cannot say whether they have drifted apart, but the duplication is the risk. My first step would be a side-by-side test that feeds both the same resource tree and compares the pods returned, before any refactoring begins.
+
+### `getEndpointByHostname` — workload_watcher.go
+
+<FunctionCard fn='getEndpointByHostname' file='controller/api/destination/watcher/workload_watcher.go' risk='16.35' band='debt' cc='30' nd='6' fo='15' touches='0' />
+
+`getEndpointByHostname` is the smallest of the five by cyclomatic complexity (30) but has nesting depth of 6 and an activity-weighted risk score of 16.35, with 65 days since last change. It finds a pod for a given hostname and service, with one path through EndpointSlices and a parallel path through legacy Endpoints. Both paths follow the same shape: loop, loop, match hostname, check the target reference is a pod, look up the pod. That duplication is the clearest refactoring opportunity in the whole set.
+
+One detail from the excerpt deserves a test: when a hostname matches but the target reference is missing or not a pod, the function returns nil with no error, whereas a miss returns a not-found status. Callers have to handle a nil pod and a not-found error differently. The function also sits in the destination watcher, so I would expect it to be on a path that matters for service discovery.
+
+My recommendation: extract a function that takes a target reference and resolves it to a pod, and call it from both loops. Then flatten each loop with early continues. That should bring nesting depth from 6 down to around 3.
+
+### What I would do with this list
+
+All five functions share one profile: high complexity, many early exits, and a long stretch of dormancy. The pattern counts reinforce it, with 5 complex-branching, 4 god-function, 4 long-function, 4 exit-heavy, and 3 deeply-nested flags across the top five. The cheapest wins are the two `GetPodsFor` implementations and `getEndpointByHostname`, where the repeated structure makes extract-method mechanical. `AuthorizationsForResource` has the `os.Exit` problem, which I would fix first for testability regardless of the rest.
+
+### `GetPodsFor` — controller/k8s/api.go
+
+<FunctionCard fn='GetPodsFor' file='controller/k8s/api.go' risk='16.2' band='debt' cc='58' nd='4' fo='28' touches='0' />
+
+The second `GetPodsFor` lives in `controller/k8s/api.go` as a method on `API`, with cyclomatic complexity 58, nesting depth 4, fan-out 28, an activity-weighted risk score of 16.2, and 65 days since last change. It does the same conceptual job as the one in `pkg/k8s/api.go`, but takes a typed Kubernetes object and uses informer listers instead of a clientset. The excerpt shows a type switch over namespaces, cron jobs, daemon sets, deployments, replica sets, jobs, replication controllers, services, and stateful sets, with the same owner-reference recursion pattern.
+
+I would treat the pair as one finding. Two parallel implementations of pod resolution, with combined cyclomatic complexity of 58, mean a behavior change in one has to be weighed against the other. From the data alone I cannot say whether they have drifted apart, but the duplication is the risk. My first step would be a side-by-side test that feeds both the same resource tree and compares the pods returned, before any refactoring begins.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `god_function` | 4 |
+| `long_function` | 4 |
+| `exit_heavy` | 4 |
+| `deeply_nested` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/linkerd/linkerd2
+cd linkerd2
+git checkout 28fefed6669bcadbce60bb025669e084cc58e1bb
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
