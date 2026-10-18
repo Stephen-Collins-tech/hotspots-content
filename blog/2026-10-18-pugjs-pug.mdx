@@ -1,0 +1,133 @@
+---
+title: "Pug's AST walker carries the highest structural risk — 5 functions to address first"
+titleSeo: "pug code health: walkAST and 4 other functions lead the refactoring priority list"
+description: "In pugjs/pug, walkAST in pug-walk has cyclomatic complexity 73 and hasn't changed in 2141 days, leading a list of five dormant critical functions across the walker, attribute compiler, filter handler, runtime escape, and top-level compiler."
+introContent: "One function in pug, walkAST, has a cyclomatic complexity of 73, more than five times the next-highest function on my list, and it hasn't been touched in almost six years. That gap makes it a different kind of problem from the rest of the top five."
+pubDate: 2026-10-18
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: false
+repo: "pugjs/pug"
+commit: "c323ed3e630b931bc04790efb509d34ac5927040"
+language: "javascript"
+hotspots_version: "2.1.0"
+analyzed_at: "2026-10-18T07:58:44Z"
+clone_depth: 100
+topRisk: 14.59
+topFunction: "walkAST"
+topFile: "packages/pug-walk/index.js"
+topPatterns: ["exit_heavy", "long_function", "god_function", "stale_complex"]
+patternCounts: {exit_heavy: 4, long_function: 4, stale_complex: 2, god_function: 3}
+qaSection:
+  - question: "What is a god function and why does it matter in pug?"
+    answer: "A god function does too many distinct jobs and calls a large number of other functions directly, so it becomes the coordination point for unrelated concerns. Three of the five functions on my list carry this pattern: `compileAttrs` has a fan-out of 23, `compileBody` 22, and `handleFilters` 15. That breadth makes them hard to test in isolation, and a change to any callee can alter their output in ways that are hard to predict. In pug, where these functions sit on the compile path, the practical cost is that a small edit needs a wide set of tests to be safe."
+  - question: "How do I reduce cyclomatic complexity in javascript?"
+    answer: "The main technique is to replace a large switch or if-else chain with a dispatch table of small handler functions, combined with extract-method for any block that does one nameable job. A cyclomatic complexity above 15 is a reasonable point to start splitting, and above 30 warrants prompt attention. In pug, `walkAST` has a cyclomatic complexity of 73 from a switch over node types, so the first step is to move each case into its own handler keyed by node type and leave the main function as the traversal loop. Write characterization tests for current behavior before moving anything, then move one case at a time."
+  - question: "Is pug actively maintained?"
+    answer: "In this snapshot, the data shows a quiet codebase: all five of my top functions are in the debt quadrant with 0 touches in the last year and no distinct authors in the last 90 days. Their days since last change range from 1838 (`compileBody`) to 2141 (`walkAST`, `compileAttrs`, and `pug_escape`), with `handleFilters` at 2123. The one exception is `Compiler` in `packages/pug-code-gen/index.js`, which was last changed 0 days ago and has 1 touch in the last year. That reflects a stable, mostly finished codebase with limited recent churn, not necessarily a neglected one. Active development and structural debt are not mutually exclusive, and the 33 functions in the debt quadrant are the cost of code that has rarely needed to change."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit c323ed3 of pugjs/pug. Then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with recent commit frequency, so functions that are both hard to understand and actively changing score the highest. A function with a cyclomatic complexity of 80 that hasn't been touched in two years scores lower than one with a complexity of 20 that is edited every week, because the dormant function has a lower near-term chance of a regression being introduced. In this pug snapshot, the debt-quadrant functions still score in the critical band on structure alone, which is why I describe them as structural debt rather than live risk. The score is a prioritization aid, not a judgment of code quality."
+---
+
+I would start with `walkAST` in `packages/pug-walk/index.js`. Its cyclomatic complexity is 73, against 14 for the next-highest function on my list, and that 59-point gap puts it in a different category from everything else in the top five. It is structural debt, not live churn: it hasn't been changed in 2141 days, so the case for refactoring is the high blast radius when someone next has to touch it, not an active regression risk. In this snapshot of pug (96 functions analyzed, 12 in the critical band), 33 functions sit in the debt quadrant and exactly one, `Compiler`, is both complex and actively changing.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `walkAST` | packages/pug-walk/index.js | 14.6 | 73 | 3 | 9 |
+| `compileAttrs` | packages/pug-attrs/index.js | 11.9 | 14 | 3 | 23 |
+| `handleFilters` | packages/pug-filters/lib/handle-filters.js | 11.4 | 8 | 2 | 15 |
+| `pug_escape` | packages/pug-runtime/index.js | 10.9 | 14 | 2 | 3 |
+| `compileBody` | packages/pug/lib/index.js | 10.9 | 8 | 1 | 22 |
+
+<BandChart fire='1' debt='33' watch='0' ok='62' />
+
+<PatternCloud patterns='exit_heavy:4,long_function:4,god_function:3,stale_complex:2' />
+
+The quadrant split was the first thing I noticed. Of 96 functions, 62 are low-complexity and quiet, 33 are complex and untouched, and one is complex and changing right now. All five functions in my top list are in the debt quadrant, each with zero touches in the last year. That changes how I read the list: these are not places where regressions are being introduced this week. They are places where the next change will be expensive, because the code is complicated and nobody has recent context on it. Every one of the five has zero distinct authors in the last 90 days.
+
+### `walkAST` — pug-walk/index.js
+
+<FunctionCard fn='walkAST' file='packages/pug-walk/index.js' risk='14.59' band='debt' cc='73' nd='3' fo='9' touches='0' />
+
+<MetricBar label='Cyclomatic Complexity' value='73' threshold='10' max='80' />
+
+`walkAST` is the traversal engine for Pug's syntax tree, and the source excerpt shows where the complexity comes from: a large switch over node types (Block, Case, Filter, Mixin, Tag, Each, Conditional, Include, Extends, RawInclude and more), each branch with its own conditional handling of child blocks, alternates, or files. Nesting depth is only 3 and fan-out is 9, so the problem is not tangled control flow or broad coupling. It is breadth: 73 independent paths through one function, each a potential test case. It is also flagged as exit-heavy and long, and it has not been changed in 2141 days.
+
+The history is thin. The file has 3 commits in total, a bug-fix rate of 33%, no reverts, and no bug-linked commits. I would not read that as a defect signal; with so few commits it mostly says the file has rarely been edited. What it does tell me is that very little review history exists for a function this central. The excerpt also shows a recursive structure where each case calls back into the walker, so a mistake in one branch can propagate through every node type that nests it.
+
+I would refactor to a dispatch table. Move each node-type case into its own small handler keyed by node type, keep `walkAST` as the thin loop that handles the before/after callbacks and parent stack, and write one test per handler before moving any logic. That should cut the cyclomatic complexity of the main function by well over half and make each handler testable on its own. Because the function has been stable for years, characterization tests that pin current behavior are the safe first step.
+
+### `compileAttrs` — pug-attrs/index.js
+
+<FunctionCard fn='compileAttrs' file='packages/pug-attrs/index.js' risk='11.86' band='debt' cc='14' nd='3' fo='23' touches='0' />
+
+Here the story is coupling, not branching. Cyclomatic complexity is a moderate 14, but fan-out is 23, the highest in my top five, and the function is flagged as both a god function and long. From the excerpt, it opens with a block of input assertions on the attribute array and options, defines a nested `addAttribute` helper that branches on whether a value is constant and whether the output format is 'html' or 'object', and then iterates over the attributes with special handling for class. Validation, constant folding, string assembly, and attribute-specific rules all share one function.
+
+It hasn't been changed in 2141 days. The file has 2 commits, half tagged as bug fixes (a bug-fix rate of 50%), with no reverts. Two commits is too small a sample to conclude anything, so I treat this as maintainability debt. With a fan-out of 23, a change to any of those callees can alter attribute output, and because the output is generated code and markup strings, mistakes may surface far from the cause.
+
+I would extract the input validation into its own function first, since it is mechanical and low-risk, then pull `addAttribute` out of the closure so it can be tested with explicit arguments. That alone should remove a visible chunk of both length and fan-out.
+
+### `handleFilters` — pug-filters/lib/handle-filters.js
+
+<FunctionCard fn='handleFilters' file='packages/pug-filters/lib/handle-filters.js' risk='11.37' band='debt' cc='8' nd='2' fo='15' touches='0' />
+
+This one has a modest cyclomatic complexity of 8 and nesting depth of 2, but fan-out is 15 and it is flagged as a god function, exit-heavy, and long. The source excerpt shows why: it walks the tree with a callback that handles two node shapes (a Filter node and a RawInclude node with filters), and defines several inner functions (`filterWithFallback`, `filterFileWithFallback`, and `getFilterName` with alias-chain detection) inside it. Much of the logic lives in closures inside the function.
+
+It hasn't been changed in 2123 days. The file has 5 commits, a bug-fix rate of 20%, no reverts, and no bug-linked commits, so the history is unremarkable. I would call this testability debt: the interesting behavior (fallback from custom filters to the registry, alias resolution, error translation for unknown filters) is buried in nested functions.
+
+I would hoist the inner helpers to module level with explicit parameters instead of closing over `dir`, `filters`, and `filterAliases`. That turns three untestable closures into three directly testable functions and leaves `handleFilters` as orchestration.
+
+### `pug_escape` — pug-runtime/index.js
+
+<FunctionCard fn='pug_escape' file='packages/pug-runtime/index.js' risk='10.91' band='debt' cc='14' nd='2' fo='3' touches='0' />
+
+`pug_escape` is the odd one on the list, and I would handle it differently. Fan-out is 3 and nesting is 2; the complexity of 14 comes from a character-code switch that maps four characters to HTML entities, plus a pre-check regex and a tail-handling branch. From the excerpt, it scans the string and copies unchanged runs, appending only when it hits a character that needs escaping. That is a hand-tuned loop, a common shape for code on a rendering hot path.
+
+It hasn't been changed in 2141 days. The file has 6 commits, a bug-fix rate of 33%, and a pull-request review comment density of 1.0, one of only two top-five files with any recorded review discussion. Since this function escapes output, correctness matters more than its metrics suggest, but I would not restructure it for the sake of the numbers. The right move is a thorough test table: each of the four special characters at the start, middle, and end of a string, strings with no special characters, empty strings, and non-string inputs. If those tests exist, I would leave the function alone and treat the score as a flag for test coverage, not for refactoring.
+
+### `compileBody` — pug/lib/index.js
+
+<FunctionCard fn='compileBody' file='packages/pug/lib/index.js' risk='10.88' band='debt' cc='8' nd='1' fo='22' touches='0' />
+
+`compileBody` is the main compile pipeline, and its profile is fan-out 22 with a cyclomatic complexity of only 8 and nesting depth of 1. It is flagged as a god function, exit-heavy, and long. The excerpt shows it building an AST through `load.string` with inline `lex`, `parse`, `resolve`, and `read` callbacks, each of which copies options objects, filters plugins, and applies plugin hooks at stages named preLex, postLex, preParse, postParse, and preLoad. The structure is flat, but the whole pipeline is wired together in one function body.
+
+It hasn't been changed in 1838 days, the most recently touched function in my top five, though still more than five years ago. The file has 7 commits, a bug-fix rate of 43%, no reverts, and a pull-request review comment density of 3.0, the highest of the five. That is the one signal on this list I would take seriously as context: this file has drawn more review discussion than the others, which suggests the pipeline wiring is a place where people have had opinions. It is not evidence of defects.
+
+I would extract each inline callback (`lex`, `parse`, `resolve`, `read`) into a named function that takes the plugin list and options explicitly. The repeated pattern of copying option keys and filtering plugins by capability appears in both the lex and parse paths and is an obvious extraction candidate.
+
+**What I would do first**
+
+The five functions here need different treatment: `walkAST` needs decomposition, `compileAttrs` and `compileBody` need their fan-out broken up, `handleFilters` needs its closures hoisted, and `pug_escape` needs tests more than restructuring. None of them is under active change, which makes this the best time to refactor: behavior-preserving changes can be reviewed without competing with feature work.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 4 |
+| `long_function` | 4 |
+| `god_function` | 3 |
+| `stale_complex` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/pugjs/pug
+cd pug
+git checkout c323ed3e630b931bc04790efb509d34ac5927040
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
