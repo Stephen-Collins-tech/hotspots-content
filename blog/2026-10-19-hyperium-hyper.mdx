@@ -1,0 +1,132 @@
+---
+title: "hyper's HTTP/1 layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "hyper code health: role.rs and dispatch.rs lead the HTTP/1 refactoring priority list"
+description: "Three of hyper's five highest-risk functions sit in src/proto/h1/role.rs, with the other two in the h1 dispatcher's read and write loops in src/proto/h1/dispatch.rs."
+introContent: "One file, src/proto/h1/role.rs, holds three of the five riskiest functions in hyper, and two of them were changed within the last 8 days. I read it as a module-level review problem, not a single-function one."
+pubDate: 2026-10-19
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "hyperium/hyper"
+commit: "b07337878fe57b34b2065335ae8cae9ce5a780a0"
+language: "rust"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-19T08:55:36Z"
+clone_depth: 100
+topRisk: 18.04
+topFunction: "poll_read"
+topFile: "src/proto/h1/dispatch.rs"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 10, deeply_nested: 6, exit_heavy: 9, god_function: 9, long_function: 8}
+qaSection:
+  - question: "What is a god function and why does it matter in hyper?"
+    answer: "A god function does too many jobs: it has high branching, many exit points, and calls a wide set of collaborators, so understanding or changing one part requires holding the whole body in your head. That makes it hard to test in isolation and means a change in one branch can affect behavior elsewhere in the same function. In hyper's analysis, 9 functions carry this pattern, and all five of my top five are tagged with it."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The main technique is extract-method combined with decomposing conditionals: pull each distinct decision (for example, validating a request's size limits or handling one frame type) into a small function that returns a typed result, then let the caller match on it. I treat CC above 15 as a reason to plan a split and CC above 30 as needing attention soon; hyper's two `parse` functions in `src/proto/h1/role.rs` are at 42 and 57. A first step you can take today is to move the complete-parse arm of the request parser into its own function, which should remove a large share of the branches from the top level. In Rust, returning an enum for 'what to do next' instead of mutating flags also keeps the borrow checker and the reader happier."
+  - question: "Is hyper actively maintained?"
+    answer: "The data says yes for at least part of the codebase. Both `parse` functions in `src/proto/h1/role.rs` are in the 'fire' quadrant, each with 2 touches in the last year and only 8 days since last change, and 7 distinct authors contributed to that file in the last 90 days. Meanwhile the three 'debt' functions in my top five have 0 touches in the last year: `poll_read` at 153 days since last change, `encode_headers` at 67 days and `poll_write` at 59 days. Active development and structural debt coexist here: the recently edited parsers are complex, and the dispatcher loops with the highest scores are untouched."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the commit I analyzed, b073378. Run `git checkout b073378` and then `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively edited score highest. Recent edits raise the score, but structure still dominates: in hyper, `poll_read` has 0 touches in the last year and still has the highest score at 18.04. That helps teams spend refactoring effort where it reduces the chance of introducing bugs right now. It is a prioritization signal, not a verdict on code quality."
+---
+
+Three of the top five hotspots in hyper, which I rank by activity risk with `poll_read` first at 18.04 (in `dispatch.rs`), live in a single file, `src/proto/h1/role.rs`, and that concentration is the story: the request parser and the response header encoder sit in the same module, so anyone touching HTTP/1 message framing is working inside high-complexity code. Both `parse` functions are in the 'fire' quadrant, with an activity-weighted risk score of 17.34 for the first and 16.91 for the second, and both were last changed 8 days ago, so I treat them as in-flight risk rather than a backlog item. Across 1040 functions in hyper at commit b073378, 43 are critical and 19 are in the 'fire' quadrant; I would start with `role.rs` and then move to the two dispatcher loops in `src/proto/h1/dispatch.rs`.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `poll_read` | src/proto/h1/dispatch.rs | 18.0 | 32 | 10 | 15 |
+| `poll_write` | src/proto/h1/dispatch.rs | 17.7 | 21 | 9 | 19 |
+| `parse` | src/proto/h1/role.rs | 17.3 | 42 | 5 | 27 |
+| `parse` | src/proto/h1/role.rs | 16.9 | 57 | 4 | 25 |
+| `encode_headers` | src/proto/h1/role.rs | 16.7 | 55 | 6 | 19 |
+
+## Codemod / Tooling Files in Results
+
+One context-only function, `main` in `capi/examples/upload.c`, is an example program for the C API rather than library code, which explains its fan-out of 55 and CC of 27 without implying a library risk. It is in the 'debt' quadrant with 174 days since last change. If you want it out of triage lists, add `{ "exclude": ["capi/examples/"] }` to `.hotspotsrc.json`.
+
+<BandChart fire='19' debt='112' watch='47' ok='862' />
+
+<PatternCloud patterns='complex_branching:10,exit_heavy:9,god_function:9,long_function:8,deeply_nested:6' />
+
+The quadrant split shapes how I read the top five. Of the 1040 functions I analyzed, 862 are in the 'ok' quadrant, which is a healthy base. The top of the list is different: two functions are in the 'debt' quadrant in `dispatch.rs`, two are in the 'fire' quadrant in `role.rs`, and one more `role.rs` function is in the 'debt' quadrant. The recurring patterns across these five are complex branching, exit-heavy control flow, god-function shape and long bodies. I read those as maintainability and review-burden signals, not as evidence of defects. The historical signals on these files show no bug-linked commits and no reverts, which supports that reading.
+
+One caveat on reading the table. `role.rs` has two functions both named `parse`, which is consistent with separate implementations in the same file (one with CC 42 and one with CC 57). I tell them apart below by their metrics. I do not have the surrounding impl blocks, so I will not guess which protocol role each belongs to beyond what the excerpt shows.
+
+**`parse` (CC 42) — role.rs**
+
+<FunctionCard fn='parse' file='src/proto/h1/role.rs' risk='17.34' band='fire' cc='42' nd='5' fo='27' touches='2' />
+
+This is the first of the two `parse` functions in `src/proto/h1/role.rs`, and the source excerpt shows it handling an HTTP/1 request line and headers. It takes a mutable byte buffer plus a parse context and returns a parse result for a request line. I would start here because it combines a CC of 42, a fan-out of 27, an activity-weighted risk score of 17.34, 2 touches in the last year, and only 8 days since last change. That is the live-risk profile: complex and being edited right now.
+
+The excerpt explains the metrics. It sets up header storage with uninitialized memory in a small-vector, chooses capacity based on an optional configured maximum, then matches on the parser's result with separate arms for a complete parse, a partial parse and several error cases. Inside the complete arm it checks header size limits, URI length limits, method parsing and HTTP version, each with its own early return. That is a lot of exit paths, and each is a test case. Fan-out of 27 means the function depends on a wide surface of collaborators, so changes to header recording, method parsing or limit checks can ripple into it.
+
+There is also unsafe-adjacent territory to flag. The code deliberately uses `MaybeUninit` storage, and a comment explains the choice to skip zeroing for a benchmark gain. I will not claim anything is wrong there, but uninitialized-memory handling inside a CC-42 function is exactly where I want a reviewer to state the invariant that nothing is read before the parser fills it. At file level, the signals are moderate: a bug-fix rate of 50% across 16 commits, 7 distinct authors in the last 90 days, zero bug-linked commits, zero reverts, and a review-comment density of 4.125. The wide author spread is the part I would watch in a function this size.
+
+My recommendation is to extract the complete-parse arm into its own function that takes the parsed request and returns the validated pieces (length, method, path range, version), and to isolate the header-storage setup behind a small helper. That separates 'allocate scratch space' from 'validate and interpret', and it would take a meaningful share of the branches out of the top-level function.
+
+**`parse` (CC 57) — role.rs**
+
+<FunctionCard fn='parse' file='src/proto/h1/role.rs' risk='16.91' band='fire' cc='57' nd='4' fo='25' touches='2' />
+
+The second `parse` has the highest cyclomatic complexity of anything in my top five: CC 57, with nesting of only 4 and fan-out of 25. The excerpt provided for this entry is identical to the first, so I cannot say what drives the extra 15 paths beyond what the metrics show. What I can say is that a CC of 57 is high by any threshold and means 57 independent paths through one function, each a potential bug surface and a required test case. It shares the same file-level context: 8 days since last change, 2 touches in the last year, an activity-weighted risk score of 16.91, and the same 7 recent authors.
+
+The low nesting relative to complexity tells me the paths are mostly wide rather than deep, the shape you get from long sequences of independent checks. That pattern is usually easier to split than a deeply nested one. I would review it together with the previous function: list every early return across both `parse` functions, group them by what they reject (size, URI, method, version, header validity), and look for checks that can move into shared validation helpers. If both implementations repeat the same limit checks, centralizing them lowers both complexity scores at once.
+
+**`poll_read` — dispatch.rs**
+
+<FunctionCard fn='poll_read' file='src/proto/h1/dispatch.rs' risk='18.04' band='debt' cc='32' nd='10' fo='15' touches='0' />
+
+`poll_read` has the highest activity-weighted risk score in the whole list at 18.04, even though it is in the 'debt' quadrant: 0 touches in the last year and 153 days since last change. Structure drives the score, not churn. A nesting depth of 10 is well past the point where I consider code hard to reason about, and CC 32 with fan-out 15 sits on top of it.
+
+The excerpt shows an outer loop that checks closing state, then whether a request head can be read, then whether a body sender exists and the connection can read a body. Inside that, it polls the body receiver for readiness, polls the connection for a body frame, and branches on data frames, trailers and unknown frames, each with its own handling of the case where the receiver was dropped. It mixes `Poll::Pending` early returns with state that must be put back (the body sender is taken, then set again on several paths). That take-and-restore pattern is where I would look first: every path that returns or continues must leave the sender in the right state, and a missed restore is an easy mistake at a nesting depth of 10.
+
+File-level signals: a bug-fix rate of 73% across 11 commits in the file, zero bug-linked commits, zero reverts, 5 distinct authors in the last 90 days, and a review-comment density of 2.4. A 73% bug-fix rate on a small commit history is context for review priority, not proof that this function is defective. My recommendation is extract-method on the body-reading branch: pull the frame handling (data, trailers, unknown) into a helper that returns a small enum such as 'keep sender', 'close read' or 'send error', so the loop body only decides what to do next. That would cut nesting from 10 to something I could hold in my head.
+
+**`poll_write` — dispatch.rs**
+
+<FunctionCard fn='poll_write' file='src/proto/h1/dispatch.rs' risk='17.65' band='debt' cc='21' nd='9' fo='19' touches='0' />
+
+`poll_write` mirrors `poll_read`: CC 21, nesting 9, fan-out 19, 0 touches in the last year and 59 days since last change, with an activity-weighted risk score of 17.65. It is also 'debt', so the framing is the same: high blast radius when next changed, not live churn. It is the more recently modified of the two dispatcher loops, but still dormant by the standard of the 'fire' functions in `role.rs`.
+
+The excerpt shows a loop that handles closing state, then writes a new message head (including choosing a known or unknown body length from the body's size hint), then flushes when the buffer is full, then writes body frames with a guard object that tracks whether the body should be cleared. A comment in the code itself notes that a new scope is needed there. Frame handling repeats the shape of the read side: data, trailers, unknown, with empty-chunk and end-of-stream special cases.
+
+Fan-out of 19 is higher than `poll_read` despite lower CC, meaning this function leans on more collaborators per branch. The guard's clear-body flag is set on several paths, and I would want a test for each one. My recommendation is the same decomposition as the read side: split 'write a new head' from 'write a body frame' into separate functions, and make the guard-clearing decision a returned value instead of a flag mutated from several places. Because `poll_read` and `poll_write` share a file, a shared helper vocabulary for 'frame outcome' would make them easier to review together.
+
+**What I would do with this list**
+
+`encode_headers` in `src/proto/h1/role.rs` has CC 55, nesting 6 and fan-out 19, with an activity-weighted risk score of 16.7, 0 touches in the last year and 67 days since last change. It is in the 'debt' quadrant, so it belongs with the dispatcher loops as scheduled work.
+
+The two `parse` functions are the only items I would treat as in-flight risk, because they were changed 8 days ago and have the most recent authors. The three 'debt' functions are the ones I would schedule: nothing is pushing them to change this week, which is exactly the window when refactoring costs least.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 10 |
+| `exit_heavy` | 9 |
+| `god_function` | 9 |
+| `long_function` | 8 |
+| `deeply_nested` | 6 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/hyperium/hyper
+cd hyper
+git checkout b07337878fe57b34b2065335ae8cae9ce5a780a0
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
