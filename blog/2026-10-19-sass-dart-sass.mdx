@@ -1,0 +1,127 @@
+---
+title: "dart-sass's sass-parser package carries the highest structural risk"
+titleSeo: "dart-sass code health: sass-parser technical debt and refactoring priorities"
+description: "All five top hotspots in dart-sass sit in the TypeScript pkg/sass-parser package, led by a 26-level-deep normalize function that has gone 311 days without a change."
+introContent: "The riskiest code in dart-sass isn't in the Dart compiler. It's a TypeScript package, pkg/sass-parser, and every one of its top five functions has sat untouched for 311 days."
+pubDate: 2026-10-19
+tags: ["oss", "dart", "refactoring", "code-health"]
+draft: true
+repo: "sass/dart-sass"
+commit: "91fd60be15d757697e924a45b2da4410a1beb3eb"
+language: "dart"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-19T08:47:38Z"
+clone_depth: 100
+topRisk: 13.97
+topFunction: "normalize"
+topFile: "pkg/sass-parser/lib/src/statement/index.ts"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "long_function", "stale_complex"]
+patternCounts: {complex_branching: 3, deeply_nested: 3, long_function: 2, hub_function: 1, stale_complex: 2, exit_heavy: 3}
+qaSection:
+  - question: "What is a deeply nested function and why does it matter in dart-sass?"
+    answer: "Nesting depth counts how many control structures (loops, conditionals) sit inside one another at the deepest point. Past about 4 levels, a reader has to hold several active conditions in mind at once to know what a given line does, and past 8 it's a strong refactoring signal. In dart-sass, three of the five top functions are flagged as deeply nested, and `normalize` in pkg/sass-parser/lib/src/statement/index.ts reaches a depth of 26, which is more than three times that threshold."
+  - question: "How do I reduce cyclomatic complexity in dart?"
+    answer: "The most direct technique is decompose-conditional combined with extract-method: pull each branch body into a named function, or replace a long else-if chain with a lookup table of predicate and handler pairs. As a rough guide, a cyclomatic complexity above 15 warrants splitting and above 30 warrants immediate attention. A concrete first step for `normalize`, which has a cyclomatic complexity of 39, is to move the trailing parent-detach and formatting-copy loop into its own function and then convert the type-probing chain into a table. That alone should remove well over half of its branches. These particular functions are TypeScript, but the same techniques apply in Dart."
+  - question: "Is dart-sass actively maintained?"
+    answer: "The data here doesn't say much about the project as a whole, but it does describe these hotspots. All five top functions are in the debt quadrant, each with 0 touches in the last year and 311 days since its last change. The only function in the watch quadrant, `asPlainIdentifier`, has 1 touch in the last year and was last changed 0 days before the snapshot, so work is still happening in pkg/sass-parser. Recent activity and structural debt can coexist, and here the debt is sitting in code that is currently quiet."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub, clone sass/dart-sass, and run `git checkout 91fd60b` to match the commit I analyzed. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changing recently. Functions that are both hard to understand and actively changing score highest, because they're the most likely places for a regression to be introduced right now. A function that is just as complex but hasn't been touched in a year scores lower on near-term regression risk, though it still carries a high blast radius when someone does return to it. In this snapshot, all five top functions are in that second group."
+---
+
+The riskiest function in this dart-sass snapshot, `normalize` in pkg/sass-parser/lib/src/statement/index.ts, hasn't been changed in 311 days. It has a nesting depth of 26 and a cyclomatic complexity of 39. That is structural debt rather than an emergency: nothing is churning today, but the next developer to touch it inherits a function with an activity-weighted risk score of 13.97. I analyzed 691 functions at commit 91fd60b, and 10 are critical. The five I would review first all live in pkg/sass-parser rather than the Dart compiler core.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `normalize` | pkg/sass-parser/lib/src/statement/index.ts | 14.0 | 39 | 26 | 5 |
+| `_normalize` | pkg/sass-parser/lib/src/interpolation.ts | 13.3 | 11 | 8 | 3 |
+| `fromProps` | pkg/sass-parser/lib/src/expression/if-condition-expression/from-props.ts | 12.9 | 14 | 6 | — |
+| `toJsonField` | pkg/sass-parser/lib/src/utils.ts | 12.1 | 9 | 4 | 4 |
+| `toHaveNode` | pkg/sass-parser/test/setup.ts | 11.7 | 17 | 3 | 2 |
+
+The distribution tells most of the story. Of 691 functions, 655 are in the lowest-priority quadrant, 35 are structural debt, 1 is in the watch quadrant, and none are in the fire quadrant. Nothing in this repository is both complex and actively changing at the snapshot date. What I'm looking at is a pile of complexity that has gone quiet, and the question is what happens when someone has to go back in.
+
+<BandChart fire='0' debt='35' watch='1' ok='655' />
+
+<PatternCloud patterns='complex_branching:3,deeply_nested:3,exit_heavy:3,long_function:2,stale_complex:2,hub_function:1' />
+
+All five top hotspots share the same last-change age: 311 days, with zero touches in the last year. That suggests they were last modified together, probably in a single piece of work on the parser package, and then left alone. I can't tell from the data what that work was, so I won't guess. What I can say is that these functions share a vintage and a blast radius.
+
+### `normalize` — statement/index.ts
+
+<FunctionCard fn='normalize' file='pkg/sass-parser/lib/src/statement/index.ts' risk='13.97' band='debt' cc='39' nd='26' fo='5' touches='0' />
+
+I would start with `normalize`. It has the highest activity-weighted risk score in the repository (13.97) and the worst combination of branching and nesting in the top five. A cyclomatic complexity of 39 is already high, and a nesting depth of 26 is far past the point where I'd call a function reviewable. The numbers alone suggest something has gone wrong with how control structures are stacked.
+
+<MetricBar label='Max Nesting Depth' value='26' threshold='8' max='30' />
+
+The source excerpt shows why. The function takes whatever a caller hands it (a string, a list, a Sass node, a PostCSS node, or a plain props object) and turns it into child nodes. It does this with one long else-if chain that probes each input for a distinguishing property and constructs the matching rule type: declaration, rule, generic at-rule, and then a long run of specific at-rules such as each, if, for, forward, function, mixin, use, and while. A trailing loop then detaches nodes from their old parents and copies formatting data from a sample node. The pattern list also flags it as a hub function, which fits a fan-out of 5 plus the many constructors it reaches for.
+
+The file has one commit in its history, tagged as a bug fix (a bug-fix rate of 100%). With a single data point I wouldn't read much into that, and it doesn't show the function is defective. It does mean the only recorded change to this file was a correction, which slightly strengthens the case for review before the next edit.
+
+My recommendation is to replace the else-if chain with a table-driven dispatch: an ordered list of predicate and constructor pairs, so adding a new at-rule type means adding a row rather than another branch. Then extract the parent-detach and formatting-copy loop into its own function. That should cut both the complexity and the depth substantially, and the table itself becomes easy to unit test.
+
+### `_normalize` — interpolation.ts
+
+<FunctionCard fn='_normalize' file='pkg/sass-parser/lib/src/interpolation.ts' risk='13.33' band='debt' cc='11' nd='8' fo='3' touches='0' />
+
+`_normalize` scores 13.33 on a cyclomatic complexity of only 11, so nesting depth is doing the work: 8 levels, which is where I start treating depth as a refactoring signal on its own. It also hasn't changed in 311 days.
+
+From the excerpt, it flattens the inputs for an interpolation node (strings, nested interpolation nodes, expression nodes, or raw props) into a single list, re-parenting expression nodes as it goes. The nesting comes from handling an interpolation inside an interpolation inside a loop. One thing caught my eye, and I'll flag it as a question for a reviewer rather than a finding: inside the inner loop over a nested interpolation's nodes, the empty-string skip checks the length of the outer node's list rather than the current subnode. That may be intentional, but it reads oddly, and nobody has touched it in 311 days. This file has 4 commits in its history with a bug-fix rate of 25%, none of them linked to bugs by the bug-linking signal, so I'd frame it as maintainability debt with one line worth a second look.
+
+The fix is to pull the nested-interpolation branch into a helper that returns its flattened pieces. That would drop the depth by several levels and make the length check obvious in isolation.
+
+### `toJsonField` — utils.ts
+
+<FunctionCard fn='toJsonField' file='pkg/sass-parser/lib/src/utils.ts' risk='12.12' band='debt' cc='9' nd='4' fo='4' touches='0' />
+
+`toJsonField` is the mildest of the five on raw complexity (cyclomatic complexity 9, nesting depth 4, fan-out 4) but still lands at 12.12 and the critical band. It's a recursive serializer: primitives pass through, iterables are mapped element by element, objects with their own serialization method are delegated to, Sass colors get a special-case shape, and everything else is returned as is. It's exit-heavy, with six or more return points.
+
+I'd treat this one as lower priority than the first two. The branches are flat and each is distinct, so the risk is mostly in the number of cases to test, particularly the color branch and the split between nodes that take the inputs map and objects that don't. A small test table with one input per branch would give most of the protection. The file has one commit with a bug-fix rate of 100%, again too little history to conclude anything.
+
+### `toHaveNode` — test/setup.ts
+
+<FunctionCard fn='toHaveNode' file='pkg/sass-parser/test/setup.ts' risk='11.72' band='debt' cc='17' nd='3' fo='2' touches='0' />
+
+`toHaveNode` is a custom test matcher, so it differs in kind from the other four: it's test infrastructure rather than shipped parser logic. Its cyclomatic complexity is 17 with a nesting depth of only 3, so the score comes from breadth, not depth. The excerpt shows a long sequence of validation steps (argument types, property presence, value match, parent link, optional node type), each with its own failure message. The pattern list marks it as long, exit-heavy, and stale-complex.
+
+The danger with a matcher like this is quiet false confidence: if one check is wrong, tests pass or fail for the wrong reasons across the whole package. The file has 2 commits with a bug-fix rate of 50%. I'd extract each check into a small named helper that returns either a failure message or nothing, and have the matcher run them in order. That makes each failure message individually testable and shrinks the main function considerably.
+
+**What the group has in common**
+
+Three of the five functions are shaped like type-dispatch chains over loosely typed inputs (`normalize`, `_normalize`, `fromProps`), and a fourth (`toJsonField`) does the same over runtime value kinds. Functions like this gain a branch every time a new node type is added, which is how complexity piles up. A table-driven dispatch in each would turn most future additions into one-line changes.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 3 |
+| `deeply_nested` | 3 |
+| `exit_heavy` | 3 |
+| `long_function` | 2 |
+| `stale_complex` | 2 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`hub_function`](https://hotspots.dev/analyses/patterns/hub_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/sass/dart-sass
+cd dart-sass
+git checkout 91fd60be15d757697e924a45b2da4410a1beb3eb
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
