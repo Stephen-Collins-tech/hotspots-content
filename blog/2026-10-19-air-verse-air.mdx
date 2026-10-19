@@ -1,0 +1,138 @@
+---
+title: "air's proxy handler carries the highest activity risk — 5 functions to address first"
+titleSeo: "air code health: proxyHandler and preprocess lead the refactoring priority list"
+description: "In air-verse/air, proxyHandler in runner/proxy.go is the only top-five function that is both complex and recently changed, while four other critical functions in the runner package are dormant structural debt."
+introContent: "Of the 189 functions in air, only two are both complex and recently changed, and the proxy request handler is the worse of the two. The rest of the critical list is dormant debt sitting in the config, engine, and rule-matching code."
+pubDate: 2026-10-19
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "air-verse/air"
+commit: "71ea1dee05248122ed22b5870c7fb20a90d80ddd"
+language: "go"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-19T08:51:29Z"
+clone_depth: 100
+topRisk: 15.58
+topFunction: "proxyHandler"
+topFile: "runner/proxy.go"
+topPatterns: ["exit_heavy", "god_function", "long_function"]
+patternCounts: {exit_heavy: 5, god_function: 4, long_function: 3}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in air?"
+    answer: "An exit-heavy function has many return points, so a reader has to track which conditions lead to which exit. Each exit is a path a test must reach, and an early return skipped in testing is where a regression tends to hide. All 5 of the highest-risk functions in air carry this pattern, including `proxyHandler` in `runner/proxy.go`, where several error branches return an HTTP error before the main logic runs. Covering each exit with a named test case is the cheapest way to make these functions safer to change."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The main technique is extract-method: pull each self-contained step into a named function that returns an error, and let the original function orchestrate. As a rule of thumb, I would plan to split anything above 15 and treat anything above 30 as urgent. In air, `preprocess` in `runner/config.go` has a cyclomatic complexity of 45 and is a sequence of independent normalization steps, so moving path resolution, defaults, and regex compilation into their own functions would cut the figure roughly in half in one pass. For `ruleMatches`, a table-driven test with one row per return path is a good first step before splitting it."
+  - question: "Is air actively maintained?"
+    answer: "The data shows recent activity concentrated in a small area. Two functions are in the 'fire' quadrant, and `proxyHandler` and `delHopByHopHeaders` were each touched once in the last year, most recently 25 days ago. The four other functions in my top five have 0 touches in the last year: `preprocess`, `ruleMatches`, `buildRun`, and `runBin`. That looks like a tool that is changing in specific places while most of its complex code stays untouched. Active development and structural debt can coexist, and here they do."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository and check out the commit I analyzed, 71ea1de, with `git checkout 71ea1de`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has changed recently, so functions that are both hard to understand and actively changing score highest. A function with a cyclomatic complexity of 80 that hasn't been touched in two years will usually score lower than one with a complexity of 20 that changes weekly, because the dormant one has less near-term regression risk. In air, `proxyHandler` scores 15.58 as a 'fire' function, and `preprocess` scores 14.95 as 'debt' because it has had 0 touches in the last year. The score is a prioritization aid for reviewers and says nothing about the maintainers' work."
+---
+
+One function in air stands out: `proxyHandler` in `runner/proxy.go`, with the highest activity-weighted risk score at 15.58. It is one of only 2 functions in the repository in the 'fire' quadrant, meaning it is structurally complex and was changed recently (25 days ago). I analyzed air at commit 71ea1de: 189 functions, 29 of them critical, and 84 sitting in the 'debt' quadrant. I would start with `proxyHandler`, where a cyclomatic complexity of 47 and a fan-out of 34 meet recent change, then work through the four dormant critical functions that follow it.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `proxyHandler` | runner/proxy.go | 15.6 | 47 | 3 | 34 |
+| `preprocess` | runner/config.go | 15.0 | 45 | 3 | 22 |
+| `buildRun` | runner/engine.go | 13.5 | 23 | 3 | 13 |
+| `runBin` | runner/engine.go | 13.4 | 13 | 3 | 29 |
+| `ruleMatches` | runner/rule.go | 13.3 | 25 | 3 | 9 |
+
+<BandChart fire='2' debt='84' watch='0' ok='103' />
+
+<PatternCloud patterns='exit_heavy:5,god_function:4,long_function:3' />
+
+The distribution tells me where to spend attention. Only 2 of 189 functions are in the 'fire' quadrant, and 84 are 'debt': complex, but untouched recently. That is not an alarming shape for a mature tool. The live regression surface is small and concentrated, while a much larger body of complex code waits for its next change. All five functions in my top list carry the exit-heavy pattern, which I will return to, because every early return is another path a test has to reach.
+
+One caveat on everything below: the external history signals are file-level. They help me prioritize review, but they do not prove any individual function is defective.
+
+### `proxyHandler` — proxy.go
+
+<FunctionCard fn='proxyHandler' file='runner/proxy.go' risk='15.58' band='fire' cc='47' nd='3' fo='34' touches='1' />
+
+<MetricBar label='Cyclomatic Complexity' value='47' threshold='10' max='60' />
+
+<MetricBar label='Fan-out' value='34' threshold='15' max='40' />
+
+This is the function I would look at first. Its activity-weighted risk score is 15.58, it was touched once in the last year, and that change was 25 days ago. That makes it a live regression risk rather than a backlog item. The excerpt shows why the numbers are what they are: one handler builds the upstream URL, parses the form, constructs the outgoing request, copies and filters headers, sets forwarding and Via headers, runs a retry loop until the app comes back up after a restart, copies response headers, and then branches on whether the response is streaming or non-HTML. Request preparation, retry policy, and response rewriting all live in a single function.
+
+The nesting depth of 3 is not the problem. Breadth is: 47 independent paths and 34 distinct callees, with several early exits via `http.Error`. Each of those exits is a test case, and a fan-out of 34 means a change to any of the calls it makes can affect behaviour here.
+
+The file-level history adds context. The file has 7 commits in total, 71% of them tagged as bug fixes, with no reverts, no commits linked to bugs, and a single author in the last 90 days. A bug-fix rate that high on a small commit history is a reason to give this file stronger review priority, though it is not evidence that this specific function is broken.
+
+I would split along the seams the code already shows: one function to build the outbound request, one to wait for the app with the timeout and retry logic, and one to copy and filter response headers. The retry loop is the easiest piece to extract first and test in isolation, because it has a clear input (a request and a timeout) and a clear failure mode (context expiry).
+
+### `preprocess` — config.go
+
+<FunctionCard fn='preprocess' file='runner/config.go' risk='14.95' band='debt' cc='45' nd='3' fo='22' touches='0' />
+
+`preprocess` scores 14.95, nearly the same as `proxyHandler`, but the risk is a different kind. It has 0 touches in the last year, so this is structural debt with a high blast radius when it is next modified, not a function under live churn. With a cyclomatic complexity of 45 and a fan-out of 22, it sits in the startup path. The excerpt shows it applying command-line overrides, changing directory from an environment variable, expanding the root path, refusing dangerous root directories, defaulting temp and test-data directories, resolving the entrypoint binary, normalizing include directories and rules, appending runtime arguments, and compiling exclude regexes.
+
+The file-level history here is the busiest of the five: 30 commits in total, a bug-fix rate of 43%, one commit linked to a bug, and 2 reverts. Two reverts on a file this central is a signal I would weigh when planning review effort. Config loading runs for every user on every start, so a mistake here has wide reach.
+
+The function is a sequence of independent normalization steps, which makes it a good candidate for extract-method. I would group the steps into path resolution, defaults, rule normalization, and regex compilation, each returning an error to a short orchestrating function. Pin current behaviour with tests first, especially the dangerous-root check and its override flag, since those branches change what the tool refuses to do.
+
+**`buildRun` and `runBin` — engine.go**
+
+These two share a file, a history, and a dormancy profile, so I am treating them together. Both have 0 touches in the last year and were last changed 97 days ago, which puts them firmly in the 'debt' quadrant. The file has 17 commits in total with a bug-fix rate of 65%, no reverts, no commits linked to bugs, and no distinct authors in the last 90 days.
+
+<FunctionCard fn='buildRun' file='runner/engine.go' risk='13.47' band='debt' cc='23' nd='3' fo='13' touches='0' />
+
+`buildRun` has an activity-weighted risk score of 13.47. Its excerpt shows a per-build stop channel used as a token through a semaphore-style channel, two select checks against the stop and exit channels (one before the pre-command, one after the build), and error branches for the pre-command and the build that behave differently depending on whether the config says to stop on error. A cyclomatic complexity of 23 is manageable on its own. The risk is the combination of channel synchronization and several early returns. Structural metrics cannot see ordering problems between goroutines, so I would want race-detector tests around the stop-token handling before anyone edits it.
+
+A concrete first step is to pull the repeated 'did someone ask me to stop' select into a small helper. That removes duplicated control flow and leaves the build sequence readable as a list of steps.
+
+<FunctionCard fn='runBin' file='runner/engine.go' risk='13.35' band='debt' cc='13' nd='3' fo='29' touches='0' />
+
+`runBin` scores 13.35 with a fan-out of 29 against a cyclomatic complexity of only 13. The excerpt explains the gap: it defines a kill closure that returns a shutdown channel, spawns a goroutine that selects between a shutdown request and process exit, takes a lock to clear the stop channel, and attempts to kill the command, then launches a second goroutine that loops starting the process. Two nested goroutines, closures, and several channels in one function mean the complexity lives in the interactions, not in the branch count. That is where I would be most careful, because a cyclomatic complexity of 13 understates how hard this is to reason about.
+
+I would promote the kill closure to a named method that takes its dependencies explicitly. That makes the shutdown protocol testable on its own, and it shrinks the outer function enough that the start loop can be read without the shutdown logic in the way.
+
+Because both functions live in the same untouched file, I would plan the work as one change: tests around stop and exit behaviour first, then the extractions.
+
+### `ruleMatches` — rule.go
+
+<FunctionCard fn='ruleMatches' file='runner/rule.go' risk='13.29' band='debt' cc='25' nd='3' fo='9' touches='0' />
+
+`ruleMatches` scores 13.29 with a cyclomatic complexity of 25 and a fan-out of 9, has 0 touches in the last year, and was last changed 39 days ago. It is the cleanest case of the five: the file has 1 commit in total, no bug-fix history, and no reverts. With nothing in the history suggesting trouble, I would frame this as maintainability debt, not a defect risk.
+
+The excerpt shows a sequence of filters: an include-directory check, exclusion by compiled regex, a shortcut when no extensions or files are configured, extension matching with a wildcard, and finally an exact relative-file match. Each filter has its own early return, which is the exit-heavy pattern in practice, and each return is a case a test must cover: directory miss, regex exclusion, empty include lists, extension hit, wildcard, file hit, and no match at all.
+
+The low-effort improvement is a table-driven test with one row per exit, and a split of the function into a directory predicate and an extension-or-file predicate. That brings the complexity of each piece well below the point where I would worry about it.
+
+**What the pattern counts say**
+
+Across the repository, 5 functions carry the exit-heavy pattern, 4 are god functions, and 3 are long functions. All 5 functions in my top list are exit-heavy. The god-function label fits `proxyHandler`, `preprocess`, `buildRun`, and `runBin`, each of which handles several distinct responsibilities in one body. That is why extract-method is the recurring recommendation here, not a rewrite.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 5 |
+| `god_function` | 4 |
+| `long_function` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/air-verse/air
+cd air
+git checkout 71ea1dee05248122ed22b5870c7fb20a90d80ddd
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
