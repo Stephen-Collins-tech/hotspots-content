@@ -1,0 +1,143 @@
+---
+title: "Ionic's router layers carry the highest activity risk: 3 live-fire functions"
+titleSeo: "ionic-framework code health: router and sheet gesture functions lead refactoring priority"
+description: "Three of the top five risk functions in ionic-framework are in 'fire' status, concentrated in the Vue router, the Vue router outlet, and the modal sheet gesture, with two React router debt hotspots behind them."
+introContent: "41 functions in ionic-framework are both structurally complex and changing right now, and the top of the list is routing code in the Vue and React packages plus the modal sheet gesture. If you ship against those packages this week, these are the files where a change is most likely to collide with something else."
+pubDate: 2026-10-19
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "ionic-team/ionic-framework"
+commit: "2e46d429ed3a9fb945437ea9e6e1e85e4eda54ca"
+language: "typescript"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-19T09:01:25Z"
+clone_depth: 100
+topRisk: 19.66
+topFunction: "createIonRouter"
+topFile: "packages/vue-router/src/router.ts"
+topPatterns: ["long_function", "complex_branching", "exit_heavy", "god_function", "deeply_nested"]
+patternCounts: {complex_branching: 9, deeply_nested: 6, exit_heavy: 9, god_function: 9, long_function: 12, hub_function: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in ionic-framework?"
+    answer: "A god function is one that does too many jobs: it has many branches, many callees, and often a lot of private state, so understanding any one behavior means reading all of it. That makes it hard to test in isolation and means an edit for one case can shift another. In ionic-framework, 9 of the functions flagged in the analysis carry this pattern, including `createIonRouter` with 45 distinct callees and `createSheetGesture` with 54. In a library, those functions sit behind public components, so every downstream app pays for a mistake."
+  - question: "How do I reduce cyclomatic complexity in TypeScript?"
+    answer: "Use extract-method and decompose-conditional: pull each independent decision into a named function that returns a value, and let the caller combine the results. A cyclomatic complexity above 15 is worth splitting and above 30 deserves prompt attention. A concrete first step for `setup` in the Vue router outlet (cyclomatic complexity 30, 8 days since last change) is to move the route-change decision (ignore, transition, or transition because only the parameters changed) into a pure function that takes route values and returns a decision, which can be unit tested without mounting anything. For `createSheetGesture` (cyclomatic complexity 47), an introduce-parameter-object refactor on its 14 arguments is the matching starting move."
+  - question: "Is ionic-framework actively maintained?"
+    answer: "Based on this snapshot, yes. Three of my top five functions are in the 'fire' quadrant, with the most recent change to `createSheetGesture` 6 days before the analysis, to `setup` in the Vue router outlet 8 days before, and to `createIonRouter` 14 days before, and 41 functions overall are both complex and recently changed. At the same time, 385 functions are structural debt, and the two React router functions in my top five, `IonRouter` and `computeParentPath`, have 0 touches in the last year and were last changed 57 days before the analysis. Active development and heavy structural debt coexist here, which is common in a large multi-framework library."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub. I analyzed commit 2e46d42, so run `git checkout 2e46d42` in a clone of ionic-team/ionic-framework and then `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A very complex function that has not been touched in two years scores lower than a moderately complex one edited every week, because the dormant one has less near-term regression risk. The score is meant to point refactoring effort at the places where it reduces the chance of introducing a bug right now, not just at code that looks complicated in the abstract."
+---
+
+I found 41 functions in ionic-framework that are both structurally complex and actively changing, out of 4,369 functions analyzed with 127 in the critical band. The top function, `createIonRouter` in `packages/vue-router/src/router.ts`, carries an activity-weighted risk score of 19.66 with a cyclomatic complexity of 58 and 45 distinct callees, and it was last changed 14 days ago, which makes it a priority to review rather than a cleanup backlog item. Three of my top five are in the 'fire' quadrant (`createIonRouter`, `setup` in the Vue router outlet, and `createSheetGesture`), and the other two are React router functions that are structural debt with a high blast radius when next touched.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `createIonRouter` | packages/vue-router/src/router.ts | 19.7 | 58 | 7 | 45 |
+| `IonRouter` | packages/react-router/src/ReactRouter/IonRouter.tsx | 18.5 | 49 | 7 | 34 |
+| `setup` | packages/vue/src/components/IonRouterOutlet.ts | 17.4 | 30 | 5 | 51 |
+| `computeParentPath` | packages/react-router/src/ReactRouter/utils/computeParentPath.ts | 17.1 | 31 | 7 | 14 |
+| `createSheetGesture` | core/src/components/modal/gestures/sheet.ts | 16.5 | 47 | 3 | 54 |
+
+<BandChart fire='41' debt='385' watch='177' ok='3766' />
+
+<PatternCloud patterns='long_function:12,complex_branching:9,exit_heavy:9,god_function:9,deeply_nested:6,hub_function:1' />
+
+The distribution matters before the individual functions. 41 functions are in the 'fire' quadrant, meaning complex and changing, while 385 are 'debt', meaning complex but currently quiet. I think the 'fire' number is the one to plan around, because every one of those functions is a place where a new commit lands on code that is already hard to reason about. The 177 'watch' functions are active but structurally simple, and I would leave them alone.
+
+One caveat before I go on. High activity-weighted risk does not mean a function is buggy or badly written. It means the function is hard to hold in your head and someone is editing it. That combination is where review time pays off most.
+
+### `createIonRouter` — router.ts
+
+<FunctionCard fn='createIonRouter' file='packages/vue-router/src/router.ts' risk='19.66' band='fire' cc='58' nd='7' fo='45' touches='2' />
+
+I would start with `createIonRouter`: it has the highest activity-weighted risk score in the repository (19.66) and it changed 14 days ago. Two touches in the last year is not high churn in absolute terms, but the function is large enough that two touches means two chances to alter navigation behavior in a function with a cyclomatic complexity of 58.
+
+The excerpt shows why the numbers are what they are. The function holds several pieces of mutable closure state for navigation information (a current-navigation record, an owner reference, and an 'unclaimed' flag), then registers an `afterEach` hook and an error-handler wrapper that have to coordinate with that state. The comments in the excerpt describe matching staged deltas against a navigation by identity, because two history navigations can move to the same path. That is a subtle invariant to preserve across edits, and it lives inside a function with a nesting depth of 7 and 45 distinct callees. The function is flagged as a god function, long, deeply nested, exit-heavy, and branch-heavy.
+
+The file-level history adds context without proving anything. Of 4 total commits on the file, a bug-fix rate of 75% appears in the data, with no bug-linked commits and no reverts, 3 distinct authors in the last 90 days, and a pull-request review comment density of 11.0, the highest of the five. I read that as a file that gets scrutinized in review and has needed corrective changes, which is a reason to prioritize it, not a finding that the current code is defective.
+
+My concrete recommendation: extract the navigation-info staging state and its three variables into a small dedicated object with explicit claim and discard methods, and move the `afterEach` and error-handler registration into separate named functions. That puts the identity-matching invariant in one place where it can be tested directly.
+
+### `IonRouter` — IonRouter.tsx
+
+<FunctionCard fn='IonRouter' file='packages/react-router/src/ReactRouter/IonRouter.tsx' risk='18.52' band='debt' cc='49' nd='7' fo='34' touches='0' />
+
+`IonRouter` has the second-highest activity-weighted risk score at 18.52, but its quadrant is 'debt': 0 touches in the last year and 57 days since last change. I am not calling this actively changing code. I am calling it structural debt with a high blast radius when it is next touched, and since it is the React router component, everyone using the React bindings inherits that change.
+
+The excerpt shows a component that holds a location history, a view stack, a forward-navigation stack keyed on React Router's unique location keys, a current-tab reference, and route info state, with effects that seed the history on mount and sync matched params back into route info. The comments explain a StrictMode double-render concern and a tab-ordering concern with `IonTabBar`. Those are real ordering dependencies buried inside a single component with a cyclomatic complexity of 49, nesting depth of 7, and fan-out of 34.
+
+The file history is light: 2 total commits, a bug-fix rate of 50%, no reverts, no review comments, and 2 distinct authors in the last 90 days. Nothing there suggests urgency, so I would treat this as overdue for refactoring rather than urgent. The cheapest first step is extracting the forward-stack and location-history bookkeeping into custom hooks, which would lift a block of refs and effects out of the component body.
+
+### `setup` — IonRouterOutlet.ts
+
+<FunctionCard fn='setup' file='packages/vue/src/components/IonRouterOutlet.ts' risk='17.41' band='fire' cc='30' nd='5' fo='51' touches='2' />
+
+`setup` in the Vue router outlet has an activity-weighted risk score of 17.41, a cyclomatic complexity of 30, a nesting depth of 5, and a fan-out of 51. It was last changed 8 days ago, with 2 touches in the last year. The fan-out is the standout: 51 distinct callees makes this function a coupling point for the outlet's whole lifecycle.
+
+The excerpt shows a watcher on the route and matched-route reference, with a long comment listing the cases it must handle: an outlet that should ignore a route that does not apply to it, a different matched route, and a parameterized route where the matched record is the same but the parameters differ (the `/page/1` to `/page/2` case). That comment is doing the job a set of named predicates would do better. There is also a flag for a view that was given leave hooks when its hosting page left, to avoid firing them twice. Each of those cases is a branch someone needs a test for.
+
+The file history shows a bug-fix rate of 66.67% across 3 commits, no reverts, and 3 distinct authors in the last 90 days. Again, supporting context, not a verdict. I would extract the route-change decision into a pure function that takes the current route, matched record, and previous values and returns whether and how to transition. That function can be tested without mounting an outlet, and it would cut the branch count inside `setup` substantially.
+
+### `computeParentPath` — computeParentPath.ts
+
+<FunctionCard fn='computeParentPath' file='packages/react-router/src/ReactRouter/utils/computeParentPath.ts' risk='17.14' band='debt' cc='31' nd='7' fo='14' touches='0' />
+
+`computeParentPath` is the other 'debt' function in my top five, with an activity-weighted risk score of 17.14, a cyclomatic complexity of 31, a nesting depth of 7, a fan-out of 14, 0 touches in the last year, and 57 days since last change. The file has a single commit with a bug-fix rate of 0%, so there is no historical defect signal here at all. This is maintainability debt, plainly.
+
+The excerpt shows an early scope check, a fast path when the mount path is known from React Router's route context, and then a fallback that walks URL segments and tracks three candidate matches (specific, wildcard, and index), with a final selection step. The code comments say the fallback only runs on first render of outlets without a parent match. A nesting depth of 7 in a loop that tracks three competing candidates, with special cases for empty-path routes, is where I would expect a future edit to go wrong.
+
+I suggest extracting the segment walk into its own function that returns the three candidates, and I would keep the scope check and fast path in the caller. That separates 'do we already know the answer' from 'discover the answer', which is the real structure in the code, and it makes each half testable with plain path strings.
+
+**Context from outside the top five**
+
+Routing and transition code is the dominant cluster in this repository, and the 'watch' functions are active but structurally modest, so I would not prioritize them.
+
+**What I would do this week**
+
+If I owned this repository I would put the three 'fire' functions first, in this order: `createIonRouter`, `setup` in the Vue outlet, and `createSheetGesture`. Add characterization tests around the branch cases before the next change lands, then extract along the seams I described. The two React debt functions can wait for a planned refactoring window, but I would schedule that window before the next feature push into the React router.
+
+### `createSheetGesture` — sheet.ts
+
+<FunctionCard fn='createSheetGesture' file='core/src/components/modal/gestures/sheet.ts' risk='16.51' band='fire' cc='47' nd='3' fo='54' touches='1' />
+
+`createSheetGesture` is the outlier in my top five because its nesting depth is only 3. Its risk comes from breadth: a cyclomatic complexity of 47 and a fan-out of 54, the highest fan-out among my top five. It was last changed 6 days ago with 1 touch in the last year, and its activity-weighted risk score is 16.51.
+
+The signature alone is a signal. It takes 14 parameters, including several callbacks (dismiss, breakpoint change, drag start, drag move, drag end) and the animation and element references. Inside, the excerpt shows many pieces of mutable closure state (cached scroll element, cached footer elements, footer position and state, the current breakpoint, an offset, and a flag for whether the dismiss-blocking logic is gating the gesture) plus nested helpers such as `enableBackdrop`, which checks focus-trap and backdrop opt-outs before touching pointer events and a focus-trap class. This is a gesture state machine written as one closure, which is why the branch count is high even though nesting stays shallow.
+
+The file has 2 total commits with a bug-fix rate of 50%, no reverts, 2 distinct authors in the last 90 days, and a review comment density of 2.33. I would introduce a parameter object for the 14 arguments and split the footer caching, backdrop toggling, and breakpoint-snapping logic into separate units that share an explicit state object. Gesture code is hard to test through the DOM, so pulling the breakpoint math into pure functions would buy the most coverage for the least effort.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 12 |
+| `complex_branching` | 9 |
+| `exit_heavy` | 9 |
+| `god_function` | 9 |
+| `deeply_nested` | 6 |
+| `hub_function` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`hub_function`](https://hotspots.dev/analyses/patterns/hub_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/ionic-team/ionic-framework
+cd ionic-framework
+git checkout 2e46d429ed3a9fb945437ea9e6e1e85e4eda54ca
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
