@@ -1,0 +1,131 @@
+---
+title: "Wire's graph-solving core carries the highest activity risk — 5 functions to address first"
+titleSeo: "google/wire code health: dependency-graph functions lead technical debt and refactoring priority"
+description: "All five top-ranked functions in google/wire are untouched structural debt, concentrated in the dependency-graph solver and loader in internal/wire plus the code generator in cmd/wire."
+introContent: "The riskiest function in google/wire hasn't been modified in 1,935 days, and the four behind it have been quiet for between 1,869 and 2,365 days. I wanted to know why a repo with zero actively changing hotspots still has 35 critical functions."
+pubDate: 2026-10-19
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "google/wire"
+commit: "9c25c9016f6825302537c4efdd5e897976f9c826"
+language: "go"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-19T12:37:21Z"
+clone_depth: 100
+topRisk: 16.68
+topFunction: "gather"
+topFile: "cmd/wire/main.go"
+topPatterns: ["god_function", "stale_complex", "complex_branching", "deeply_nested", "long_function"]
+patternCounts: {complex_branching: 4, deeply_nested: 4, god_function: 5, long_function: 3, stale_complex: 5, exit_heavy: 2}
+qaSection:
+  - question: "What is a god function and why does it matter in wire?"
+    answer: "A god function does too many jobs: it has a high count of execution paths and calls a wide range of other functions, so it ends up knowing about too much of the surrounding system. That makes it hard to test in isolation, because each path needs a test case, and changes to it can ripple into many callees. In wire, all five of the top hotspots carry this pattern, with fan-out ranging from 23 to 34 and cyclomatic complexity from 34 to 64. The sharpest example is `gather` in `cmd/wire/main.go`, which combines import discovery and group-building in one body."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "The most direct technique is extract-method: pull a self-contained block out into a named function so each piece has fewer paths and can be tested on its own. As a rule of thumb, a cyclomatic complexity above 15 warrants splitting, and above 30 warrants prompt attention. A concrete first step in wire is `processExpr`, where the switch over wire function names can be replaced with a map from name to handler, removing most of its 38 paths in one change. For `verifyAcyclic`, extracting the cycle error formatting would also cut the nesting depth of 8 substantially."
+  - question: "Is wire actively maintained?"
+    answer: "The data says the five riskiest functions are all dormant debt-quadrant code: each has zero touches in the last year. Days since last change are 1,935 for `gather`, 2,365 for `verifyAcyclic`, 1,869 for `Load`, 2,177 for `solve`, and 2,050 for `processExpr`. No function in the 422 I analyzed falls in the 'fire' quadrant, while 54 are in 'debt'. That pattern fits a mature, stable core that has been left alone, not necessarily an abandoned project. Active development and structural debt are not mutually exclusive, and this analysis only covers function-level activity at one commit, so it cannot speak to the wider project's health."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the commit I analyzed, 9c25c90. Then run `git checkout 9c25c90` followed by `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently. Functions that are both hard to understand and actively changing score highest, because that combination is where new bugs are most likely to be introduced. In wire the top scores run from 14.64 to 16.68 and all five functions are dormant, with zero touches in the last year, so the ranking here reflects extreme structural complexity and the cost of the next change, not live churn."
+---
+
+I would start with `gather` in `cmd/wire/main.go`. It hasn't been changed in 1,935 days, has a cyclomatic complexity of 64 and a fan-out of 34, so whoever touches it next inherits a lot of branching and coupling. This is structural debt, not an emergency: none of the 422 functions I analyzed in google/wire land in the 'fire' quadrant, but 54 sit in 'debt' and 35 are rated critical, and the top five all belong to that debt group. They cluster in the dependency-graph solver and loader (`internal/wire/analyze.go`, `internal/wire/parse.go`) and the code generator entry point.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `gather` | cmd/wire/main.go | 16.7 | 64 | 6 | 34 |
+| `verifyAcyclic` | internal/wire/analyze.go | 16.5 | 35 | 8 | 26 |
+| `Load` | internal/wire/parse.go | 15.5 | 34 | 5 | 27 |
+| `solve` | internal/wire/analyze.go | 15.5 | 51 | 5 | 30 |
+| `processExpr` | internal/wire/parse.go | 14.6 | 38 | 3 | 23 |
+
+<BandChart fire='0' debt='54' watch='0' ok='368' />
+
+<PatternCloud patterns='god_function:5,stale_complex:5,complex_branching:4,deeply_nested:4,long_function:3,exit_heavy:2' />
+
+Every one of the five functions I'm covering here has zero touches in the last year, and that changes how I read the data. This is not code being edited carelessly under pressure. It is core logic that was written, worked, and was left alone, so its complexity has never been paid down. The oldest, `verifyAcyclic`, hasn't been changed in 2,365 days. The external history I have for these files is mild: no reverts, no bug-linked commits, and bug-fix rates between roughly 8% and 12%. I read that as maintainability debt, not a defect signal. These counts do not prove any of these functions is broken.
+
+The real exposure is the next change. Whoever adds a new provider kind, a new error message, or a new analysis pass will be editing functions that nobody has modified in five to six and a half years, with high branching and broad coupling.
+
+### `gather` — main.go
+
+<FunctionCard fn='gather' file='cmd/wire/main.go' risk='16.68' band='critical' cc='64' nd='6' fo='34' touches='0' />
+
+`gather` is the top-ranked function, with an activity-weighted risk score of 16.68, and it hasn't been changed in 1,935 days. The excerpt shows two jobs in one body. First it walks provider-set imports using an explicit stack and a visited map, then it runs a depth-first search over output types to build groups, with a labeled `dfs` loop and a switch over input, argument, and provider cases. A cyclomatic complexity of 64 and fan-out of 34 make a function hard to test as a unit, because each path is a required case and each callee is a coupling point.
+
+<MetricBar label='Cyclomatic Complexity' value='64' threshold='30' max='70' />
+
+The file's history shows 12 total commits and a bug-fix rate of about 8%, with no reverts. That is a quiet record, consistent with a function that has been stable rather than one known to be fragile. My recommendation is concrete: split the import-collection loop out as its own function first. It is a self-contained walk with clear inputs and outputs, and moving it removes a chunk of branching and one nesting layer before anyone touches the harder group-building search. Then extract the per-provider case handling from the DFS so each case can be tested directly.
+
+### `verifyAcyclic` — analyze.go
+
+<FunctionCard fn='verifyAcyclic' file='internal/wire/analyze.go' risk='16.52' band='critical' cc='35' nd='8' fo='26' touches='0' />
+
+`verifyAcyclic` is the oldest of the five, at 2,365 days since last change, and it has the deepest nesting in the set at 8. A nesting depth of 8 is a strong refactoring signal on its own. From the excerpt, it runs a depth-first search from every provider type, tracks trails on a stack, and builds a multi-line cycle error message inside the innermost loops. That last part is what I would pull out. Formatting the cycle report is separable from detecting the cycle, and it accounts for several of the deepest levels.
+
+<MetricBar label='Max Nesting Depth' value='8' threshold='4' max='10' />
+
+The file has 10 commits with a bug-fix rate of 10% and no reverts. I would extract a helper that takes the trail and the repeated type and returns the error, which should cut the nesting by at least three levels without altering the search logic. The function ends in a panic for an invalid provider map value, so before any refactor I would want a test that reaches that default branch.
+
+### `Load` — parse.go
+
+<FunctionCard fn='Load' file='internal/wire/parse.go' risk='15.51' band='critical' cc='34' nd='5' fo='27' touches='0' />
+
+`Load` is the public entry point for loading packages and building the `Info` structure, and it hasn't been changed in 1,869 days. It is also flagged as exit-heavy, and the excerpt shows why: nearly every step has its own error check that adds to a collector and continues, or returns early. That explicitness is normal in Go, but at a cyclomatic complexity of 34 each of those branches is a test case someone has to maintain.
+
+The nested loops over packages, scope names, syntax files, and declarations carry most of the nesting depth of 5. I would pull the per-declaration injector handling into its own function that takes a package and a declaration and returns errors. That leaves `Load` as orchestration and gives the injector path a unit-testable seam. The file shows 17 commits and a bug-fix rate of about 12%, the highest of the group, with no reverts. `processExpr` shares that number because both functions live in `parse.go`, so it does not separate the two. It is still a modest rate. What makes `Load` worth tackling is that it is the public-facing path through the file.
+
+### `solve` — analyze.go
+
+<FunctionCard fn='solve' file='internal/wire/analyze.go' risk='15.47' band='critical' cc='51' nd='5' fo='30' touches='0' />
+
+`solve` has a cyclomatic complexity of 51, the second highest in the group, a fan-out of 30, and hasn't been changed in 2,177 days. From the excerpt, it performs a topological sort of the provider graph using a stack and a labeled `dfs` loop, with separate handling for missing providers, interface bindings, arguments, and providers. It also builds detailed 'needed by' error messages by walking a linked frame chain.
+
+It shares a file with `verifyAcyclic`, and that matters: both are stack-based depth-first searches over a provider map, and together they take two of the five top spots in one file. A change to how provider types are represented would likely mean editing both. I would extract the error-message construction for missing providers into a helper, and separate the interface-binding branch from the call-generation branch. That turns one large switch-driven loop into a loop that dispatches to named steps.
+
+### `processExpr` — parse.go
+
+<FunctionCard fn='processExpr' file='internal/wire/parse.go' risk='14.64' band='critical' cc='38' nd='3' fo='23' touches='0' />
+
+`processExpr` hasn't been changed in 2,050 days, and it stands apart from the others with a nesting depth of only 3. Its complexity comes from breadth, not depth: a cyclomatic complexity of 38 driven by a switch over wire function names (`NewSet`, `Bind`, `Value`, `InterfaceValue`, `Struct`, `FieldsOf`) plus a large number of early returns, each producing a positioned error. That is why it is flagged as exit-heavy instead of deeply nested.
+
+This is the easiest of the five to improve safely. Each case calls a dedicated processor and wraps its error the same way, so a table mapping function name to handler would collapse most of the switch and the repeated error-wrapping lines. Adding a new wire primitive would then mean adding one entry, not editing a 38-path function. Because the handlers already exist as separate functions, I expect this to be a low-risk first refactor, and one that shows the team the pattern before they tackle `solve` or `gather`.
+
+### What I would do with this
+
+I would work in this order: `processExpr` first because the refactor is mechanical, then `verifyAcyclic` for its nesting depth of 8, then `gather` for the size of its cyclomatic complexity and fan-out. `solve` and `Load` come after, once there are tests around the shared provider-map handling. None of this is urgent in the sense of live regression risk, since no function in the analyzed set is actively changing. The point of doing it while the code is quiet is that the next feature in this area will arrive without warning, and extracting helpers and adding tests beforehand is far cheaper than doing it mid-change.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 5 |
+| `stale_complex` | 5 |
+| `complex_branching` | 4 |
+| `deeply_nested` | 4 |
+| `long_function` | 3 |
+| `exit_heavy` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/google/wire
+cd wire
+git checkout 9c25c9016f6825302537c4efdd5e897976f9c826
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
