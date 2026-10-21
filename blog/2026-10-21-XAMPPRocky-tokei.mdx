@@ -1,0 +1,137 @@
+---
+title: "tokei's output and parsing paths carry the highest risk — 5 functions to fix first"
+titleSeo: "tokei code health: print_results and parse_context lead the technical debt refactoring list"
+description: "The riskiest functions in tokei are all structural debt concentrated in the printer, the syntax parser, and the CLI entry point, and none has been touched in over 700 days."
+introContent: "The five highest-risk functions in tokei have gone untouched for 747 to 810 days, and each one carries a lot of branching. I would treat them as structural debt for whoever has to change them next, not an emergency."
+pubDate: 2026-10-21
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "XAMPPRocky/tokei"
+commit: "c14f744716272fadeb27a74443cdffa0af35f82f"
+language: "rust"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-21T08:29:02Z"
+clone_depth: 100
+topRisk: 16.49
+topFunction: "print_results"
+topFile: "src/cli_utils.rs"
+topPatterns: ["long_function", "stale_complex", "complex_branching", "exit_heavy", "deeply_nested"]
+patternCounts: {complex_branching: 3, deeply_nested: 2, exit_heavy: 3, long_function: 4, stale_complex: 4, god_function: 2}
+qaSection:
+  - question: "What is a stale complex function and why does it matter in tokei?"
+    answer: "A stale complex function is one that is structurally hard to follow but has not been modified for a long time, so its complexity is a latent cost rather than an active one. The risk is that nobody currently on the project remembers why it works the way it does, and the first change after a long gap is the one most likely to break something. Four of the five functions I reviewed in tokei carry this pattern, with the most dormant going 810 days without a change. I would fix them before the next feature lands in that area, not after."
+  - question: "How do I reduce cyclomatic complexity and nesting depth in rust?"
+    answer: "The main technique is extract-method, often combined with decompose-conditional: give each branch of a large match or if-chain its own named function. A cyclomatic complexity above 15 warrants splitting, and above 30 warrants immediate attention. A concrete first step in tokei is to move each language-family arm of `parse_context` (cyclomatic complexity 28) into its own function, leaving a thin dispatcher. In Rust, returning early with `?` or `let ... else` can also flatten nesting, which would help `print_results` at nesting depth 8."
+  - question: "Is tokei actively maintained?"
+    answer: "The data does not say, and I would be careful about reading too much into it. All five of the top functions are in the debt quadrant with zero touches in the last year. `main`, `parse_multi_line_comment`, and `parse_lines` haven't been changed in 810 days, and `print_results` and `parse_context` in 747. None of the 138 functions I analyzed is in the fire quadrant. That fits a stable, mature codebase whose core logic rarely needs to change, but it also means the structural debt in these functions has been left alone, not paid down."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository and check out the commit I analyzed, `c14f744`, with `git checkout c14f744`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without extra configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. The weighting is meant to put refactoring effort where it reduces the chance of introducing bugs now, not just where the code looks complicated in the abstract. In tokei, every top function has zero touches in the last year, so the scores here are driven by structure and by how long the code has sat unchanged, not by churn. For example, `print_results` scores 16.49 with cyclomatic complexity 16 and nesting depth 8, and its last change was 747 days ago."
+---
+
+The top function in tokei, `print_results` in `src/cli_utils.rs`, hasn't been changed in 747 days, and its nesting reaches 8 levels. That is structural debt with a high blast radius for the next developer who has to touch it, not live churn. Across the 138 functions I analyzed in tokei (a code-counting CLI), 4 are critical, 23 sit in the debt quadrant, and none are in the fire quadrant. I would start with `print_results` because its nesting depth is the highest in the set and it renders the full per-language report.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `print_results` | src/cli_utils.rs | 16.5 | 16 | 8 | 7 |
+| `parse_context` | src/language/syntax.rs | 15.5 | 28 | 5 | 15 |
+| `main` | src/main.rs | 12.9 | 22 | 2 | 18 |
+| `parse_multi_line_comment` | src/language/syntax.rs | 10.1 | 11 | 4 | 8 |
+| `parse_lines` | src/language/language_type.rs | 8.4 | 17 | 3 | 7 |
+
+<BandChart fire='0' debt='23' watch='0' ok='115' />
+
+<PatternCloud patterns='long_function:4,stale_complex:4,complex_branching:3,exit_heavy:3,deeply_nested:2,god_function:2' />
+
+Start with the quadrant split. No function in tokei is in the fire quadrant, so nothing here is complex and changing at the same time. The 23 debt-quadrant functions are complex and dormant. That is a different kind of risk from a hot file under active edits: the cost arrives when someone finally has to open it. Every function in my top five has recorded zero touches in the last year, and their last changes fall 747 to 810 days back.
+
+One caveat on the historical signals. Each of these files shows a bug-fix rate of 67% to 100%, but the commit counts behind that are tiny (1 to 4 per file), and the number of bug-linked commits is zero for all five. I treat the percentages as noise from small samples, not as evidence of defects. None of the five files has any reverts.
+
+### `print_results` — cli_utils.rs
+
+<FunctionCard fn='print_results' file='src/cli_utils.rs' risk='16.49' band='critical' cc='16' nd='8' fo='7' touches='0' />
+
+This function renders the per-language and per-file report. From the excerpt, it partitions languages into simple and child-bearing groups, loops over both, and then branches again on file listing, compact mode, sort order, and whether a report carries embedded blobs. A nesting depth of 8 is well past what I would call readable, and it is high for a function with only 16 independent paths. The deep nesting is the problem here, more than the raw branch count.
+
+<MetricBar label='Max Nesting Depth' value='8' threshold='4' max='10' />
+
+It also repeats a partition-then-loop shape inside the loop, which suggests the nested block is a second printing routine in disguise. The function has 7 distinct callees, and its file shows a high density of pull-request review comments (5.5), which fits a place where reviewers had things to say. Its last change was 747 days ago, so no recent activity is masking any of this.
+
+My recommendation: extract the file-listing branch (the compact and non-compact report printing) into its own method, and extract the per-report blob rendering below it. That alone should cut the nesting depth roughly in half. It also gives the multiple `?` exit points a smaller surface to test. If tokei has output snapshot tests, run them before and after the extraction, since formatting widths are easy to break by accident.
+
+**`parse_context` and `parse_multi_line_comment` — syntax.rs**
+
+These two functions share a file, and together they decide whether the tool is inside a comment, a string, or an embedded code block. I would review them as a pair.
+
+<FunctionCard fn='parse_context' file='src/language/syntax.rs' risk='15.46' band='critical' cc='28' nd='5' fo='15' touches='0' />
+
+`parse_context` has the highest cyclomatic complexity in my top five at 28, plus a fan-out of 15 and a nesting depth of 5. From the excerpt, it returns early if a quote or comment stack is active, then branches by language family. The Markdown path locates fenced code blocks and recursively parses the embedded language. The Rust path walks doc-comment lines and gathers them as Markdown. Each family looks like its own parser stitched into one match, which explains the god-function and long-function flags. Several early exits also multiply the test cases needed for full path coverage.
+
+<MetricBar label='Cyclomatic Complexity' value='28' threshold='10' max='40' />
+
+The signature takes a mutable reference to parser state plus a regex cache, so the function mixes state mutation with recursive parsing of child languages. Rust ownership hides some of this coupling from CC alone, so I would not read 28 as the whole story. I saw no `unsafe` blocks in the excerpt, so my concern is logic density, not memory safety. The file has 2 total commits on record and no reverts.
+
+My recommendation: split the match arms into one function per language family (`parse_markdown_context`, `parse_rust_doc_context`, and so on), leaving `parse_context` as a thin dispatcher. That takes the CC from 28 to somewhere in the low single digits for the dispatcher and keeps each arm testable on its own.
+
+<FunctionCard fn='parse_multi_line_comment' file='src/language/syntax.rs' risk='10.09' band='critical' cc='11' nd='4' fo='8' touches='0' />
+
+`parse_multi_line_comment` is smaller and less alarming, with a CC of 11, nesting depth of 4, and fan-out of 8. It scans the configured multi-line and nested comment delimiters, pushes the closing delimiter onto a stack when it finds an opening one, and decides whether nesting is allowed. The push decision is a three-way condition inside a loop inside a branch, which is where the nesting comes from. It last changed 810 days ago.
+
+My recommendation is modest: pull the 'should this start push onto the stack' condition into a small named predicate. That flattens one level of nesting and gives the nested-comment rules a name a reader can search for.
+
+### `main` — main.rs
+
+<FunctionCard fn='main' file='src/main.rs' risk='12.87' band='critical' cc='22' nd='2' fo='18' touches='0' />
+
+`main` has the highest fan-out in the set at 18, with a CC of 22 and a shallow nesting depth of 2. That profile reads as a long, flat orchestration function, not a tangled one. From the excerpt, it parses arguments, validates input paths, computes column width, optionally prints a streaming header, gathers statistics, and then branches into output formatting, sorting, and printing. Several of those branches call `process::exit` directly, which gives the function many exit paths and makes it awkward to test without spawning a process.
+
+<MetricBar label='Fan-Out' value='18' threshold='10' max='25' />
+
+The CLI's whole control flow lives here, so any change to a flag or output mode touches this function. It hasn't been changed in 810 days, and the file has 1 commit on record, so I have no history to show how it behaves under change. My recommendation: move the argument validation and early-exit checks into a function that returns a result, and have `main` perform the single exit at the end. The column-width calculation is another self-contained chunk that can come out as a helper. That makes the orchestration testable without process-level exits.
+
+### `parse_lines` — language_type.rs
+
+<FunctionCard fn='parse_lines' file='src/language/language_type.rs' risk='8.37' band='high' cc='17' nd='3' fo='7' touches='0' />
+
+`parse_lines` is the core loop of the counter. It steps through the input line by line, classifies each as code or comment, and delegates embedded languages (Markdown fences, Rust doc comments, Lingua Franca, HTML) to child parsers. It is the only high-band function in my top five, and its CC of 17 comes mostly from a nested match on child language context. Its nesting depth of 3 is modest.
+
+This file has the strongest review-attention signal of the five. Its pull-request review comment density is 13.0, more than double the next file, and its bug-fix rate is 67% across 3 total commits. That is thin evidence, but it fits a function that reviewers found worth discussing. I would not say anything about defects from it. What I would say is that the child-language handling inside the loop is the part to extract: each branch of the context match adds stats and blobs in a slightly different way, and moving that into one function that takes the context and returns the updated stats would shrink the loop body and let you compare the four cases side by side.
+
+**What I would do first**
+
+I would order the work by how much risk each change removes per hour spent. The `parse_context` split is the largest structural win, since it has the highest CC and clean seams between language families. The `print_results` extraction is the best fit for a first refactor because the nesting problem has an obvious fix. `main` and `parse_lines` can wait until one of them needs a feature change, at which point the refactor should come first. None of this is urgent, because none of these functions is changing, but the longer they sit, the less anyone remembers how they behave.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `long_function` | 4 |
+| `stale_complex` | 4 |
+| `complex_branching` | 3 |
+| `exit_heavy` | 3 |
+| `deeply_nested` | 2 |
+| `god_function` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/XAMPPRocky/tokei
+cd tokei
+git checkout c14f744716272fadeb27a74443cdffa0af35f82f
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
