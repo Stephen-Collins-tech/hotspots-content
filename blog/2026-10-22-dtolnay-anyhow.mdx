@@ -1,0 +1,137 @@
+---
+title: "anyhow's riskiest code: 5 untouched formatting and build functions"
+titleSeo: "anyhow code health: formatting and build.rs structural debt leads refactoring priority"
+description: "All five top-risk functions in anyhow sit in the debt quadrant, spread across the error formatting code in src/fmt.rs, the build script in build.rs, and the ensure helper in src/ensure.rs, with none touched in the last year."
+introContent: "anyhow has no function that is complex and actively changing, but its riskiest function, write_str in src/fmt.rs, has sat untouched for 848 days. I went through the five debt-quadrant functions that would be most expensive to change blind."
+pubDate: 2026-10-22
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "dtolnay/anyhow"
+commit: "2cbb4e1bcbf8e7015f8d8b04a291c4c0597030b4"
+language: "rust"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-22T13:29:09Z"
+clone_depth: 100
+topRisk: 11.77
+topFunction: "write_str"
+topFile: "src/fmt.rs"
+topPatterns: ["exit_heavy", "stale_complex", "god_function", "long_function", "complex_branching"]
+patternCounts: {exit_heavy: 2, god_function: 1, long_function: 1, stale_complex: 2, complex_branching: 1, deeply_nested: 1}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in anyhow?"
+    answer: "An exit-heavy function has many points where it can return early, whether through explicit returns or, in Rust, through the `?` operator. Each exit is a distinct path that needs its own test, and a partial failure can leave state half-written. Two of the five top hotspots in anyhow, `write_str` and `debug` in src/fmt.rs, carry this pattern, and both sit in the error-rendering path where a mid-write failure would produce truncated output."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The usual technique is extract-method: pull each distinct job out of a long function into a named helper, and replace nested conditionals with flat early returns or a match. A cyclomatic complexity above 15 is a reasonable trigger to split a function, and above 30 warrants immediate attention. A concrete first step in anyhow is `compile_probe` in build.rs, which has CC 15 and fan-out of 15: extracting the command construction, the execution, and the cleanup into three helpers would roughly halve the figures for the main body."
+  - question: "Is anyhow actively maintained?"
+    answer: "Within the top hotspots, none of the five functions has been touched in the last year (0 touches each), and none is in the fire quadrant. The longest-untouched are `write_str` in src/fmt.rs and `render` in src/ensure.rs at 848 days since last change each, followed by `compile_probe` at 404 days, and `debug` and `main` at 221 days. That tells me these specific functions are stable, not that the project is inactive, since this analysis only covers structural risk in a single snapshot. Low churn and high structural debt can coexist, and here they do."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository, then check out the analyzed commit with `git checkout 2cbb4e1`. Run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A very complex function that hasn't been touched in two years scores lower than a moderately complex one that changes weekly, because the dormant one has lower near-term regression risk. In anyhow, every top function has 0 touches in the last year, so their scores reflect structure and age rather than churn. That makes this a structural-debt list, not a live-regression list."
+---
+
+The riskiest function I found in anyhow is write_str in src/fmt.rs, which hasn't been changed in 848 days, and that is structural debt rather than an emergency: the next developer to open it inherits CC 8, nesting depth 4, and no recent context. Across 212 functions, 3 are critical, 4 are high, and all 7 of those land in the debt quadrant, so nothing here is a live regression risk, but the error-formatting path and the build script carry real blast radius when someone next has to change them. I would start with `write_str`, then `debug`, then the two build.rs functions.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `write_str` | src/fmt.rs | 11.8 | 8 | 4 | 3 |
+| `debug` | src/fmt.rs | 10.7 | 7 | 2 | 8 |
+| `compile_probe` | build.rs | 9.5 | 15 | 3 | 15 |
+| `main` | build.rs | 9.0 | 11 | 5 | 4 |
+| `render` | src/ensure.rs | 6.5 | 4 | 2 | 8 |
+
+<BandChart fire='0' debt='7' watch='0' ok='205' />
+
+<PatternCloud patterns='exit_heavy:2,stale_complex:2,god_function:1,long_function:1,complex_branching:1,deeply_nested:1' />
+
+Start with the quadrant split. Zero functions are in the fire quadrant, and zero are in watch. All 7 functions flagged as structural risk are in the debt quadrant, and each of the five I cover below has 0 touches in the last year. That changes how I frame the work. This is a structural-debt list, not an active-regression list. The cost shows up when someone has to modify these functions after a long gap, without the surrounding context fresh in anyone's head.
+
+Two of the five are in the error-rendering code (`src/fmt.rs`), two are in the build script (`build.rs`), and one is in the `ensure!` machinery (`src/ensure.rs`). The file-level history is quiet across the board: zero reverts, zero bug-linked commits, and no review-comment activity on any of these files. The only non-zero defect-adjacent figure is a bug-fix rate of 17.65% on `build.rs`, across 17 commits. I read that as thin supporting context, not as evidence that either build function is defective.
+
+### `write_str` — fmt.rs
+
+<FunctionCard fn='write_str' file='src/fmt.rs' risk='11.77' band='critical' cc='8' nd='4' fo='3' touches='0' />
+
+This is the top-ranked function, and it hasn't been changed in 848 days. From the excerpt, it belongs to a writer wrapper (`Indented`) that implements the `Write` trait. It splits incoming text on newlines and decides, line by line, whether to emit a numbered prefix, a plain four-space prefix, or a continuation indent. The score comes mostly from nesting depth 4 rather than from raw path count: a loop containing an if/else-if chain, with a match inside the first branch and a second conditional inside the second.
+
+The pattern flagged is exit-heavy. Every `?` in that body is an early-return path, and each one is a place where a write failure can propagate out mid-line, leaving the output half-formatted. A test module in the same file covers one-digit, two-digit, and no-number cases, which is a good start. What the excerpt doesn't show is a test where the inner writer fails partway through. That is the gap I would check first.
+
+My recommendation: extract the prefix decision into a small helper that returns what to write for the first line versus continuation lines. That flattens the nesting from 4 to roughly 2 and lets the numbered and unnumbered cases be tested without driving the full loop. This trait implementation sits underneath the error chain output, so a formatting regression here would surface in user-visible error messages. I would add the failing-writer test before touching the structure.
+
+### `debug` — fmt.rs
+
+<FunctionCard fn='debug' file='src/fmt.rs' risk='10.7' band='critical' cc='7' nd='2' fo='8' touches='0' />
+
+`debug` has gone 221 days without a change. It is an `unsafe fn` that renders the error for Debug output, and the excerpt shows it handling the alternate-format shortcut, the main error message, a 'Caused by:' chain with optional numbering, and, under the std feature, a backtrace section with some string surgery on the prefix. It also uses the `Indented` writer above, so the two top-ranked functions are coupled: a behavioral change in `write_str` changes what `debug` prints.
+
+The structural numbers are modest (CC 7, ND 2), but fan-out of 8 plus the `unsafe` qualifier keeps it near the top. Two things push the risk beyond what CC alone suggests. The function does its work through `unsafe` calls that recover the error and backtrace from a type-erased reference, and those calls depend on invariants established elsewhere in the crate. And the std-gated block means there are effectively two compiled shapes of this function, so a test run with default features exercises only one of them.
+
+My recommendation: split the function into three private steps: render the message, render the cause chain, and render the backtrace. The backtrace step can carry the feature gate on its own, which removes the conditional-compilation block from the middle of the main body. I would leave the `unsafe` accesses at the top where they are and pass the resulting safe references down, so the unsafe surface doesn't grow.
+
+### `compile_probe` — build.rs
+
+<FunctionCard fn='compile_probe' file='build.rs' risk='9.5' band='critical' cc='15' nd='3' fo='15' touches='0' />
+
+Here is the highest structural complexity of the five: CC 15 and fan-out of 15, untouched for 404 days. The detected patterns are god function, long function, and stale-complex. From the excerpt, it builds and runs a `rustc` invocation to test whether the compiler supports an unstable feature. It checks for a bootstrap environment, creates a scratch directory, assembles the wrapper chain, forwards the target and encoded rustflags, runs the command, and then cleans up with special handling for a filesystem timing issue on Linux.
+
+That list is the argument for the long-function flag. Environment inspection, command construction, execution, and cleanup are four separate jobs sharing one scope, and a fan-out of 15 means a change to any of them can interact with the others. The comments in the cleanup branch (reproducible builds, NFSv3 behavior) show that some of this complexity is deliberate hardening against real environments, which is exactly the kind of logic I would not refactor without tests.
+
+The file-level bug-fix rate is 17.65% across 17 commits, with no reverts and no bug-linked commits. I treat that as mild context: build scripts tend to attract environment-specific fixes, and nothing here says this function is broken today.
+
+My recommendation: extract three helpers: one that builds the `Command` from the wrapper and flag environment, one that runs it and reports success, and one that performs the cleanup. Build scripts are awkward to unit-test, so the extraction matters mostly because it shrinks what a reviewer has to hold in their head when the next compiler-compatibility change lands.
+
+### `main` — build.rs
+
+<FunctionCard fn='main' file='build.rs' risk='8.98' band='high' cc='11' nd='5' fo='4' touches='0' />
+
+`main` in the build script hasn't been changed in 221 days. It carries CC 11 and nesting depth 5, the deepest of the five, with complex-branching, deeply-nested, and stale-complex patterns. From the excerpt, the first half decides two booleans (whether the generic member access feature is available and whether to watch the bootstrap environment variable) by calling `compile_probe` and branching on environment state. The second half emits compiler-version-dependent cfg lines.
+
+The nesting comes from the probe decision tree, where each branch assigns the same two variables with a different combination. The comments are careful and explain each case, which helps, but four terminal branches that each set two flags are a truth table written as nested control flow. When Rust versions change, the version thresholds in the second half (80, 81, 85) are the lines most likely to be edited, and they sit in the same function as the probe logic.
+
+My recommendation: pull the probe decision into a function that returns a small struct or tuple of the two flags, with each of the four outcomes a flat return. That takes nesting depth from 5 to about 2, and separates the part that rarely changes from the version-threshold lines that change with each compiler release.
+
+### `render` — ensure.rs
+
+<FunctionCard fn='render' file='src/ensure.rs' risk='6.52' band='high' cc='4' nd='2' fo='8' touches='0' />
+
+`render` is the outlier: CC 4 and nesting depth 2 are both low, and no antipattern was flagged. It earns its place in the top five through fan-out of 8 and 848 days without a change. From the excerpt, it formats the left and right operands of a failed comparison into stack buffers, and if both succeed, assembles a 'message (lhs vs rhs)' string with a precomputed capacity, otherwise it falls back to the bare message.
+
+This is the least urgent of the five, and I would say so plainly. The branching is shallow and the fallback is simple. The reason to keep it on the list is its neighbor: the same file holds a large macro-based parser for `ensure!` conditions, and the excerpt shows that macro code directly beneath the function. The macro layer is not scored as a function here, so its complexity isn't reflected in these numbers. I would not refactor `render` itself. I would add a test where the operand formatting fails on either side, to pin the fallback behavior, and leave the structure alone.
+
+**What I would do first**
+
+Given one afternoon, I would add the failing-writer test for `write_str`, since it is the top-ranked function and its failure paths are the least visibly covered. Then I would do the extract-method passes on `compile_probe` and `main` together, because they share a file and a purpose. `debug` is the one I would handle most carefully, because of the `unsafe` accesses and the feature-gated block.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 2 |
+| `stale_complex` | 2 |
+| `god_function` | 1 |
+| `long_function` | 1 |
+| `complex_branching` | 1 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/dtolnay/anyhow
+cd anyhow
+git checkout 2cbb4e1bcbf8e7015f8d8b04a291c4c0597030b4
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
