@@ -1,0 +1,129 @@
+---
+title: "behave's runner and CLI entry points carry the highest activity risk"
+titleSeo: "behave technical debt: runner.py and __main__.py lead the refactoring priority list"
+description: "behave's five riskiest functions are all dormant structural debt concentrated in runner.py, __main__.py, runner_util.py and the steps.code formatter, with the worst unchanged for 462 days."
+introContent: "behave's most complex functions sit in the code every test run passes through, and none of the top five have been touched in over a year. I looked at what that dormancy means for whoever has to change them next."
+pubDate: 2026-10-22
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "behave/behave"
+commit: "09cce0739c25b4e2358edf440089ec659e7cbe08"
+language: "python"
+hotspots_version: "2.2.0"
+analyzed_at: "2026-10-22T11:49:06Z"
+clone_depth: 100
+topRisk: 13.86
+topFunction: "setup_paths"
+topFile: "behave/runner.py"
+topPatterns: ["god_function", "long_function", "exit_heavy", "stale_complex", "complex_branching"]
+patternCounts: {god_function: 4, long_function: 4, exit_heavy: 3, stale_complex: 3, complex_branching: 2, deeply_nested: 2}
+qaSection:
+  - question: "What is a god function and why does it matter in behave?"
+    answer: "A god function takes on too many responsibilities, which usually shows up as a long body, high complexity, and many distinct callees. In behave, three of the five top hotspots carry the god-function pattern (`setup_paths`, `run_hook` and `run_behave`), including `setup_paths` with a cyclomatic complexity of 26 and 17 callees, and `run_behave` with a complexity of 29. The practical problem is that such a function is hard to test in isolation, and a change in one responsibility can quietly affect another. Because Python resolves types at runtime, the real coupling is often wider than the callee count suggests."
+  - question: "How do I reduce cyclomatic complexity in Python?"
+    answer: "The main technique is extract-method, supported by decompose-conditional and replacing long if chains with dispatch tables. As a rule of thumb, I start looking at anything over 15 and treat anything over 30 as urgent. A concrete first step in behave is `run_behave`, which has a complexity of 29: move the run of early-return checks for version and help options into one helper, and replace the chain of exception clauses with a mapping from error type to message. That alone could remove roughly half of its branches."
+  - question: "Is behave actively maintained?"
+    answer: "The data shows a mixed picture. All five top hotspots are in the debt quadrant with 0 touches in the last year: `setup_paths`, `get_code_without_docstring` and `collect_feature_locations` have gone 462 days unchanged, while `run_hook` and `run_behave` have gone 441 days. The five fire-quadrant functions also show 0 touches in the last year, so this data does not establish how much active development is happening elsewhere. What it does show is high structural debt in the core run path."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit 09cce07 of behave/behave. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with recent commit frequency, so functions that are hard to understand and have changed recently or often score higher. Dormant functions are not ranked low, though: in behave, all five top functions score between 12.01 and 13.86 on this measure despite 0 touches in the last year, which reflects how much structural weight they carry. The ranking is a prioritization aid for review effort, not a verdict on code quality."
+---
+
+The riskiest function in behave is `setup_paths` in behave/runner.py, and it hasn't been changed in 462 days, so I read it as latent debt rather than an emergency: a cyclomatic complexity of 26 and 17 distinct callees waiting for the next developer who has to modify path discovery. Across 1,562 functions, 27 are critical, and all five of my top hotspots are in the debt quadrant, which makes this a structural-debt story and not a live-regression one. I would start with `setup_paths` and `run_behave` because they combine the highest complexity with the broadest coupling in the project.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `setup_paths` | behave/runner.py | 13.9 | 26 | 3 | 17 |
+| `run_hook` | behave/runner.py | 13.3 | 18 | 3 | 16 |
+| `run_behave` | behave/__main__.py | 13.2 | 29 | 2 | 17 |
+| `get_code_without_docstring` | behave/formatter/steps_code.py | 12.9 | 16 | 5 | 9 |
+| `collect_feature_locations` | behave/runner_util.py | 12.0 | 10 | 5 | 16 |
+
+<BandChart fire='5' debt='182' watch='5' ok='1370' />
+
+<PatternCloud patterns='god_function:4,long_function:4,exit_heavy:3,stale_complex:3,complex_branching:2,deeply_nested:2' />
+
+The distribution tells the story. Of 1,562 functions, 182 sit in the debt quadrant (complex, quiet) against only 5 in the fire quadrant (complex, actively changing). The top five by activity-weighted risk are all debt, and all five report zero touches in the last year. That does not make them safe. It means the risk is latent: each one is a function I would want to refactor, or at least cover with characterization tests, before anyone has to change it under deadline pressure.
+
+The five split into two groups. Three are orchestration functions in the core run path (`setup_paths`, `run_hook`, `run_behave`), flagged as god functions with many exit paths. Two are nesting-heavy helpers (`get_code_without_docstring`, `collect_feature_locations`), where the problem is depth rather than breadth.
+
+### `setup_paths` — runner.py
+
+<FunctionCard fn='setup_paths' file='behave/runner.py' risk='13.86' band='debt' cc='26' nd='3' fo='17' touches='0' />
+
+This is my top pick, with an activity-weighted risk score of 13.86 and 462 days since last change. From the source excerpt, it resolves where behave should look for features and steps: it handles a supplied path, an '@' file list, a path pointing at a feature file, and the default directory. It then walks up the directory tree until it finds a steps directory or environment file, raises a configuration error at the filesystem root, and finally scans for feature files. The excerpt carries a pylint suppression for too-many-branches and too-many-statements.
+
+<MetricBar label='Cyclomatic Complexity' value='26' threshold='10' max='30' />
+
+A complexity of 26 means at least 26 paths that each deserve a test, and a fan-out of 17 means broad coupling to path utilities, config, and the path manager. Python's runtime dispatch makes that coupling looser than the number suggests. The file carries a 44% bug-fix rate across 9 commits, with no commits linked to bugs and no reverts, which I read as ordinary fix history, not evidence of defects in this function. My recommendation is extract-method along the function's natural phases: resolve the starting directory, search upward for the base directory, validate that feature files exist, then register paths. Each phase becomes independently testable, and the upward search loop is the easiest piece to lift out first.
+
+### `run_hook` — runner.py
+
+<FunctionCard fn='run_hook' file='behave/runner.py' risk='13.3' band='debt' cc='18' nd='3' fo='16' touches='0' />
+
+`run_hook` executes user-defined hooks such as before_all and after_all, and has gone 441 days without a change. The excerpt shows several responsibilities in one body: a shortcut when the hook is not needed, a deprecation warning for a legacy context argument, two nested helper functions that select the current statement, and separate handling for keyboard interrupts and general exceptions. Whether the exception branches abort the run depends on the hook name, which is easy to break when editing nearby code.
+
+It shares `setup_paths`'s file-level history (44% bug-fix rate, 9 commits, no reverts), so I would treat it as maintainability debt that happens to sit in a sensitive spot, since hook failures decide whether a run continues. I would split error handling out of the execution path: one function that runs the hook, one that records a failure against the right statement. That would collapse the duplicated failure bookkeeping across the two exception branches.
+
+### `run_behave` — __main__.py
+
+<FunctionCard fn='run_behave' file='behave/__main__.py' risk='13.21' band='debt' cc='29' nd='2' fo='17' touches='0' />
+
+This has the highest cyclomatic complexity of the five, at 29, with shallow nesting of 2 and 441 days since last change. The excerpt shows why: a long run of early-return checks for version, tag help, language help, formatter help, and runner help, followed by configuration validation and a try block with a long chain of except clauses, one per error type. The complexity comes from breadth, not depth, and because the function is exit-heavy, every early return is another path to cover in tests.
+
+The file has a 29% bug-fix rate across 7 commits, no reverts, and no distinct authors in the last 90 days. Of the five, this is the easiest to improve safely. I would move the informational early exits ('--version' and the various help options) into a dispatch table or a single helper that returns an exit code or None, and collapse the exception chain into a mapping from error types to message prefixes. That would plausibly cut the complexity by half without changing behaviour.
+
+### `get_code_without_docstring` — formatter/steps_code.py
+
+<FunctionCard fn='get_code_without_docstring' file='behave/formatter/steps_code.py' risk='12.88' band='debt' cc='16' nd='5' fo='9' touches='0' />
+
+This one has a different shape: lower complexity (16) and fan-out (9), but nesting of 5 and 462 days since last change. From the excerpt, it strips a docstring from a function's source by scanning line by line with several state flags (inside the docstring, docstring done), handling both triple-quote styles and one-line docstrings, and optionally printing skipped lines. Those flags driving nested conditionals produce the nesting depth of 5, and each flag multiplies the cases a reader must hold in mind.
+
+The file shows a 33% bug-fix rate across only 3 commits, so the history is thin. The blast radius is also small, since this lives in a formatter. I would replace the hand-rolled scanner with something smaller, such as Python's own parsing tools to locate the docstring span, or at minimum extract the marker detection into a helper with guard-clause returns to flatten the nesting.
+
+### `collect_feature_locations` — runner_util.py
+
+<FunctionCard fn='collect_feature_locations' file='behave/runner_util.py' risk='12.01' band='debt' cc='10' nd='5' fo='16' touches='0' />
+
+This function turns command-line paths into feature file locations, handling three cases: a directory to walk, an '@' list file, and a plain filename or 'file:line' location. Its complexity of 10 is moderate, but nesting reaches 5 and fan-out is 16, which together explain the placement. It has gone 462 days unchanged, and I note an overlap: `setup_paths` also handles the '@' prefix and feature-file paths, so the two share assumptions that are easy to let drift apart.
+
+The file has a 29% bug-fix rate across 7 commits, with no reverts. I would split the three input kinds into three small functions, one per case, so the main loop becomes a simple dispatch. That removes most of the nesting and gives each input form its own tests.
+
+**What I would do with this list**
+
+The two runner.py functions and `run_behave` share the god-function and exit-heavy signals, and they form the spine of every test run. If I had a single week, I would write characterization tests for `setup_paths` first, because the filesystem-walking logic is the hardest to reason about by reading, then refactor `run_behave`, where the gain per hour is highest. The fire quadrant holds only 5 functions, and their complexity is lower than the debt functions above, so they belong on a watch list and not at the top of the refactoring queue.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 4 |
+| `long_function` | 4 |
+| `exit_heavy` | 3 |
+| `stale_complex` | 3 |
+| `complex_branching` | 2 |
+| `deeply_nested` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/behave/behave
+cd behave
+git checkout 09cce0739c25b4e2358edf440089ec659e7cbe08
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
