@@ -1,0 +1,136 @@
+---
+title: "Keras's summary, export and RNN paths carry the highest activity risk"
+titleSeo: "keras code health: print_summary, export_onnx and rnn lead the refactoring priority list"
+description: "In keras-team/keras, the five highest-risk functions are all god functions with CC of 31 to 49, spread across summary printing, ONNX export, MobileNetV3, the Torch RNN backend and loss computation."
+introContent: "Five keras functions, each with a cyclomatic complexity of 31 to 49, were all modified within the same 14-day window before my snapshot. If you are merging into summary printing, ONNX export, the Torch RNN backend or loss computation this week, read these twice."
+pubDate: 2026-10-25
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "keras-team/keras"
+commit: "cfebb2af8a202fcb31b8b86766f44eabe6295a7a"
+language: "python"
+hotspots_version: "2.3.0"
+analyzed_at: "2026-10-25T08:25:57Z"
+clone_depth: 100
+topRisk: 18.25
+topFunction: "print_summary"
+topFile: "keras/src/utils/summary_utils.py"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 5, deeply_nested: 3, exit_heavy: 5, god_function: 5, long_function: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in keras?"
+    answer: "A god function is a long function that takes on many responsibilities at once, usually showing up as heavy branching, a large number of callees and many exit points. In keras, all five of my top hotspots carry this pattern, with cyclomatic complexity from 31 to 49 and fan-out from 23 to 43. The practical problem is that each path needs its own test, and a change to one responsibility can disturb another sharing the same body. Python's runtime dispatch makes the callee count a floor on the real coupling, not a ceiling."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "The main technique is extract-method: pull a cohesive block of branching into a named helper that takes explicit inputs and returns explicit outputs. As a rule of thumb, a function above CC 15 deserves a look, and above CC 30 needs attention soon. A first step you can take today in `MobileNetV3` is moving the up-front argument validation (weights, class count, input shape versus input tensor) into a separate validation function, which should remove a large share of its 49 paths. Breaking conditionals into small predicate functions also helps."
+  - question: "Is keras actively maintained?"
+    answer: "The data points to active development. All five top functions are in the fire quadrant, each was last changed 14 days ago, and each was touched once in the last year. Across the repository, 1,361 functions are fire and 4,990 are watch, with no debt or ok functions. Active development and structural complexity coexist here, and the two are not in conflict."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the commit I analyzed, cfebb2a. Run `git checkout cfebb2a`, then `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with recent commit frequency, so functions that are both hard to understand and actively changing score highest. That lets teams focus refactoring where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+Of the 6,351 functions I analyzed in keras-team/keras at commit cfebb2a, 1,361 sit in the fire quadrant (structurally complex and recently changed), and 410 are in the critical band. The top five share one profile. `print_summary` leads with an activity-weighted risk score of 18.25, a cyclomatic complexity of 42 and 39 distinct callees, and it was last changed 14 days ago, so it is a live regression risk rather than a backlog item. I would start there, then work through `export_onnx`, `MobileNetV3`, the Torch `rnn` and `call` in `compile_utils.py`, all of which were also last changed 14 days ago.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `print_summary` | keras/src/utils/summary_utils.py | 18.2 | 42 | 6 | 39 |
+| `export_onnx` | keras/src/export/onnx.py | 17.1 | 35 | 5 | 36 |
+| `MobileNetV3` | keras/src/applications/mobilenet_v3.py | 16.8 | 49 | 4 | 38 |
+| `rnn` | keras/src/backend/torch/rnn.py | 16.6 | 39 | 4 | 43 |
+| `call` | keras/src/trainers/compile_utils.py | 16.6 | 31 | 5 | 23 |
+
+<BandChart fire='1361' debt='0' watch='4990' ok='0' />
+
+<PatternCloud patterns='complex_branching:5,exit_heavy:5,god_function:5,long_function:5,deeply_nested:3' />
+
+The quadrant split stood out first. This snapshot has no debt-quadrant functions and no ok-quadrant functions at all: 1,361 functions are fire and 4,990 are watch. The ranking is driven mostly by structural complexity. The five functions below are where that complexity peaks.
+
+All five carry the same four patterns: complex branching, exit-heavy, god function and long function. Three are also deeply nested. I take them in rank order and group the shared observations where they apply.
+
+### `print_summary` — summary_utils.py
+
+<FunctionCard fn='print_summary' file='keras/src/utils/summary_utils.py' risk='18.25' band='fire' cc='42' nd='6' fo='39' touches='1' />
+
+This is the function behind model summaries, and it takes seven parameters covering line length, column positions, a custom print function, nested-model expansion, trainable display and a layer range. The excerpt shows it first classifying the model as Sequential, subclassed or Functional. For Functional models it then walks the graph nodes by depth and runs a nested loop to look for shared layers, which decides whether the model counts as 'sequential-like'. That classification logic, plus the layout and printing work that follows, accounts for much of its CC of 42 and its nesting depth of 6.
+
+The file has only 3 commits in its history, one of them tagged as a bug fix (a bug-fix rate of 33%), with no bug-linked commits, no reverts and 3 distinct authors in the last 90 days. That is thin history, so I read this mainly as maintainability risk, not as a record of defects. With 39 callees, it is also a coupling point. Python resolves those calls at runtime, so the real dependency surface is likely wider than the number suggests.
+
+My recommendation: pull the model-topology detection (the Sequential, subclassed and Functional branching plus the shared-layer search) into its own helper that returns the layer list and the sequential-like flag. That alone would remove the deepest nesting and make the classification testable without rendering a table.
+
+### `export_onnx` — onnx.py
+
+<FunctionCard fn='export_onnx' file='keras/src/export/onnx.py' risk='17.13' band='fire' cc='35' nd='5' fo='36' touches='1' />
+
+`export_onnx` writes a model out as an ONNX artifact. The excerpt shows a long docstring with caveats per backend (TensorFlow, JAX and Torch), a dtype-policy requirement, and special handling for recurrent models under Torch. It also resolves an input signature and must distinguish single-input from multi-input layouts before generating input names. A CC of 35 and a fan-out of 36 fit a function that accommodates several backends and signature shapes in one body.
+
+The file-level history is a single commit, tagged as a bug fix (a bug-fix rate of 100%), with one author in the last 90 days and no reverts. One commit is too little to draw conclusions from, but a lone author on a function this branchy means few people have recently held its full logic in their heads.
+
+My recommendation: split the function by phase. Input-signature resolution and naming become one unit, per-backend conversion another, and the final write a third. The backend-specific branches are the natural seams.
+
+### `MobileNetV3` — mobilenet_v3.py
+
+<FunctionCard fn='MobileNetV3' file='keras/src/applications/mobilenet_v3.py' risk='16.85' band='fire' cc='49' nd='4' fo='38' touches='1' />
+
+This has the highest cyclomatic complexity of the five, at 49, yet its nesting depth of 4 is the lowest. That combination points to a wide function rather than a deep one. The excerpt opens with a long run of argument validation: weights must be 'imagenet', None or an existing file path; 'imagenet' with the top layer requires exactly 1,000 classes; and when both an input shape and an input tensor are supplied, their dimensions must agree under channels-first or channels-last layouts. Each check adds branches and error exits before any model building starts.
+
+The file has one commit in its history, tagged as a bug fix (100%), with a single author in the last 90 days. As with the others, I would not infer defects from that.
+
+My recommendation is the most mechanical of the five. Move the argument validation into a dedicated function that raises the same errors, and let the model-building body start from validated inputs. That should take a large share of the 49 paths out of the main function and give the checks their own unit tests. The shape-versus-tensor reconciliation likely recurs in sibling application models, so a shared helper may pay off beyond this file.
+
+### `rnn` — torch/rnn.py
+
+<FunctionCard fn='rnn' file='keras/src/backend/torch/rnn.py' risk='16.63' band='fire' cc='39' nd='4' fo='43' touches='1' />
+
+`rnn` has the highest fan-out in the set, at 43 distinct callees. It is the Torch backend's generic recurrence driver, taking a step function, inputs, initial states, and flags for backward processing, masking, unrolling, time-major layout and output handling. The excerpt shows nested helpers defined inside it, for swapping batch and time axes, expanding masks and splitting inputs per time step, plus an unrolled path that raises an error when the number of time steps is not fixed. Parameters like `go_backwards`, `unroll`, `mask` and `time_major` multiply the combinations the function must handle, which is consistent with a CC of 39.
+
+The file history is one commit, tagged as a bug fix (100%), with one author in the last 90 days.
+
+My recommendation: lift the inner helpers to module level so they can be tested directly, and separate the unrolled path from the looped path. At the very least, the mask handling should be testable without running a full recurrence.
+
+### `call` — compile_utils.py
+
+<FunctionCard fn='call' file='keras/src/trainers/compile_utils.py' risk='16.58' band='fire' cc='31' nd='5' fo='23' touches='1' />
+
+This `call` method computes the loss from true and predicted values, with an optional sample weight. The excerpt shows a fast path for non-nested single-output cases and a fallback for nested structures. In the fallback, a chain of nested try/except blocks tries progressively looser ways to reconcile the structure of the targets with the predictions: wrapping a single target, reordering a dict by output names, repacking containers of different types, and handling losses defined only over part of the outputs. That reconciliation ladder is where the nesting depth of 5 comes from.
+
+Its file history is one commit, tagged as a bug fix (100%), with one author in the last 90 days. Of the five, it has the lowest fan-out (23) and the lowest complexity (31), but the nested try/except fallbacks are the hardest part of the set to reason about, because each rung depends on the previous rung having failed.
+
+My recommendation: extract the structure-reconciliation ladder into a function that takes the targets and predictions and returns repacked targets. Each rung then becomes a named, individually tested case instead of a handler inside another handler.
+
+**What the group has in common**
+
+All five are exit-heavy, so each needs a test for every return and raise path, not only the happy path. All five are long, which makes extract-method the common first move. None shows a revert or a bug-linked commit in the file-level data, so I am framing this as structural risk during active change, not as evidence of defects.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 5 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `deeply_nested` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/keras-team/keras
+cd keras
+git checkout cfebb2af8a202fcb31b8b86766f44eabe6295a7a
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
