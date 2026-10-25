@@ -1,0 +1,122 @@
+---
+title: "Locust's startup path carries the highest activity risk — 5 functions to address first"
+titleSeo: "locust code health: main() in locust/main.py leads the refactoring priority list"
+description: "A single function, main in locust/main.py, has cyclomatic complexity 89 and sits in the fire quadrant, while the other four top hotspots range from CC 12 to 25."
+introContent: "One function in locust has 89 independent execution paths, and it was changed six days before this snapshot. The rest of the top five sit between 12 and 25, so the first fix is obvious."
+pubDate: 2026-10-24
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "locustio/locust"
+commit: "66279c936b4b69a8a7df3ac3b11f7e47d20780de"
+language: "python"
+hotspots_version: "2.2.1"
+analyzed_at: "2026-10-24T08:19:09Z"
+clone_depth: 100
+topRisk: 18.19
+topFunction: "main"
+topFile: "locust/main.py"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 8, deeply_nested: 1, god_function: 4, long_function: 4, exit_heavy: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in locust?"
+    answer: "A god function is one that does too many unrelated jobs, usually showing up as very high fan-out (the count of distinct functions it calls) plus long length. It matters because every job inside it shares one test surface and one blast radius: a change to option parsing can break process forking. In locust, three of the top five functions carry this pattern (`main`, `__init__` in `locust/web.py`, and `setup_opentelemetry`), and `main` calls 110 distinct functions while `__init__` in `locust/web.py` calls 93."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "Use extract-method and decompose-conditional: pull cohesive blocks of branching into named helper functions. A CC above 15 warrants splitting, and above 30 warrants immediate attention. For `main` in `locust/main.py` (CC 89), a good first step is moving the chain of option-combination checks into a single validation function, which should remove a large share of its branches and can be tested without starting any processes."
+  - question: "Is locust actively maintained?"
+    answer: "The data points that way. The web server constructor in `locust/web.py` was touched 5 times in the last year, most recently 3 days before the snapshot. `main` was last changed 6 days before the snapshot and `stop_users` 5 days before. Overall, 23 functions are in the fire quadrant, while 95 are in the debt quadrant, including `_get_section_groups`, which hasn't changed in 113 days (0 touches in the last year). Active development and structural debt coexist here, and the live risk is concentrated in a few large orchestration functions."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub on commit 66279c9. Run `git checkout 66279c9`, then `hotspots analyze . --mode snapshot --explain-patterns --force`."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A function with CC 80 that hasn't been touched in two years scores lower than one with CC 20 that changes every week, because the dormant one has lower near-term regression risk. This points refactoring effort at the code most likely to have bugs introduced right now, not just the code that looks complicated in the abstract."
+---
+
+The function `main` in `locust/main.py` has a cyclomatic complexity of 89. The fifth-ranked function, `setup_opentelemetry`, scores 12. That 77-point gap makes `main` a different category of problem from everything else on the list. It sits in the fire quadrant with an activity-weighted risk score of 18.19, so it is both structurally extreme and still changing (6 days since last change). Across the 864 functions I analyzed in locust at commit 66279c9, 28 are in the critical band, and I would start with `main` before anything else.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `main` | locust/main.py | 18.2 | 89 | 7 | 110 |
+| `__init__` | locust/web.py | 16.8 | 25 | 4 | 93 |
+| `stop_users` | locust/runners.py | 14.4 | 18 | 4 | 19 |
+| `_get_section_groups` | docs/_ext/llms_txt.py | 13.1 | 18 | 4 | 11 |
+| `setup_opentelemetry` | locust/opentelemetry.py | 12.5 | 12 | 2 | 27 |
+
+<BandChart fire='23' debt='95' watch='26' ok='720' />
+
+<PatternCloud patterns='complex_branching:8,exit_heavy:5,god_function:4,long_function:4,deeply_nested:1' />
+
+The distribution is worth reading before the individual functions. Of 864 functions, 23 are in the fire quadrant (complex and recently changed) and 95 are in the debt quadrant (complex but quiet). Four of my top five are fire (`main`, `__init__`, `stop_users`, and `setup_opentelemetry`) and one is debt (`_get_section_groups`). Most of the risk is concentrated in the startup and orchestration path: `locust/main.py`, `locust/web.py`, `locust/runners.py`, and `locust/opentelemetry.py` account for four of the five entries.
+
+### `main` — main.py
+
+<FunctionCard fn='main' file='locust/main.py' risk='18.19' band='fire' cc='89' nd='7' fo='110' touches='2' />
+
+<MetricBar label='Cyclomatic Complexity' value='89' threshold='10' max='100' />
+
+I would start with `main` because it combines CC 89, nesting depth 7, and fan-out of 110 with an activity-weighted risk score of 18.19. That CC means roughly 89 independent paths that each need a test case to cover properly. From the source excerpt, it handles locustfile discovery, argument parsing, option validation, logging setup, OpenTelemetry setup, and a multi-process fork path that adjusts options for child workers. Those are separable concerns living in one function body. The excerpt also shows long chains of option checks that each end in `sys.exit(1)`, which is the exit-heavy pattern: every early exit is another path to test.
+
+The history supports prioritizing it. The file has 6 bug-linked commits out of 12 total, a bug-fix rate of 58%, and 3 distinct authors in the last 90 days, with a review-comment density of 9.5 — the highest in my top five. That is file-level context, not proof that `main` itself is defective. The function was touched 2 times in the last year and last changed 6 days ago, so it is actively changing, not dormant.
+
+My recommendation is extract-method, along the seams the code already shows: one function to validate option combinations (the `--autoquit`, `--processes`, `--master` checks), one to handle the fork-and-configure-children logic, and one for logging and telemetry setup. Pulling out just the option validation would remove a large share of the branches and make each check unit-testable without launching a process.
+
+### `__init__` — web.py
+
+<FunctionCard fn='__init__' file='locust/web.py' risk='16.76' band='fire' cc='25' nd='4' fo='93' touches='5' />
+
+The `WebUI` constructor has a fan-out of 93, the second highest on the list, with CC 25 and nesting depth 4. It was touched 5 times in the last year, the most of any function in my top five, and last changed 3 days ago, which makes it the most frequently edited hotspot. In Python, a fan-out this high usually understates the coupling, since types resolve at runtime. The excerpt shows the constructor storing configuration, building a Flask app, enabling CORS, setting up login management, deciding whether to start the server, and then defining error handlers and routes as nested functions inside the constructor body. That makes it a god function and a long function: construction, configuration, and route registration are tangled together.
+
+The file has 1 bug-linked commit out of 11 (a bug-fix rate of 45%) and 7 distinct authors in the last 90 days. Those author counts are file-level, but together with the 5 touches they suggest this constructor sees frequent change. I would move route and error-handler registration into separate methods or a dedicated blueprint-builder, leaving `__init__` to assign state. Tests could then register routes without constructing a full server.
+
+### `stop_users` — runners.py
+
+<FunctionCard fn='stop_users' file='locust/runners.py' risk='14.43' band='fire' cc='18' nd='4' fo='19' touches='1' />
+
+`stop_users` has CC 18 and a modest fan-out of 19, so its risk comes from branching rather than coupling. It was touched once in the last year and changed 5 days ago. The excerpt shows nested loops that pick greenlets to stop per user class, then three different stop strategies depending on whether the user is the current greenlet, whether a stop timeout is configured, and whether the user is already stopping. There is also a `while True` loop with a `break` and an error path for greenlets with unexpected arguments. The multiple exits and the gevent timing logic make this hard to test deterministically.
+
+This function carries the strongest historical signal in the list. The file shows 4 bug-linked commits out of 12, a bug-fix rate of 67%, and 7 distinct authors in the last 90 days. Again, that is file-level history covering all of `runners.py`, but combined with the complexity it justifies stronger review. I would split selection (which users to stop) from execution (how to stop them), so the three stop strategies can be tested without constructing greenlets for the selection logic.
+
+### `_get_section_groups` — llms_txt.py
+
+<FunctionCard fn='_get_section_groups' file='docs/_ext/llms_txt.py' risk='13.1' band='debt' cc='18' nd='4' fo='11' touches='0' />
+
+This is the only debt-quadrant function in my top five, and it is a documentation extension rather than runtime code. It has CC 18, nesting depth 4, and fan-out of 11, with 0 touches in the last year and 113 days since last change. It walks a Sphinx doctree to build section groups for an `llms.txt` index, nesting loops over child sections, toctree nodes, and entries. It is structural debt with a contained blast radius: the file has 3 commits total, no bug-linked commits, and 1 distinct author in the last 90 days. I would treat it as maintainability debt, not a regression risk. Next time someone touches the docs build, extracting the toctree-collection step into a helper would cut a nesting level and make the traversal easier to follow.
+
+### `setup_opentelemetry` — opentelemetry.py
+
+<FunctionCard fn='setup_opentelemetry' file='locust/opentelemetry.py' risk='12.52' band='fire' cc='12' nd='2' fo='27' touches='4' />
+
+`setup_opentelemetry` has the lowest CC of the five at 12 and shallow nesting of 2, but fan-out of 27 and 4 touches in the last year, with its last change 10 days ago. The source shows it parsing exporter environment variables for traces, metrics, and logs, building a resource, and wiring providers, and it defines event listeners inline (`on_request`, `on_locust_init`) inside the function body. That is the god-function and long-function pattern: setup, configuration parsing, and listener definitions all in one place.
+
+The historical signal here is the weakest of the group. The file has no bug-linked commits out of 13 and a bug-fix rate of 15%, with 4 distinct authors in the last 90 days. I read this as an actively iterated feature that is growing, not one with a defect history. The remaining work is moving the inline listeners out of `setup_opentelemetry`, and I would start there.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 8 |
+| `exit_heavy` | 5 |
+| `god_function` | 4 |
+| `long_function` | 4 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/locustio/locust
+cd locust
+git checkout 66279c936b4b69a8a7df3ac3b11f7e47d20780de
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_

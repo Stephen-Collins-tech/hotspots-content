@@ -1,0 +1,151 @@
+---
+title: "Borg's repository and archive core: 5 high-risk functions to fix first"
+titleSeo: "borg code health: check, extract_item and build_chunkindex_from_repo lead refactoring priority"
+description: "All five top-ranked functions in borgbackup/borg are in the fire quadrant, with repository.py's check at cyclomatic complexity 102 and 20 touches in the last year."
+introContent: "Five of borg's highest-scoring functions are complex and changing right now, led by a repository check routine with 102 independent paths and 20 touches in the last year. If you are merging into borg this week, these are the places a regression is most likely to hide."
+pubDate: 2026-10-10
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "borgbackup/borg"
+commit: "32578a1167adbc4ab67161fef70109811c620d8a"
+language: "python"
+hotspots_version: "1.42.1"
+analyzed_at: "2026-10-10T10:17:17Z"
+clone_depth: 100
+hybrid_touch_threshold: 5
+topRisk: 20.37
+topFunction: "call_many"
+topFile: "src/borg/legacy/remote.py"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 10, deeply_nested: 8, exit_heavy: 10, god_function: 10, long_function: 10}
+qaSection:
+  - question: "What is a god function and why does it matter in borg?"
+    answer: "A god function does too many jobs: it has high fan-out, many branches, and a long body, so a change anywhere in it can affect unrelated behavior. That makes it hard to test in isolation and hard to review, because the reader has to hold every path in mind at once. All five of my top functions carry this pattern, including `do_create` with a fan-out of 58 and `call_many` with a fan-out of 54. In Python the practical coupling is often wider than the count suggests, since method resolution happens at runtime."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "The main technique is extract-method, often combined with decompose-conditional or replacing an if/elif chain with a lookup table. As a rough guide, a CC above 15 deserves a look and above 30 deserves prompt attention. A concrete first step in borg is `handle_error` inside `call_many`: it maps about 17 remote exception names to local exception types, and a dictionary from name to constructor would remove most of those branches. The second easy step is pulling the option validation block out of `do_create` into its own function, which can be tested without a repository."
+  - question: "Is borg actively maintained?"
+    answer: "The data says yes. All five of my top functions are in the fire quadrant: `check` in `src/borg/repository.py` has 20 touches in the last year and was last changed 4 days ago, `build_chunkindex_from_repo` has 9 touches and was last changed 3 days ago, `do_create` has 1 touch and was last changed 3 days ago, `call_many` has 2 touches and was last changed 10 days ago, and `extract_item` has 2 touches and was last changed 20 days ago. Active development and structural debt are not mutually exclusive: the repository also has 352 functions in the debt quadrant, and the debt-quadrant functions I looked at in the context list were last changed 35 to 40 days ago."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone borgbackup/borg, run `git checkout 32578a1`, then run `hotspots analyze . --mode snapshot --explain-patterns --force` using the hotspots CLI from GitHub. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A function with very high complexity that has not been touched in two years scores lower than a moderately complex one touched every week, because the dormant one has less near-term regression risk. This points review effort at the code most likely to cause trouble in the next change, not just the code that looks complicated in the abstract."
+---
+
+I found 143 functions in borgbackup/borg that are both structurally complex and recently changed (the fire quadrant), and all five of my top hotspots come from that group, so anyone shipping code against this tree this week is touching live-risk territory. The top-ranked function, `call_many` in `src/borg/legacy/remote.py`, has an activity-weighted risk score of 20.37 and was last changed 10 days ago; `check` in `src/borg/repository.py` follows at 18.90 with 20 touches in the last year. The repository has 1696 functions, 192 of them in the critical band, and I would start with `check` because it combines the highest complexity in the set (CC 102) with the heaviest recent activity.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `call_many` | src/borg/legacy/remote.py | 20.4 | 45 | 8 | 54 |
+| `check` | src/borg/repository.py | 18.9 | 102 | 5 | 40 |
+| `build_chunkindex_from_repo` | src/borg/cache.py | 18.7 | 40 | 6 | 36 |
+| `extract_item` | src/borg/archive.py | 18.6 | 51 | 6 | 51 |
+| `do_create` | src/borg/archiver/create_cmd.py | 18.3 | 47 | 5 | 58 |
+
+## Large Repo Analysis
+
+borg is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the touch window (365 days by default); other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+<BandChart fire='143' debt='352' watch='169' ok='1032' />
+
+<PatternCloud patterns='complex_branching:10,exit_heavy:10,god_function:10,long_function:10,deeply_nested:8' />
+
+First, a framing note. A high score here means complex and changing, not buggy. I am not judging the maintainers; I am pointing at where a change is most expensive to review. All five functions below share one structural pattern set: complex branching, exit-heavy control flow, god-function coupling, long bodies, and deep nesting. That uniformity is the main finding. The risk in borg sits in a handful of large orchestration functions, not spread thinly across the codebase.
+
+The context list shows the other side of the split: several functions score between 15.78 and 18.14 but sit in the debt quadrant, with 35 to 40 days since last change. They are structural debt with a high blast radius when next changed. The five functions below differ in one way: they are changing now.
+
+### `call_many` — remote.py
+
+<FunctionCard fn='call_many' file='src/borg/legacy/remote.py' risk='20.37' band='fire' cc='45' nd='8' fo='54' touches='2' />
+
+`call_many` tops the list with an activity-weighted risk score of 20.37, a cyclomatic complexity of 45, a nesting depth of 8, and a fan-out of 54. Nesting at 8 is a strong refactoring signal on its own. It was last changed 10 days ago and touched twice in the last year. It sits under `legacy/`, in the remote repository client, which suggests code kept for compatibility. That it is still changing recently is worth knowing: legacy does not mean frozen here.
+
+<MetricBar label='Max Nesting Depth' value='8' threshold='4' max='10' />
+
+The excerpt shows two nested helpers, `send_buffer` and `handle_error`, followed by the main loop. `handle_error` is a long if/elif chain mapping a remote exception class name to a local exception, about 17 branches that account for a large share of the CC on their own. The main body is a generator that loops while waiting, checks a shutdown time, pops responses, and yields results, with a conversion step for a legacy server variant. Because it is a generator, the control flow includes suspension points that cyclomatic complexity does not capture.
+
+The file history is thin: 6 commits in total, none linked to bugs by the linked-commit count, though a bug-fix rate of 67% (4 of 6) is a high ratio on a small sample, with 1 author in the last 90 days. I would treat that as a reason to look, not as a verdict.
+
+My recommendation: replace the exception if/elif chain in `handle_error` with a lookup table from class name to constructor. That removes roughly 17 of the 45 paths with no change in behavior and is the cheapest reduction in the set. After that, lifting `handle_error` and `send_buffer` out of the closure would let me test them directly and would flatten some of the nesting.
+
+**What I would do with this list**
+
+Three things tie the five together. First, each function bundles several phases behind option flags, so the cheapest win is splitting by phase, not rewriting. Second, two of the files with the most bug-linked commits, `repository.py` and `archive.py`, are where I would add tests before refactoring. Third, `call_many` offers the most reduction per hour of work because of its exception-mapping chain.
+
+### `check` — repository.py
+
+<FunctionCard fn='check' file='src/borg/repository.py' risk='18.90' band='fire' cc='102' nd='5' fo='40' touches='20' />
+
+I would start with `check`. Its cyclomatic complexity is 102, and its 20 touches in the last year are the most of any function in this set, with the last change 4 days ago. CC above 100 is extreme territory: each path is a potential bug surface and a test case someone has to write.
+
+<MetricBar label='Cyclomatic Complexity' value='102' threshold='10' max='110' />
+
+In the source excerpt, the docstring alone describes a long list of interacting modes: a read-only check, repair with salvage of corrupt packs, a repository-only run versus an archives phase, a missing-pack cross-check, age-based skipping of packs, and a validator and authenticator that gate what repair may do. Those are separate concerns sharing one function body and one set of parameters, and the parameter list shows it (repair, max_duration, max_age, repo_only, validate, authenticate). The excerpt also shows nested helpers such as `verify`, plus a docstring cross-referencing several issue numbers, which suggests the function has accreted behavior over time.
+
+The file's history backs a high review priority. It has 83 commits in total, 11 of them linked to bugs, a bug-fix rate of 30%, no reverts, and a pull-request review comment density of 15.73, the highest in this set. Three distinct authors touched it in the last 90 days. None of that proves the current function is defective, but it does say reviewers have spent real attention here and ownership is spread across people.
+
+My recommendation: split `check` by mode. The read-only pack and index verification, the missing-pack cross-check, and the repair and salvage path can each become their own method, with the mode flags resolved once at the top. The docstring already describes those phases, so the seams are documented. With 20 touches in a year, I would do this before the next feature lands in this function.
+
+### `build_chunkindex_from_repo` — cache.py
+
+<FunctionCard fn='build_chunkindex_from_repo' file='src/borg/cache.py' risk='18.67' band='fire' cc='40' nd='6' fo='36' touches='9' />
+
+Last changed 3 days ago, with 9 touches in the last year, this function has a cyclomatic complexity of 40, nesting depth of 6 and fan-out of 36. Its signature carries nine keyword options (fragments-only, slow rebuild, validate, on-drop and on-duplicate callbacks, write-immediately, init flags, interruptible), and the leading comment block mostly explains how those flags interact, including `assert` statements that rule out invalid combinations.
+
+The excerpt shows a retry loop around loading index fragments, with explicit handling for a fragment that vanishes because another client merged and deleted it, a corrupt fragment, an invalid index, and an empty fragment list, each behaving differently depending on the flags. That is a concurrency-aware loading strategy and a fallback rebuild path in one body.
+
+The file has 34 commits, 3 linked to bugs, a bug-fix rate of 21%, no reverts, and 2 distinct authors in the last 90 days. That is a milder history than `check`, so I read this one more as a maintainability concern with a live-change component.
+
+My recommendation: separate the fragment-loading path from the slow rebuild from packs. The retry loop with its three failure outcomes (invalid, vanished, corrupt) is a good extract-method candidate that returns a result type, leaving the caller to decide whether to fall through to the rebuild. Replacing the assert-guarded flag combinations with two small entry points would remove most of the option interaction.
+
+### `extract_item` — archive.py
+
+<FunctionCard fn='extract_item' file='src/borg/archive.py' risk='18.61' band='fire' cc='51' nd='6' fo='51' touches='2' />
+
+Here the history says more than the recent activity does. The function has a cyclomatic complexity of 51 and fan-out of 51, with 2 touches in the last year and 20 days since the last change. The file has 71 commits, 17 of them linked to bugs, the highest bug-linked count in the set, with a bug-fix rate of 25%, no reverts, and 2 distinct authors in the last 90 days.
+
+The excerpt shows an early branch between dry-run or stdout extraction and real extraction to disk. The dry-run branch streams chunks, tracks damaged or corrupted chunks replaced by zeros, and raises on a size mismatch or on damaged chunks. The disk path then builds the destination path and applies safety checks on the parent directory. A nested `same_item` helper compares an archived item against a filesystem stat result to support continuing an interrupted extraction. A fan-out of 51 in Python is likely an understatement of the real coupling, since attribute and method dispatch is resolved at runtime.
+
+My recommendation: pull the dry-run and stdout path into its own method first. It is self-contained, returns early, and has a distinct error contract. Then lift `same_item` to a module-level function so it can be tested against stat fixtures without driving a full extraction. Given 17 bug-linked commits on this file, I would write tests for the continue-extraction cases before moving any code.
+
+### `do_create` — create_cmd.py
+
+<FunctionCard fn='do_create' file='src/borg/archiver/create_cmd.py' risk='18.26' band='fire' cc='47' nd='5' fo='58' touches='1' />
+
+`do_create` has the highest fan-out in the top five at 58, with a cyclomatic complexity of 47. It was touched once in the last year, most recently 3 days ago, so its score reflects structure more than churn. The file has 8 commits in total, 6 linked to bugs, a bug-fix rate of 25%, and 2 distinct authors in the last 90 days. With so few commits, that count is a small sample and I would not lean on it.
+
+The excerpt opens with a long run of option validation: `--read-special-timeout` requires `--read-special`, `--reuse-from` requires `--map`, `--reuse-path` requires `--reuse-from`, and `--map` cannot combine with several path-source options and needs a single seekable input. After that come Windows-specific files-cache handling, pattern-matcher setup, and a large nested closure.
+
+My recommendation: move the argument validation into a function that returns a validated options object. It is a pure block of conditionals that can be tested without a repository, and removing it would cut a large share of the 47 paths from `do_create` in one step. The rest, such as the Windows cache-mode adjustment and the pattern matcher setup, follow the same extract-and-name approach.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 10 |
+| `exit_heavy` | 10 |
+| `god_function` | 10 |
+| `long_function` | 10 |
+| `deeply_nested` | 8 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/borgbackup/borg
+cd borg
+git checkout 32578a1167adbc4ab67161fef70109811c620d8a
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_

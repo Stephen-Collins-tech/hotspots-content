@@ -1,0 +1,129 @@
+---
+title: "Delta's run_app carries the highest activity risk — 5 functions to address first"
+titleSeo: "delta code health: run_app and the CLI entry point lead refactoring priority"
+description: "In dandavison/delta, run_app in src/main.rs has cyclomatic complexity 46 and was changed today, while the other four top hotspots are untouched structural debt in subcommand, process-inspection and ANSI-truncation code."
+introContent: "One function in delta's entry point has far more branching than any other on my top-five list, and it was modified today. The rest of the list is dormant code that has gone untouched for 633 to 756 days."
+pubDate: 2026-10-05
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "dandavison/delta"
+commit: "3c2269c6b845913965575f11b0196d70ef5352f3"
+language: "rust"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-05T13:40:10Z"
+clone_depth: 100
+topRisk: 19.27
+topFunction: "run_app"
+topFile: "src/main.rs"
+topPatterns: ["complex_branching", "exit_heavy", "god_function", "long_function", "deeply_nested"]
+patternCounts: {complex_branching: 7, deeply_nested: 4, exit_heavy: 6, god_function: 6, long_function: 5, stale_complex: 3}
+qaSection:
+  - question: "What is a god function and why does it matter in delta?"
+    answer: "A god function is one that does too many unrelated jobs, usually showing up as high fan-out, many branches and a long body. It matters because the function becomes hard to test in isolation, and any change risks affecting behaviour the author did not intend to touch. In delta, 6 functions carry the god-function pattern, including `run_app` in `src/main.rs`, which calls 27 distinct functions and has cyclomatic complexity 46. That one combines argument handling, subcommand dispatch and output setup in a single body."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The main technique is extract-method, paired with decompose-conditional for long else-if chains. As a rule of thumb, cyclomatic complexity above 15 deserves a plan to split the function, and above 30 deserves attention before the next change. A concrete first step for `run_app` is moving the chain of subcommand flag checks into a separate function that returns an optional result. That removes a large block of its 46 paths without touching the writer and lifetime-sensitive code further down."
+  - question: "Is delta actively maintained?"
+    answer: "The data shows active work alongside old untouched code. 26 functions are in the fire quadrant, and `run_app` was changed today, with 1 touch in the last year. At the same time, 93 functions are in the debt quadrant, and four of my top five haven't been changed in 633 to 756 days: `calling_process_cmdline` at 633 days, and `truncate_str_impl`, `show_themes` and `list_languages` at 756 days, each with 0 touches in the last year. Active development and structural debt are not mutually exclusive, and delta shows both."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub, clone dandavison/delta, and run `git checkout 3c2269c`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity (cyclomatic complexity, nesting depth and fan-out) with how recently and how often it has changed, so functions that are both hard to understand and actively changing score highest. A function with cyclomatic complexity 80 that hasn't been touched in two years scores much lower than one with complexity 20 that is touched every week, because the dormant function has lower near-term regression risk. This helps teams spend refactoring effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+I would start with `run_app` in `src/main.rs`: its cyclomatic complexity is 46, against 30 for the next-ranked function, `calling_process_cmdline`, and 9 for the fifth-ranked function, `list_languages`. It is also in the fire quadrant, with an activity-weighted risk score of 19.27 and zero days since last change, so this is a live regression risk rather than a backlog item. In dandavison/delta, 37 of 504 functions are critical, and the other four top hotspots are debt-quadrant functions that haven't been changed in 633 to 756 days.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `run_app` | src/main.rs | 19.3 | 46 | 7 | 27 |
+| `calling_process_cmdline` | src/utils/process.rs | 13.7 | 30 | 4 | 10 |
+| `truncate_str_impl` | src/ansi/mod.rs | 13.1 | 14 | 8 | 10 |
+| `show_themes` | src/subcommands/show_themes.rs | 13.0 | 15 | 4 | 14 |
+| `list_languages` | src/utils/bat/assets.rs | 12.9 | 9 | 4 | 11 |
+
+<BandChart fire='26' debt='93' watch='43' ok='342' />
+
+<PatternCloud patterns='complex_branching:7,exit_heavy:6,god_function:6,long_function:5,deeply_nested:4,stale_complex:3' />
+
+The quadrant split shapes how I read this list. Of 504 functions, 26 are in the fire quadrant and 93 are in the debt quadrant. My top five has one fire function and four debt functions, so the first item is a 'change it carefully today' problem and the other four are structural debt to pay down before someone next has to edit them. None of the five files shows a bug-linked commit or a revert in the file-level history, so I read all five as maintainability and blast-radius concerns rather than evidence of defects.
+
+### `run_app` — main.rs
+
+<FunctionCard fn='run_app' file='src/main.rs' risk='19.27' band='fire' cc='46' nd='7' fo='27' touches='1' />
+
+<MetricBar label='Cyclomatic Complexity' value='46' threshold='10' max='60' />
+
+This is the top-level orchestrator, and the excerpt shows what that costs. Its cyclomatic complexity is 46, nesting depth reaches 7, and it calls 27 distinct functions. The excerpt shows it handling version and help output, setting the calling process for subcommands, dispatching through a long else-if chain of subcommand flags (completion generation, language listing, theme listing and showing, colors, ANSI parsing), then handling the show-config case, building the configuration, and starting pager setup. Argument interpretation, subcommand dispatch and output wiring all live in one body. The function is flagged as complex branching, deeply nested, exit-heavy, a god function and long.
+
+The activity signal makes it urgent. It has 1 touch in the last year and was changed today, so any work in progress lands in a function where every one of those 46 paths is a candidate test case and the many early returns each need their own coverage. The file-level history is quiet: 6 total commits, no bug-linked commits, no reverts, one distinct author in the last 90 days. That reads as a file that is rarely edited but being edited now, in its most complex function.
+
+I recommend extracting the subcommand dispatch chain into its own function that returns an optional result, and pulling the pager and output setup into a second helper. The dispatch chain in the excerpt is a flat run of mutually exclusive flags, so it should lift out without touching the lifetime-sensitive writer block the source comments warn about. Even that one extraction would remove a large share of the branching.
+
+### `calling_process_cmdline` — process.rs
+
+<FunctionCard fn='calling_process_cmdline' file='src/utils/process.rs' risk='13.73' band='debt' cc='30' nd='4' fo='10' touches='0' />
+
+To work out which command invoked delta, this function inspects the process tree: the parent first, then parent-of-parent, then a naive sibling pid, and finally a pid-range search. It has cyclomatic complexity 30, nesting depth 4 and fan-out of 10, and it hasn't been changed in 633 days. It is generic over a process-interface trait and a closure, with a test-only branch compiled in under the test configuration, so some of its paths exist only for tests.
+
+I would treat this as structural debt with a high blast radius when next touched. The behaviour depends on pid adjacency and process-tree shape across operating systems, which is hard to reproduce in tests, and the multiple return paths mean each strategy needs its own fake. The file has a bug-fix rate of 20% across 5 commits, with no bug-linked commits and no reverts, so I would call that a mild flag, not a defect signal. My first step would be splitting the three lookup strategies (parents, sibling, closest match in the process tree) into separate functions, so the orchestration reads as a short fallback chain.
+
+### `truncate_str_impl` — mod.rs
+
+<FunctionCard fn='truncate_str_impl' file='src/ansi/mod.rs' risk='13.08' band='debt' cc='14' nd='8' fo='10' touches='0' />
+
+Here the problem is depth, not breadth. Cyclomatic complexity is a moderate 14, but nesting reaches 8, which is the level I treat as a strong refactoring signal. The excerpt shows a loop over ANSI-aware segments, an inner loop over graphemes, and inside that the double-width handling with optional fill characters and a fallback branch for unexpectedly wide graphemes. The function also calls itself to measure the tail, so the recursion adds a second thing to reason about.
+
+It hasn't been changed in 756 days. The file-level numbers are the most notable on my list: a bug-fix rate of 66.67% across 3 commits, and a pull-request review comment density of 1.0, the only nonzero value among my five. There are no bug-linked commits and no reverts, and three commits is a small sample, so I would not read this as proof of defects. Still, a deeply nested text-width function with a history skewed toward fixes is where I would want tests around double-width and combining characters before anyone edits it. Extracting the per-grapheme step into a helper that returns whether to continue would flatten the nesting by several levels.
+
+### `show_themes` — show_themes.rs
+
+<FunctionCard fn='show_themes' file='src/subcommands/show_themes.rs' risk='13.04' band='debt' cc='15' nd='4' fo='14' touches='0' />
+
+This subcommand renders a sample diff for each available theme. Cyclomatic complexity is 15 and fan-out is 14, with nesting at 4. The excerpt shows it reading either a built-in sample diff or piped stdin, constructing options and configuration repeatedly from git config, setting up a pager, and then looping over themes with a compound dark/light/color-mode filter and error handling that exits the process on a broken pipe. It is flagged as a god function and exit-heavy, and it hasn't been changed in 756 days.
+
+The history is thin: 2 commits, no bug-linked commits, no reverts. I would frame this as maintainability debt with limited urgency. The cheap win is lifting the dark/light/color-mode condition into a small named predicate, then pulling the per-theme rendering into its own function. That makes the filter testable without a terminal or pager.
+
+### `list_languages` — assets.rs
+
+<FunctionCard fn='list_languages' file='src/utils/bat/assets.rs' risk='12.87' band='debt' cc='9' nd='4' fo='11' touches='0' />
+
+The lowest-complexity function on the list, `list_languages` has cyclomatic complexity 9, nesting depth 4 and fan-out of 11. It collects and sorts syntaxes, then prints them either as a plain list or as aligned columns with line wrapping for long extension lists. The excerpt shows two local constants (`loop_through` and `colored_output`) fixed in the function body, which may leave one of the two output modes unused as written, the kind of thing a refactor would surface. It hasn't been changed in 756 days and the file has a single commit in its history.
+
+Its risk score is high on the strength of fan-out and the god-function pattern, not on branching, which is why it earns a place here at all. It is the entry I would leave for last. If someone is in the file anyway, separating the data gathering from the formatting would make the wrapping logic testable on its own.
+
+**What I would do in order**
+
+My order of attack: break up `run_app` first because it is complex and moving, add tests around `truncate_str_impl` and `calling_process_cmdline` before anyone next edits them, and treat `show_themes` and `list_languages` as opportunistic cleanups.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `complex_branching` | 7 |
+| `exit_heavy` | 6 |
+| `god_function` | 6 |
+| `long_function` | 5 |
+| `deeply_nested` | 4 |
+| `stale_complex` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/dandavison/delta
+cd delta
+git checkout 3c2269c6b845913965575f11b0196d70ef5352f3
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_

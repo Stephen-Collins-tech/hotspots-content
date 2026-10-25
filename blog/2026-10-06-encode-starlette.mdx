@@ -1,0 +1,139 @@
+---
+title: "Starlette's test client and middleware carry the highest activity risk"
+titleSeo: "starlette code health: test client and middleware lead refactoring priority"
+description: "Four of starlette's five riskiest functions are in the 'fire' quadrant and were last changed between 0 and 29 days ago, led by handle_request in the test client and the OpenTelemetry middleware's __call__."
+introContent: "Starlette has 20 functions that are both structurally complex and recently changed, and two of the top five were modified the day I ran the analysis. I would start with the test client's request handler and the OpenTelemetry middleware."
+pubDate: 2026-10-06
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "encode/starlette"
+commit: "ff5b4df55ac4ac625582ecc446c850200c91ae64"
+language: "python"
+hotspots_version: "1.42.0"
+analyzed_at: "2026-10-06T10:18:47Z"
+clone_depth: 100
+topRisk: 15.26
+topFunction: "handle_request"
+topFile: "starlette/testclient.py"
+topPatterns: ["exit_heavy", "god_function", "long_function", "complex_branching"]
+patternCounts: {exit_heavy: 8, god_function: 5, long_function: 3, complex_branching: 3}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in starlette?"
+    answer: "An exit-heavy function has many return or raise points, so each exit is a separate outcome that needs its own test. A reader has to track which exit is reachable from which input, and a change near the top can silently alter what the bottom returns. In starlette, 8 of the flagged functions carry this pattern, including `get_response` in `starlette/staticfiles.py`, which translates several different failures into different HTTP responses. Coverage on these functions only means something if every exit is exercised."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "The most reliable technique is extract-method, combined with decompose-conditional for long if/elif chains. As a rule of thumb, a cyclomatic complexity above 15 warrants splitting and above 30 warrants immediate attention. A concrete first step in starlette is `_get_form` in `starlette/requests.py`: the multipart and URL-encoded branches repeat the same parse-and-translate-errors structure, so extracting one shared helper removes a whole duplicated branch tree. For `__call__` in the OpenTelemetry middleware, pulling out the skip-tracing checks and the attribute-building block would cut its complexity of 39 by well over half."
+  - question: "Is starlette actively maintained?"
+    answer: "The data says yes. Four of my top five functions are in the 'fire' quadrant: `call_next` and `_get_form` were both changed on the day of the snapshot (with 2 and 1 touches in the last year respectively), `handle_request` 15 days earlier (1 touch in the last year), and the OpenTelemetry `__call__` 29 days earlier (1 touch in the last year). That is modest per-function volume but consistent with a focused, active codebase. The dormant side is real too: `get_response` in `starlette/staticfiles.py` has 0 touches in the last year and has not changed in 62 days. Active development and structural debt coexist here."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub, clone encode/starlette, and run `git checkout ff5b4df` to match the commit I analyzed. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how recently and how often it has been changed, so functions that are both hard to understand and actively changing score highest. A very complex function that has not been touched in two years scores lower than a moderately complex one that changes every week, because the dormant one has lower near-term regression risk. This points review effort at the code where a new commit is most likely to introduce a problem right now, not just where the code looks complicated in the abstract."
+---
+
+Starlette has 20 functions in the 'fire' quadrant out of 468 analyzed, and 32 land in the critical band, so anyone shipping changes to this codebase this week is likely to touch one of them. Four of my top five are 'fire' functions, led by `handle_request` in `starlette/testclient.py` with an activity-weighted risk score of 15.26, a cyclomatic complexity of 30, and a fan-out of 35, and it was last changed 15 days ago. `call_next` in `starlette/middleware/base.py` and `_get_form` in `starlette/requests.py` were both modified on the day of the snapshot, which makes them live regression risks rather than backlog items.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `handle_request` | starlette/testclient.py | 15.3 | 30 | 3 | 35 |
+| `__call__` | starlette/middleware/opentelemetry.py | 14.3 | 39 | 4 | 25 |
+| `call_next` | starlette/middleware/base.py | 14.2 | 16 | 3 | 15 |
+| `_get_form` | starlette/requests.py | 14.2 | 17 | 4 | 10 |
+| `get_response` | starlette/staticfiles.py | 13.3 | 22 | 3 | 11 |
+
+<BandChart fire='20' debt='75' watch='14' ok='359' />
+
+<PatternCloud patterns='exit_heavy:8,god_function:5,long_function:3,complex_branching:3' />
+
+The quadrant split was the first thing I noticed. Of 468 functions, 359 are low-complexity and quiet, which is what a healthy codebase should mostly look like. The interesting part is the other 109: 20 are complex and actively changing, 75 are complex but dormant, and 14 are active but structurally simple. I will spend most of this post on the 20, because those are the functions where a new commit can introduce a regression this week. Four of my top five come from that group, and the fifth is the highest-scoring piece of structural debt.
+
+The external history I have for these files is all quiet. None of the five shows bug-linked commits or reverts, so I am treating this as a maintainability and review-priority story, not a defect story.
+
+### `handle_request` — testclient.py
+
+<FunctionCard fn='handle_request' file='starlette/testclient.py' risk='15.26' band='fire' cc='30' nd='3' fo='35' touches='1' />
+
+<MetricBar label='Fan-out' value='35' threshold='15' max='40' />
+
+I would start with `handle_request`, which pairs the highest activity-weighted risk score in the repo (15.26) with a fan-out of 35 and a cyclomatic complexity of 30. It was touched once in the last year and last changed 15 days ago. The excerpt explains the numbers: the function translates an httpx request into an ASGI scope, branches on whether the scheme is a WebSocket or plain HTTP, builds two near-identical scope dictionaries, and then defines nested receive and send callbacks that manage request, response, body, and trailer state through a cluster of flags.
+
+That is a god function in the textbook sense. Setup, scheme dispatch, scope construction, and the async protocol machinery all share one body, and the exit-heavy pattern means a lot of paths to cover in tests.
+
+The file has 8 commits in total and a bug-fix rate of 12.5%, with no bug-linked commits and no reverts. Three distinct authors touched it in the last 90 days. I would extract the scope construction into separate helpers for HTTP and WebSocket, then move the nested receive and send callbacks into a small stateful class. That removes the shared flag variables and drops the cyclomatic complexity of the parent function by a large margin.
+
+### `__call__` — middleware/opentelemetry.py
+
+<FunctionCard fn='__call__' file='starlette/middleware/opentelemetry.py' risk='14.34' band='fire' cc='39' nd='4' fo='25' touches='1' />
+
+<MetricBar label='Cyclomatic Complexity' value='39' threshold='30' max='60' />
+
+No function in my top five is more tangled by branch count than this one: a cyclomatic complexity of 39, a nesting depth of 4, and a fan-out of 25. It was last changed 29 days ago and has been touched once in the last year. The file has only 5 commits in total and a single author in the last 90 days, which suggests relatively new code with one person holding the context.
+
+The excerpt shows a request-handling wrapper doing at least four jobs. It decides whether to trace at all (non-HTTP scope, re-entrancy guard, no-op tracer, excluded URLs), normalizes headers, builds a span attribute dictionary through a long chain of optional conditionals, and then names the span after the route in a finally block. Each of those is a separate decision tree stacked in one function. The attribute-building block alone is a run of independent if statements, each one a test case.
+
+I would extract three pieces: a function that decides whether to skip tracing, one that builds the request attributes, and one that resolves the route name. Each is pure enough to test with a plain dictionary scope, no tracer required. With one author in the last 90 days, I would also want a second reviewer on the next change here.
+
+### `call_next` — middleware/base.py
+
+<FunctionCard fn='call_next' file='starlette/middleware/base.py' risk='14.18' band='fire' cc='16' nd='3' fo='15' touches='2' />
+
+The numbers here are more moderate (cyclomatic complexity 16, nesting depth 3, fan-out 15), but this function was changed today and has 2 touches in the last year, the most of any function in the top five. 
+
+The excerpt is dense with concurrency: nested closures for receiving and sending, a task group, memory streams, a shared response-sent event, and a branch that carefully re-raises the application exception to keep the traceback clean. The complexity here comes less from branch count than from interleaved control flow across tasks, which a cyclomatic number understates. The exit-heavy pattern adds a test-coverage burden on top.
+
+The file has 5 commits in total, no bug-linked commits, and 3 distinct authors in the last 90 days. I would promote the nested helpers (`receive_or_disconnect`, `send_no_error`, and the body stream generator) into named private methods or a small class, so each can be tested without running the whole middleware stack. Since it changed today, I would land this as a separate refactor commit and keep it out of feature work.
+
+### `_get_form` — requests.py
+
+<FunctionCard fn='_get_form' file='starlette/requests.py' risk='14.17' band='fire' cc='17' nd='4' fo='10' touches='1' />
+
+`_get_form` has a cyclomatic complexity of 17, a nesting depth of 4, and a fan-out of 10, and it too was changed on the day of the snapshot. It sits on the form-parsing path, so a regression here affects every handler that reads form data.
+
+The excerpt shows a lazy-parse guard followed by a dispatch on content type. The multipart and URL-encoded branches are structurally almost identical: open the stream, build a parser, parse, and translate a parser exception into an HTTP 400 when the request is bound to an app. That duplication drives most of the complexity count, and it means any change to error handling has to be made in two places. The exit-heavy and complex-branching patterns both apply.
+
+The file has 3 commits in total, no bug-linked commits, and 2 distinct authors in the last 90 days. My recommendation is concrete and small: extract the shared parse-and-translate-errors block into one helper that takes a parser factory. That should cut the nesting depth from 4 to 2 and leave the content-type dispatch readable at a glance.
+
+### `get_response` — staticfiles.py
+
+<FunctionCard fn='get_response' file='starlette/staticfiles.py' risk='13.27' band='debt' cc='22' nd='3' fo='11' touches='0' />
+
+This is the odd one out: a 'debt' function, not a 'fire' one. It has a cyclomatic complexity of 22, a nesting depth of 3, and a fan-out of 11, and it has not been changed in 62 days, with zero touches in the last year. I would frame it as structural debt with a high blast radius when next touched, not as something currently in motion. The file has 3 commits in total with no bug-linked commits or reverts.
+
+The excerpt shows a method check, a try block with three distinct exception translations (permission, filename-too-long, invalid characters), and then a sequence of branches for regular files, directories in HTML mode with an index file and a trailing-slash redirect, and a 404 page fallback. That makes for many exits, each a distinct response a test needs to pin down. The adjacent `lookup_path` method carries the directory-traversal guard, so the surrounding code is security-relevant.
+
+I would refactor before the next feature push, not during it. Splitting the HTML-mode directory handling and the 404 fallback into their own methods would give each branch a name and a focused test. Because the function is dormant, there is a window to add characterization tests first and refactor under that safety net.
+
+**What the rest of the list shows**
+
+Beyond the top five, the pattern holds: most of the remaining critical functions are dormant debt rather than code in motion, which makes them candidates for calm, scheduled cleanup. The 'watch' functions are active but structurally simple, so I would monitor them rather than refactor them.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 8 |
+| `god_function` | 5 |
+| `long_function` | 3 |
+| `complex_branching` | 3 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/encode/starlette
+cd starlette
+git checkout ff5b4df55ac4ac625582ecc446c850200c91ae64
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
