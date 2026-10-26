@@ -1,0 +1,137 @@
+---
+title: "Neovim's regexp.c carries the highest activity risk — 5 functions to address first"
+titleSeo: "neovim code health: regexp.c technical debt and refactoring priorities"
+description: "All five of the highest-risk functions in neovim sit in src/nvim/regexp.c, with cyclomatic complexity from 94 to 388 and nesting up to 10 levels."
+introContent: "I analyzed neovim and found the top five risk spots all live in one file, src/nvim/regexp.c. Both regex engines and their parsers sit in that same file, so a single review pass could cover the whole concentration."
+pubDate: 2026-10-26
+tags: ["oss", "vim script", "refactoring", "code-health"]
+draft: true
+repo: "neovim/neovim"
+commit: "3ee26cf91f28cfac9d0f862849118c93643ea2ba"
+language: "vim script"
+hotspots_version: "2.4.0"
+analyzed_at: "2026-10-26T12:21:59Z"
+clone_depth: 100
+topRisk: 103.25
+topFunction: "regmatch"
+topFile: "src/nvim/regexp.c"
+topPatterns: ["complex_branching", "deeply_nested", "exit_heavy", "god_function", "long_function"]
+patternCounts: {complex_branching: 5, deeply_nested: 5, exit_heavy: 5, god_function: 5, long_function: 5, neighbor_risk: 5}
+qaSection:
+  - question: "What is a god function and why does it matter in neovim?"
+    answer: "A god function is one that has accumulated many responsibilities, showing up as very high branching, deep nesting, and wide fan-out in a single body. It matters because it is hard to test in isolation, a change to one responsibility can disturb another, and reviewers cannot hold all the paths in mind at once. In neovim, all five of the top hotspots in src/nvim/regexp.c carry this tag, with cyclomatic complexity from 94 to 388 and fan-out from 29 to 71. That concentration means a single file holds the full set of matching, parsing, and substitution logic as large monolithic routines."
+  - question: "How do I reduce cyclomatic complexity in vim script?"
+    answer: "The technique I would reach for is extract-method, combined with decompose-conditional where a long chain of branches tests related conditions. As a rule of thumb, I would plan a split above a cyclomatic complexity of 15 and treat anything past 30 as needing immediate attention, and the five functions here run from 94 to 388. A concrete first step in `vim_regsub_both` is moving the expression-evaluation branch into its own function, which also cuts its nesting depth of 10. For the large switch-style functions like `regatom`, pulling the character-class group and the bracket-collection handling into separate functions would remove a large share of the paths from the dispatcher."
+  - question: "Is neovim actively maintained?"
+    answer: "The data suggests yes. All five top functions are in the fire quadrant, each with 1 touch in the last year, and each was last changed 13 days before the snapshot. Across the repository, 3,639 functions fall in the fire quadrant and 5,208 in watch, with none classified as dormant debt. Active development and high structural complexity are not mutually exclusive, and this snapshot shows both: recent change landing in functions with cyclomatic complexity as high as 388."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis comes from the hotspots CLI, which is published on GitHub, and I ran it against neovim commit 3ee26cf. Check out that commit with `git checkout 3ee26cf`, then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score the highest. A function with cyclomatic complexity 80 that has sat untouched for two years scores lower than one with complexity 20 touched every week, because the dormant one has less near-term regression risk. This helps focus refactoring where it lowers the chance of introducing a bug right now, rather than where code merely looks complicated in the abstract. It is a prioritization signal, not a verdict on code quality."
+---
+
+All five of the highest-risk functions in neovim sit in one file, src/nvim/regexp.c, so this is a module-level problem rather than a single bad function. Every one of them is in the fire quadrant, with an activity-weighted risk score between 101.97 and 103.25, which means they are both structurally heavy and were changed 13 days before this snapshot. The analysis covers 8,847 functions, 1,812 of them in the critical band. I would start with `regmatch` (cyclomatic complexity 388, nesting depth 9, fan-out 71): it is the largest of the five, and it shares a file, a change date, and a failure mode with its four neighbors.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `regmatch` | src/nvim/regexp.c | 103.2 | 388 | 9 | 71 |
+| `nfa_regmatch` | src/nvim/regexp.c | 103.2 | 329 | 8 | 62 |
+| `regatom` | src/nvim/regexp.c | 103.2 | 262 | 9 | 60 |
+| `vim_regsub_both` | src/nvim/regexp.c | 102.6 | 94 | 10 | 29 |
+| `nfa_regatom` | src/nvim/regexp.c | 102.0 | 224 | 7 | 36 |
+
+Before the individual functions, here is how the whole repository distributes across the risk quadrants. Every function in this snapshot lands in either fire or watch; none are classified as debt or ok.
+
+<BandChart fire='3639' debt='0' watch='5208' ok='0' />
+
+The antipattern tags on the top five are identical across the board, which is unusual enough that I want to show it before going function by function.
+
+<PatternCloud patterns='complex_branching:5,deeply_nested:5,exit_heavy:5,god_function:5,long_function:5,neighbor_risk:5' />
+
+Two caveats first. The activity-weighted scores are tightly clustered (101.97 to 103.25), so the ordering among the five is a weak signal. What matters is that all five sit far above the remaining functions in the file I looked at for context, which score around 88.5 to 89.0 and are small helpers like `nfa_did_time_out` and `state_in_list`. The second caveat: high risk here means complex and recently changed, not defective. The file-level history I have shows three commits in total, no bug-linked commits, no reverts, and a bug-fix rate of 0%, with 2 distinct authors in the last 90 days. That reads as maintainability debt that recently saw a change, not a file with a defect record. Every one of the five was touched once in the last year, 13 days before the snapshot, so my guess is that a single commit hit the file and lifted all of them at once. I cannot confirm that from the data, but it would explain why the scores are so close together.
+
+### `regmatch` — regexp.c
+
+<FunctionCard fn='regmatch' file='src/nvim/regexp.c' risk='103.25' band='fire' cc='388' nd='9' fo='71' touches='1' />
+
+<MetricBar label='Cyclomatic Complexity' value='388' threshold='30' max='400' />
+
+`regmatch` comes first because it pairs the highest cyclomatic complexity in the set (388) with the highest fan-out (71) and the top activity-weighted risk score of 103.25. From the source excerpt, this looks like the backtracking matcher: an outer loop that runs until a stack of saved states is empty, an inner loop that steps through pattern nodes sequentially, interrupt checks for CTRL-C, a periodic timeout check, and debug output behind preprocessor guards. That is a lot of separate responsibilities in one function body.
+
+A cyclomatic complexity of 388 means 388 independent paths, each a potential test case. Nesting depth of 9 is past the point where I would expect anyone to hold the control flow in their head, and fan-out of 71 means a change here can touch behavior in dozens of called helpers. The god-function and exit-heavy tags confirm what the numbers imply: many return and break paths to cover in tests.
+
+I would extract-method along the opcode boundaries. A matcher like this typically dispatches on node type, and each case body that exceeds a few lines is a candidate for its own function. I would not try to shrink the number in one pass. Pulling out the timeout and interrupt handling and the first few largest cases would already cut the function meaningfully and give reviewers smaller units to read.
+
+### `nfa_regmatch` — regexp.c
+
+<FunctionCard fn='nfa_regmatch' file='src/nvim/regexp.c' risk='103.23' band='fire' cc='329' nd='8' fo='62' touches='1' />
+
+`nfa_regmatch` is the second matcher, and the name plus the excerpt suggest the NFA-based engine. The visible code allocates or reuses thread-list buffers, sets up two alternating lists, handles interrupt and timeout checks, and carries substantial debug logging behind preprocessor guards. Its cyclomatic complexity is 329, nesting depth 8, and fan-out 62.
+
+I treat `regmatch` and `nfa_regmatch` as a pair. With two engines for the same job, a change to matching semantics may need coordinated edits in both, which is what the neighbor-risk tag points toward. If I am reviewing a change to one, I open the other in the same session.
+
+My concrete suggestion is to separate buffer setup and teardown from the main matching loop. Allocation, caching, and cleanup of the list buffers form a self-contained concern, and moving them out would shrink the function and make the resource handling reviewable on its own. It is also a natural place to add focused tests, since setup and teardown paths are easy to get wrong and hard to hit through end-to-end matching alone.
+
+### `regatom` and `nfa_regatom` — regexp.c
+
+<FunctionCard fn='regatom' file='src/nvim/regexp.c' risk='103.21' band='fire' cc='262' nd='9' fo='60' touches='1' />
+
+<FunctionCard fn='nfa_regatom' file='src/nvim/regexp.c' risk='101.97' band='fire' cc='224' nd='7' fo='36' touches='1' />
+
+These two share a shape, so I am grouping them. Both begin by reading a character and entering a large switch over magic-character cases: line start and end, word boundaries, a long run of character-class cases that fall through, and goto jumps to a shared collection-handling label. `regatom` emits nodes for the backtracking engine and `nfa_regatom` emits states for the NFA engine, which is why I read them as the parser-side mirror of the two matchers above.
+
+The metrics fit that reading. `regatom` has cyclomatic complexity 262, nesting depth 9, and fan-out 60; `nfa_regatom` has 224, 7, and 36. The wide switch explains much of the complexity count, since each case adds a path, so I would not read 262 as 262 separate tangled decisions. A mostly flat switch is less alarming than the same score on deeply interleaved logic. The nesting depth of 9 in `regatom` is the number I would look at more closely, because that is where flat dispatch turns into hard-to-follow branches.
+
+The fall-through chain and the goto into a collection label are the parts I would handle most carefully. Both are legitimate in C, but they make it harder to be sure a change to one case leaves another alone. I would give the character-class group and the collection (bracket-expression) handling their own functions, with the switch calling into them. That keeps the dispatch readable and isolates the logic that relies on goto-style shared exits.
+
+### `vim_regsub_both` — regexp.c
+
+<FunctionCard fn='vim_regsub_both' file='src/nvim/regexp.c' risk='102.59' band='fire' cc='94' nd='10' fo='29' touches='1' />
+
+<MetricBar label='Nesting Depth' value='10' threshold='4' max='12' />
+
+`vim_regsub_both` is the outlier in this set and deserves separate attention. Its cyclomatic complexity of 94 is the lowest of the five, but its nesting depth of 10 is the deepest. A complexity of 94 is still extreme by any normal threshold, yet the nesting depth is the more telling number here, because deep nesting is what makes a function hard to read even when the path count is moderate.
+
+From the excerpt, this handles substitution: it validates inputs, guards against excessive nesting of substitutions, and has a branch for when the replacement text begins with an expression marker, which it evaluates and caches between a length-measuring pass and a copying pass. It also saves and restores state so that a nested substitute call inside an expression still sees the right match data. That is delicate state handling inside a deeply nested body.
+
+The two-pass design (measure, then copy) stands out to me. Behavior that depends on a flag selecting between two passes is easy to break, because a change that is correct for one pass can silently desynchronize the other. I would extract the expression-evaluation branch into its own function, since it carries the most state and the deepest nesting, and add tests that run both passes against the same input and compare the resulting lengths.
+
+### Why the rest of the file matters less
+
+The context functions from the same file, such as `nfa_did_time_out` (cyclomatic complexity 94), `state_in_list` (4), and `re_num_cmp` (3), sit in the watch quadrant with activity-weighted scores near 88.9. They score high only because the file was recently touched; their structural complexity is low. I would not spend refactoring effort on them. Their use is as a baseline showing how far the five hotspots stand above ordinary code in the same file.
+
+### What I would do
+
+The five functions are two engines, two parsers, and a substitution routine, so the practical question is sequencing. I would take `regmatch` first, because it is the largest, then `nfa_regmatch` in the same sitting, then the two atom parsers together, then `vim_regsub_both`. Characterization tests before any extraction are the step I would not skip: with cyclomatic complexity in the hundreds, nobody can verify a refactor by reading it.
+
+## Codebase Risk Distribution
+
+All five top hotspots share the same structural patterns (`complex_branching`, `deeply_nested`, `exit_heavy`, `god_function`, `long_function`, `neighbor_risk`), which is typical of the highest-risk functions in any large codebase — they accumulate every structural signal on the way to the top. More useful context is how the risk is distributed across all 8,847 analyzed functions:
+
+| Band | Functions |
+|---|---|
+| Critical | 1,812 |
+| High | 1,827 |
+| Moderate | 2,774 |
+| Low | 2,434 |
+
+_Hotspot patterns belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`neighbor_risk`](https://hotspots.dev/analyses/patterns/neighbor_risk/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/neovim/neovim
+cd neovim
+git checkout 3ee26cf91f28cfac9d0f862849118c93643ea2ba
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
