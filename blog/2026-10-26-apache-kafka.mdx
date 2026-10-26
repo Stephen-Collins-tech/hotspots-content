@@ -1,0 +1,135 @@
+---
+title: "Kafka's group coordinator tests carry the highest activity risk"
+titleSeo: "apache/kafka code health: GroupMetadataManagerTest leads refactoring priority"
+description: "All five top hotspots in apache/kafka sit in one file, GroupMetadataManagerTest.java, and are dominated by oversized test methods with fan-out between 12 and 186."
+introContent: "Every one of the five highest-ranked functions in apache/kafka lives in a single test file, GroupMetadataManagerTest.java. The risk there is not branching logic but giant test methods that touch dozens to hundreds of other functions."
+pubDate: 2026-10-26
+tags: ["oss", "java", "refactoring", "code-health"]
+draft: true
+repo: "apache/kafka"
+commit: "c4480afdcad1e1393d11261373d44bc58402acab"
+language: "java"
+hotspots_version: "2.4.0"
+analyzed_at: "2026-10-26T09:17:18Z"
+clone_depth: 100
+hybrid_touch_threshold: 5
+topRisk: 168.9
+topFunction: "generatePendingAssignmentCases"
+topFile: "group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java"
+topPatterns: ["god_function", "long_function", "exit_heavy"]
+patternCounts: {exit_heavy: 1, god_function: 9, long_function: 7}
+qaSection:
+  - question: "What is a god function and why does it matter in kafka?"
+    answer: "A god function does or touches far more than a single unit should, which shows up in the data as very high fan-out, the count of distinct functions it calls directly. It matters because the function becomes hard to read in one pass, hard to change without checking many collaborators, and hard to localize when something fails. In kafka's top hotspots, all five functions are in one test file, and the highest fan-out is 186 in `testLastStaticConsumerProtocolMemberReplacedByClassicProtocolMember`. Three of the five top functions carry the god-function flag, which points to a shared habit of long setup-heavy test methods rather than one outlier."
+  - question: "How do I reduce fan-out in java test code?"
+    answer: "Use extract-method on the setup code, and group related setup into helpers or builders with meaningful names. A fan-out above roughly 50 in a single method is worth acting on, and values in the hundreds, like the 186 here, deserve immediate attention. A concrete first step is to move the member-construction chains in `testLastStaticConsumerProtocolMemberReplacedByClassicProtocolMember` into one named helper; that alone should remove a large share of the distinct calls from the test body. Splitting `testClassicMemberJoinToConsumerGroupWithDisabledMigrationPolicy` into one test per scenario would also halve its branching."
+  - question: "Is kafka actively maintained?"
+    answer: "The data suggests yes for the area analyzed. All five top functions are in the fire quadrant, each with 1 touch in the last year and a last change 16 days before the analyzed commit, and the file has had 4 distinct authors in the last 90 days. Across the repository, 6,608 functions are in the fire quadrant and none are in debt. Active development and structural debt are not mutually exclusive, and here the debt is mostly oversized test methods rather than defect history, since the file shows no bug-linked commits and no reverts."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the analyzed commit, c4480af, in a local clone of apache/kafka. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A very complex function that has not been touched in two years scores lower than a moderately complex one changed every week, because the dormant one has less near-term regression risk. This helps focus refactoring effort where it reduces the chance of introducing bugs now, rather than where code merely looks complicated in the abstract. In this analysis the top five scores range from 166.91 to 168.9."
+---
+
+Five functions top the risk ranking in apache/kafka, and all five live in GroupMetadataManagerTest.java, so the unit to review is the whole module, not one function. Anyone adding a test for group coordinator behavior is working in a file where those five score between 166.91 and 168.9 on activity-weighted risk, and all five were last changed 16 days ago. The analysis covers 71,211 functions, 1,472 of them in the critical band. I would start with `generatePendingAssignmentCases`: its fan-out of 57 sits in a function with a cyclomatic complexity of 1, so the risk is breadth of coupling rather than branching.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `generatePendingAssignmentCases` | group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java | 168.9 | 1 | — | 57 |
+| `verifyClassicGroupJoinResponses` | group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java | 168.1 | 5 | 3 | 12 |
+| `testLastStaticConsumerProtocolMemberReplacedByClassicProtocolMember` | group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java | 167.4 | 6 | 1 | 186 |
+| `testClassicMemberJoinToConsumerGroupWithDisabledMigrationPolicy` | group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java | 167.4 | 7 | 1 | 50 |
+| `testRebalanceCompletesBeforeMemberJoins` | group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java | 166.9 | 4 | 1 | 100 |
+
+## Large Repo Analysis
+
+kafka is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the touch window (365 days by default); other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+<BandChart fire='6608' debt='0' watch='64603' ok='0' />
+
+<PatternCloud patterns='god_function:9,long_function:7,exit_heavy:1' />
+
+First, what this ranking does not show. None of these five functions is structurally tangled in the usual sense: cyclomatic complexity runs from 1 to 7 and nesting depth never exceeds 3. Fan-out is what lifts them. Test methods that build a whole coordinator context, replay records and assert on many collaborators pile up calls to dozens or hundreds of distinct functions. The god-function and long-function flags on most of the highlighted functions fit that picture.
+
+The historical signals for the file are quiet. It has 5 total commits, no bug-linked commits, no reverts, a bug-fix rate of 0% and no review-comment density. Four distinct authors have touched it in the last 90 days. I read that as a maintainability problem in an active file, not a defect problem. These are file-level signals and do not describe any single function.
+
+All five functions show 1 touch in the last year and 16 days since last change, which is why they all land in the fire quadrant with nearly identical scores. The ranking among them is close to a tie, and the score differences are small enough that I would treat the five as a single review unit.
+
+**generatePendingAssignmentCases — GroupMetadataManagerTest.java**
+
+<FunctionCard fn='generatePendingAssignmentCases' file='group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java' risk='168.9' band='fire' cc='1' nd='0' fo='57' touches='1' />
+
+This is the top-ranked function, with an activity-weighted risk score of 168.9. Its cyclomatic complexity is 1 and its nesting depth is 0, yet it calls 57 distinct functions. The excerpt shows why: it returns a stream of lambdas, each mocking a share group, stubbing a handful of methods, optionally replaying partition metadata records into the manager and committing, then returning a case object with verification callbacks. In effect it is a long list of near-identical case builders written inline in one method. The pattern flags include exit-heavy, which I read here as many separate lambda return points; each is its own case and has to stay consistent with the others.
+
+I would extract each case into a named private factory method, or a small table of case definitions, so that a sixth or seventh scenario does not make this method longer. The repeated mock setup for the group id and empty flag could move into one helper.
+
+### `verifyClassicGroupJoinResponses` — GroupMetadataManagerTest.java
+
+<FunctionCard fn='verifyClassicGroupJoinResponses' file='group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java' risk='168.09' band='fire' cc='5' nd='3' fo='12' touches='1' />
+
+This is the only one of the five without a pattern flag, and its fan-out of 12 makes it the least coupled. It loops over join results, fails if any future is incomplete, counts successes, asserts the expected error code on failures and collects member ids. The loop, the try block and the success-or-failure branch inside it account for its cyclomatic complexity of 5 and nesting depth of 3. Because it is shared verification logic, a change to it affects every test that calls it.
+
+I would leave its size alone and look at one thing: the catch block that converts any exception into a test failure with a message. That is a small readability issue, not a refactoring priority. Since it is a helper, I would confirm that its callers all want the same behavior on an incomplete future before touching it.
+
+### `testLastStaticConsumerProtocolMemberReplacedByClassicProtocolMember` — GroupMetadataManagerTest.java
+
+<FunctionCard fn='testLastStaticConsumerProtocolMemberReplacedByClassicProtocolMember' file='group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java' risk='167.4' band='fire' cc='6' nd='1' fo='186' touches='1' />
+
+<MetricBar label='Fan-out' value='186' threshold='15' max='200' />
+
+A fan-out of 186 is the highest in the top five and the clearest example of the god-function and long-function flags. The excerpt shows a parameterized test that builds topic ids, serializes a classic-protocol subscription, constructs two consumer group members through long builder chains, builds a metadata image and then configures a test context with a migration policy and assignor. All of that is setup before a single assertion, so the scenario under test is buried beneath construction code.
+
+I would extract the member-building and subscription-serialization steps into named helpers, such as one that builds a stable member with a given instance id and assignment. That keeps the scenario, a static member replaced by a classic one, readable at the top level, and the same helpers can serve neighboring tests that build similar members.
+
+### `testClassicMemberJoinToConsumerGroupWithDisabledMigrationPolicy` — GroupMetadataManagerTest.java
+
+<FunctionCard fn='testClassicMemberJoinToConsumerGroupWithDisabledMigrationPolicy' file='group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java' risk='167.39' band='fire' cc='7' nd='1' fo='50' touches='1' />
+
+This one has the highest cyclomatic complexity in the set at 7, and it comes from the static-versus-dynamic parameter: the test branches on that boolean to set instance ids, add a second member and run a third assertion block. Three scenarios (new member joins, existing member rejoins, classic member tries to replace a consumer static member) share one method, each asserting the same error message. Fan-out is 50, and it carries a god-function flag.
+
+If one of the three assertions starts failing, the test report points at the whole method rather than a named scenario. I would split it into three tests that share a group-building helper, keeping the boolean parameter only on the ones that need it. That should cut the cyclomatic complexity to roughly half.
+
+### `testRebalanceCompletesBeforeMemberJoins` — GroupMetadataManagerTest.java
+
+<FunctionCard fn='testRebalanceCompletesBeforeMemberJoins' file='group-coordinator/src/test/java/org/apache/kafka/coordinator/group/GroupMetadataManagerTest.java' risk='166.91' band='fire' cc='4' nd='1' fo='100' touches='1' />
+
+This one reads as a timeline: create a group with a static leader, join and sync, add a second dynamic member, advance a simulated clock in steps while sending heartbeats, then complete the join phase and sync again. Fan-out is 100, and it carries both god-function and long-function flags. A small heartbeat loop and little else gives it a cyclomatic complexity of 4, so the difficulty is length and sequencing, not branching.
+
+Clock advances and state assertions interleave, which makes a failure mid-timeline hard to localize. I would extract the first half, building a stable one-member group, into a shared fixture method and keep only the rebalance steps in the test body. The short comments already marking each phase would map cleanly to extracted method names.
+
+**Neighboring functions**
+
+The context-only list shows the same shape continuing: three more test methods (fan-out 100, 128 and 68) all carry activity-weighted risk scores of 166.17 and a cyclomatic complexity of 2. That is why I would treat this as a file-level cleanup: fixing five methods leaves the same construction pattern in many more.
+
+If I were setting a plan, I would start with a shared builder for consumer group members and a shared helper for classic group setup. Those two extractions would shorten most of the methods above in one pass, and they are the changes the next person adding a coordinator test is most likely to reuse.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 9 |
+| `long_function` | 7 |
+| `exit_heavy` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/apache/kafka
+cd kafka
+git checkout c4480afdcad1e1393d11261373d44bc58402acab
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
