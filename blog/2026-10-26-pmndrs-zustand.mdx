@@ -1,0 +1,130 @@
+---
+title: "Zustand's persist middleware holds 3 of the top 5 hotspots in one file"
+titleSeo: "zustand code health: persist.ts and devtools lead the refactoring priority list"
+description: "Three of the top five hotspots in pmndrs/zustand sit in src/middleware/persist.ts, with a critical-band function in the devtools middleware."
+introContent: "Three of zustand's five riskiest functions live in one file, src/middleware/persist.ts, and 83% of that file's commits are tagged as bug fixes. If you touch persistence, review changes there carefully."
+pubDate: 2026-10-26
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "pmndrs/zustand"
+commit: "382d29c485e67018c06e75ec7235130d0968522c"
+language: "typescript"
+hotspots_version: "2.4.0"
+analyzed_at: "2026-10-26T09:05:22Z"
+clone_depth: 100
+topRisk: 11.1
+topFunction: "devtoolsImpl"
+topFile: "src/middleware/devtools.ts"
+topPatterns: ["god_function", "long_function", "exit_heavy"]
+patternCounts: {god_function: 3, long_function: 3, exit_heavy: 2}
+qaSection:
+  - question: "What is a god function and why does it matter in zustand?"
+    answer: "A god function takes on many separate responsibilities, which usually shows up as high fan-out: it calls a large number of distinct functions. That makes it hard to test in isolation, and a change to one responsibility can quietly affect another. In zustand, 3 of the top hotspots carry this pattern: `devtoolsImpl` (fan-out 23), `persistImpl` (fan-out 22), and `hydrate` (fan-out 12). Two of them are middleware wrappers that compose several behaviors inside one closure."
+  - question: "How do I reduce fan-out and complexity in typescript?"
+    answer: "The main technique is extract-method: move each distinct responsibility into a named function and have the original function compose them. As a rough rule, a cyclomatic complexity above 15 warrants splitting and above 30 warrants immediate attention, and fan-out above 15 is a strong signal of too many responsibilities. A concrete first step for `devtoolsImpl` (cyclomatic complexity 24, fan-out 23) is to pull out the wrapped `setState` logic and the cleanup logic into their own helpers, which would plausibly cut its fan-out substantially. In TypeScript, typed helper functions also keep type narrowing local instead of spread across one large closure."
+  - question: "Is zustand actively maintained?"
+    answer: "The data shows active development in specific places. `devtoolsImpl` and `persistImpl` are both 'fire' functions changed today (0 days since last change), with 2 and 1 touches in the last year respectively, and each of the two middleware files (devtools.ts and persist.ts) had 2 distinct authors in the last 90 days. At the same time, 7 functions are 'debt': `shallow` and `createJSONStorage` have not changed in 296 days (0 touches in the last year), and `hydrate` has not changed in 220 days. Active development and structural debt are not mutually exclusive, and this analysis shows both."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository, then run `git checkout 382d29c` in a local clone of pmndrs/zustand. Run `hotspots analyze . --mode snapshot --explain-patterns --force` to produce the same output. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity with recent change activity, so functions that are both hard to understand and actively changing score highest. A complex function that has not been touched in a long time carries less near-term regression risk, though its blast radius remains when it next changes. This helps teams focus refactoring where it reduces the chance of introducing bugs now, not just where the code looks complicated in the abstract."
+---
+
+Change anything about how zustand persists state and you will work inside src/middleware/persist.ts, home to three of the top five hotspots in pmndrs/zustand: `persistImpl`, `createJSONStorage`, and `hydrate`. That concentration matters more than any single score, because 83% of the file's 6 commits are tagged as bug fixes. The analysis covers 89 functions, 2 of them in the critical band. The top-ranked function, `devtoolsImpl` in src/middleware/devtools.ts, is a 'fire' function with an activity-weighted risk score of 11.1 that was changed today, so it deserves review now and not just a place in the backlog.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `devtoolsImpl` | src/middleware/devtools.ts | 11.1 | 24 | 3 | 23 |
+| `shallow` | src/vanilla/shallow.ts | 10.5 | 11 | 2 | 7 |
+| `persistImpl` | src/middleware/persist.ts | 9.3 | 4 | 4 | 22 |
+| `createJSONStorage` | src/middleware/persist.ts | 8.5 | 4 | 1 | 8 |
+| `hydrate` | src/middleware/persist.ts | 8.5 | 4 | 4 | 12 |
+
+<BandChart fire='2' debt='7' watch='4' ok='76' />
+
+<PatternCloud patterns='god_function:3,long_function:3,exit_heavy:2' />
+
+The distribution is lopsided in a useful way. 76 of 89 functions sit in the 'ok' quadrant, so the risk is narrow. Only 2 functions are 'fire' (complex and changing now), and 7 are 'debt' (complex but untouched recently). I would review the 'fire' functions before the next release. The 'debt' functions are where a future change will cost the most.
+
+One caveat on all of this: a high activity-weighted risk score means a function is structurally complex and, for 'fire' functions, changing. It does not mean the code is defective, and nothing here is a judgment of the maintainers. The historical signals below are context for prioritizing review, not proof of bugs.
+
+### `devtoolsImpl` — devtools.ts
+
+<FunctionCard fn='devtoolsImpl' file='src/middleware/devtools.ts' risk='11.1' band='fire' cc='24' nd='3' fo='23' touches='2' />
+
+I would start with `devtoolsImpl` because it is the highest-scoring 'fire' function and one of the most actively changing: an activity-weighted risk score of 11.1, 2 touches in the last year, and 0 days since last change. It is the one place where complexity and churn overlap right now.
+
+<MetricBar label='Fan-out' value='23' threshold='15' max='30' />
+
+The numbers point to breadth more than depth. Cyclomatic complexity is 24 and nesting depth is only 3, but fan-out is 23, meaning the function calls 23 distinct functions. From the excerpt, it wraps the store's `setState`, resolves whether the Redux DevTools extension is available, builds action names (falling back to the caller's name from a stack trace), and wires up a cleanup path that touches tracked connections. That is several separate responsibilities inside one closure, which is why the analysis flags it as both a god function and a long function.
+
+The file-level history adds some context. The file has a bug-fix rate of 60% across 10 commits, with 0 commits explicitly linked to bugs and 0 reverts. Pull request review comment density is 25.5, and 2 distinct authors touched it in the last 90 days. I read that as a file that gets scrutiny and iteration, not as evidence of defects.
+
+My recommendation: extract the `setState` wrapper, the action-name resolution, and the `cleanup` logic into separately named helpers that `devtoolsImpl` composes. The file already contains smaller helper functions, so extracting units fits its existing style.
+
+### `shallow` — shallow.ts
+
+<FunctionCard fn='shallow' file='src/vanilla/shallow.ts' risk='10.48' band='debt' cc='11' nd='2' fo='7' touches='0' />
+
+`shallow` is critical band but a 'debt' function, so I would frame it as structural risk and not as live churn. It has not changed in 296 days, has 0 touches in the last year, and its file shows 1 commit total. Nothing suggests it is unstable.
+
+What the metrics reveal is a lot of exit paths: cyclomatic complexity 11 with nesting depth 2, and the analysis tags it as exit heavy. From the excerpt, it short-circuits on identical values, rejects non-objects and null, compares prototypes, then branches between iterable and plain-object comparison. Each early return is a test case, and in TypeScript the narrowing around those guards adds implicit control flow that the complexity number understates.
+
+Anyone using shallow equality for selectors runs through this function, so the blast radius when it next changes is wide even though it is quiet today. I would not refactor it for its own sake. Instead, confirm there is a test for each early-return branch (identical, non-object, prototype mismatch, iterable with entries, iterable without, plain object) before anyone edits it.
+
+**`persistImpl`, `createJSONStorage`, and `hydrate` — persist.ts**
+
+These three share a file and a file-level history, so I will treat them together before giving each its own recommendation.
+
+The persist.ts file has a bug-fix rate of 83% across 6 commits, with 0 commits explicitly linked to bugs, 0 reverts, and pull request review comment density of 36.0, the highest in this analysis. It has 2 distinct authors in the last 90 days. The 83% figure comes from commit tagging and works only as a rough prioritization signal, a reason to review changes here more carefully. It does not tell me the current functions are broken.
+
+<FunctionCard fn='persistImpl' file='src/middleware/persist.ts' risk='9.29' band='fire' cc='4' nd='4' fo='22' touches='1' />
+
+`persistImpl` is the 'fire' function in this file: an activity-weighted risk score of 9.29, 1 touch in the last year, and 0 days since last change. Cyclomatic complexity is only 4, so the branching is modest, but nesting depth is 4 and fan-out is 22. The excerpt shows why: it builds default options, tracks hydration state with two listener sets, wraps both `api.setState` and the config's `set`, and defines `hydrate` inside itself. The analysis marks it as a god function and a long function.
+
+The low cyclomatic complexity is misleading here. Much of the risk lives in shared mutable state (`hasHydrated`, `hydrationVersion`, `stateFromStorage`) captured by closures, which a branch count does not see. My recommendation: pull the storage-unavailable fallback and the `setItem` plumbing into small named helpers so that `persistImpl` reads as configuration followed by wiring.
+
+<FunctionCard fn='hydrate' file='src/middleware/persist.ts' risk='8.47' band='debt' cc='4' nd='4' fo='12' touches='0' />
+
+`hydrate` is nested inside `persistImpl`, has not changed in 220 days, and is structural debt. Nesting depth is 4 with fan-out 12. The excerpt shows a chain of asynchronous steps: it reads from storage, checks the stored version against the configured one, optionally runs a migration (which may or may not return a promise), merges state, and then fires post-rehydration callbacks. It also guards each step against a newer hydration having started, via a version counter that, per the comments, exists to prevent race conditions between concurrent `rehydrate()` calls.
+
+That guard is the part I would handle most carefully. Each `.then` stage repeats the same staleness check, and a future edit that adds a stage without it would reintroduce the race the counter prevents. When someone next changes this function, I would write tests first for the migration branch and the sync-versus-async paths. A concrete refactor: extract the version-mismatch and migration decision into its own function that returns the `[migrated, state]` pair, so the promise chain only handles sequencing.
+
+<FunctionCard fn='createJSONStorage' file='src/middleware/persist.ts' risk='8.55' band='debt' cc='4' nd='1' fo='8' touches='0' />
+
+`createJSONStorage` is the mildest of the three. Cyclomatic complexity is 4, nesting depth is 1, fan-out is 8, and it has not changed in 296 days. The analysis flags it as exit heavy: it returns early when storage can't be obtained (for example during server-side rendering), and `getItem` branches on whether the underlying storage returned a promise. That sync-or-async branch deserves a test, since it is part of the public persistence surface. I would leave the structure alone and make sure both return shapes have coverage.
+
+**What I would do first**
+
+With one review slot, I would spend it on `devtoolsImpl`, because it is the only critical-band function that is also changing today. If persistence work is on the roadmap, I would treat persist.ts as a unit and add tests around `hydrate`'s migration and race-guard paths before touching `persistImpl`. A file with an 83% bug-fix rate and the highest review-comment density in this analysis is where careful review pays off.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 3 |
+| `long_function` | 3 |
+| `exit_heavy` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/pmndrs/zustand
+cd zustand
+git checkout 382d29c485e67018c06e75ec7235130d0968522c
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
