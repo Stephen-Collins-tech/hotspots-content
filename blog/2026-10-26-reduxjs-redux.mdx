@@ -1,0 +1,130 @@
+---
+title: "Redux's docs tooling carries the highest activity risk — 5 functions to address first"
+titleSeo: "redux code health: docs-site plugins and createStore lead refactoring priority"
+description: "Four of redux's five riskiest functions sit in website/plugins/remark-typescript-tools, with src/createStore.ts the only core-library entry, which has gone 114 days without a change."
+introContent: "The riskiest code in redux right now is mostly the docs build pipeline, not the store. The one core function in the top five, createStore, hasn't been touched in 114 days."
+pubDate: 2026-10-26
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "reduxjs/redux"
+commit: "61ebf8596654cf3c4b197e426e302fcb3c2bc13e"
+language: "typescript"
+hotspots_version: "2.4.0"
+analyzed_at: "2026-10-26T08:46:22Z"
+clone_depth: 100
+topRisk: 12.91
+topFunction: "resolveFormatConfig"
+topFile: "website/plugins/remark-typescript-tools/transpileCodeblocks/postProcessing.ts"
+topPatterns: ["god_function", "neighbor_risk", "exit_heavy", "long_function", "cyclic_hub"]
+patternCounts: {god_function: 5, neighbor_risk: 5, long_function: 3, exit_heavy: 5, cyclic_hub: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in redux?"
+    answer: "A god function is one function that does many unrelated jobs, usually visible as a high fan-out, meaning it calls many distinct other functions directly. That makes it hard to test in isolation, because each job needs its own setup, and a change to any callee can alter its behavior. Five functions in the redux analysis carry this pattern, including `mapper` in transpileCodeblocks/plugin.ts with a fan-out of 17 and `transformer` in the same file with a fan-out of 22. The core `createStore` also carries it, with a fan-out of 16."
+  - question: "How do I reduce fan-out and cyclomatic complexity in typescript?"
+    answer: "Use extract-method: pull a self-contained block into a named function with a narrow signature, and use introduce-parameter-object when the extracted pieces share many arguments. A cyclomatic complexity above 15 is worth splitting, and above 30 deserves immediate attention; fan-out of 15 or more is a similar signal. A concrete first step in redux is to move the diagnostic-formatting block out of `mapper` in transpileCodeblocks/plugin.ts into its own function, which should reduce the nesting and move several of its 17 calls out of the main body. For `transformer`, a small helper that builds an import node from a component name would collapse two near-identical object literals into one."
+  - question: "Is redux actively maintained?"
+    answer: "The data shows a mix. Two of the top five functions, `mapper` and `transformer` in transpileCodeblocks/plugin.ts, are in the fire quadrant, each with 1 touch in the last year and 25 days since last change, so that part of the repo is being worked on. The three debt-quadrant entries are dormant: `resolveFormatConfig` has 0 touches in the last year and 42 days since last change, the linkDocblocks `mapper` has 0 touches and 42 days, and the core `createStore` has 0 touches, 114 days since last change and zero distinct authors in the last 90 days. Across the whole repo, 7 functions are in fire against 27 in debt. Active development and structural debt coexist here, and the activity is concentrated in the docs tooling, not the store core."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the repository, run `git checkout 61ebf85`, and use the hotspots CLI from GitHub. The command is `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A function with cyclomatic complexity 80 that hasn't been touched in two years scores lower than one with complexity 20 that changes every week, because the dormant one has lower near-term regression risk. In this analysis the top score is 12.91, for `resolveFormatConfig`, which is a debt function that earns its rank on structure rather than churn. The ranking helps focus refactoring where it reduces the chance of introducing a bug right now, not just where the code looks complicated in the abstract."
+---
+
+The top-ranked function, resolveFormatConfig, hasn't been changed in 42 days and has zero touches in the last year, so I read this as structural debt with a high blast radius when next touched, not an emergency. Across 285 functions in reduxjs/redux, 9 are critical and 27 sit in the debt quadrant against 7 in fire. Four of the five hotspots live in website/plugins/remark-typescript-tools. The fifth is createStore in src/createStore.ts: 114 days since last change, fan-out of 16, and the only top-five entry that ships to users. I would start with the debt entries before the next push to the docs tooling, and with createStore before anyone touches the store core again.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `resolveFormatConfig` | website/plugins/remark-typescript-tools/transpileCodeblocks/postProcessing.ts | 12.9 | 12 | 3 | 8 |
+| `mapper` | website/plugins/remark-typescript-tools/transpileCodeblocks/plugin.ts | 12.2 | 10 | 3 | 17 |
+| `createStore` | src/createStore.ts | 12.0 | 11 | 2 | 16 |
+| `transformer` | website/plugins/remark-typescript-tools/transpileCodeblocks/plugin.ts | 11.7 | 10 | 3 | 22 |
+| `mapper` | website/plugins/remark-typescript-tools/linkDocblocks/plugin.ts | 11.4 | 10 | 1 | 13 |
+
+<BandChart fire='7' debt='27' watch='33' ok='218' />
+
+<PatternCloud patterns='god_function:5,neighbor_risk:5,exit_heavy:5,long_function:3,cyclic_hub:1' />
+
+The quadrant split tells most of the story. Of 285 functions, 218 are low-complexity and inactive, a healthy base. The risk concentrates in a small group: 27 debt functions that are complex and dormant, and 7 fire functions that are complex and changing. The top five split three debt and two fire. The same shapes recur across them. god_function, neighbor_risk and exit_heavy each show up five times across the codebase, so no single outlier dominates.
+
+One caution before the details. None of this says the code is buggy. Every function in the top five has zero bug-linked commits and no reverts in its file's history. Those histories are also very short (between 1 and 5 commits in total), so I treat them as thin context, not evidence either way.
+
+### `resolveFormatConfig` — postProcessing.ts
+
+<FunctionCard fn='resolveFormatConfig' file='website/plugins/remark-typescript-tools/transpileCodeblocks/postProcessing.ts' risk='12.91' band='debt' cc='12' nd='3' fo='8' touches='0' />
+
+I start with `resolveFormatConfig` because it has the highest activity-weighted risk score in the repo (12.91), with 42 days since its last change and zero touches in the last year. From the excerpt, it walks up the directory tree from a parent file looking for a formatter config, caches results for every directory it visited, and returns early on a cache hit, on a successful parse, or on reaching the filesystem root. That adds up to a cyclomatic complexity of 12, a nesting depth of 3 and a fan-out of 8. The exit_heavy pattern fits: several distinct return paths, each needing its own test case. A loop inside a loop, with a try/catch that uses `continue`, is exactly where cache-population logic goes subtly wrong on edit.
+
+The file has one commit in its history and no bug-linked commits, so this is maintainability debt, not a defect signal. I would extract the directory walk into its own function that yields candidate directories, and move the cache back-fill into a small helper. The config-file read and parse would then be the main branching logic left in the function.
+
+**`mapper` and `transformer` — transpileCodeblocks/plugin.ts**
+
+These two functions share a file, a pattern profile and a last-change date (25 days), so I am covering them together. Both are in the fire quadrant: complex, and being changed now.
+
+<FunctionCard fn='mapper' file='website/plugins/remark-typescript-tools/transpileCodeblocks/plugin.ts' risk='12.19' band='fire' cc='10' nd='3' fo='17' touches='1' />
+
+`mapper` scores 12.19, with a cyclomatic complexity of 10 and a fan-out of 17. By the excerpt, it filters for TypeScript code blocks, honors a no-transpile tag, compiles the virtual files, formats diagnostics with surrounding source lines, chooses between failing and warning based on an environment variable, and then assembles replacement nodes. That is a god_function in the plain sense: filtering, compilation, error reporting and node assembly in one body. The complexity number is modest. The fan-out of 17 is the figure I would watch, since each of those calls is a place where a change elsewhere can alter behavior here.
+
+<MetricBar label='Fan-out (mapper)' value='17' threshold='15' max='25' />
+
+The file has a bug-fix rate of 50% across 2 total commits. With a history that short, that is one commit tagged as a fix, so I would read nothing more into it than at least one correction having landed. My recommendation is concrete: pull the diagnostic-formatting block out into a function that takes a diagnostic and returns a message and position. It is self-contained, it is the longest single stretch of the function, and it would drop the nesting depth of 3 immediately.
+
+<FunctionCard fn='transformer' file='website/plugins/remark-typescript-tools/transpileCodeblocks/plugin.ts' risk='11.7' band='fire' cc='10' nd='3' fo='22' touches='1' />
+
+`transformer` scores 11.7 and has a fan-out of 22, the highest in the top five. The excerpt shows it checking file extensions, resolving a virtual file path, scanning the tree for existing Tabs and TabItem imports, and injecting synthetic import nodes into the document root when they are missing. It is also tagged long_function, and much of that length is two near-identical object literals describing an import declaration, one per component. Removing that duplication is the cheapest win in this section. A small builder that takes a component name and returns the import node would cut most of the length and make drift between the two cases impossible.
+
+Both functions carry the neighbor_risk pattern, so changes here may require coordinated edits in nearby files. If I were scheduling this work, I would do both in one pass while the file is open.
+
+**`createStore` — createStore.ts**
+
+<FunctionCard fn='createStore' file='src/createStore.ts' risk='11.97' band='debt' cc='11' nd='2' fo='16' touches='0' />
+
+This is the only core-library function in the top five, and the debt framing applies: 114 days without a change, zero touches in the last year. Its cyclomatic complexity is 11, its nesting depth only 2, its fan-out 16. The patterns are exit_heavy, god_function, long_function and cyclic_hub, and the excerpt explains most of them. The function opens with a run of argument validation checks that each throw, normalizes the three-argument signature (where the second argument may be the enhancer), delegates to the enhancer when one is supplied, and then defines the store's internal state and inner functions in the same body.
+
+TypeScript generics and overloaded argument handling add implicit branching that cyclomatic complexity understates, so I treat the real reasoning load as higher than 11 suggests. The signature carries five type parameters, and the argument-shuffling logic narrows types by hand with casts.
+
+The file has a bug-fix rate of 40% across 5 commits and no reverts, with zero distinct authors in the last 90 days. That last number matters for the structural-debt framing: with no recent authors, the next person to change it may inherit it cold. The cyclic_hub pattern also suggests a dependency cycle, which widens the blast radius. I would extract argument validation and signature normalization into a single helper that returns the resolved reducer, preloaded state and enhancer. That separates the part that only throws and reshuffles from the part that builds the store, and it is the lowest-risk first cut in a function this central. I would not touch the inner closures without a characterization test suite in place first.
+
+**`mapper` — linkDocblocks/plugin.ts**
+
+<FunctionCard fn='mapper' file='website/plugins/remark-typescript-tools/linkDocblocks/plugin.ts' risk='11.42' band='debt' cc='10' nd='1' fo='13' touches='0' />
+
+This second `mapper` lives in a different plugin and shares nothing with the first but a name. It scores 11.42, with a cyclomatic complexity of 10, a nesting depth of only 1 and a fan-out of 13, and it has not changed in 42 days. The patterns are exit_heavy and god_function. From the excerpt, it checks that a paragraph holds a single link, validates that the link uses a docblock scheme, parses a query string for a token and an overload index, throws on several invalid inputs, looks up a comment, maps requested sections through a lookup table, and finally trims trailing whitespace in code nodes.
+
+The flat nesting is a good sign: this is a sequence of guard clauses, not a tangle. The cost is the number of exit paths, each a test case, and three separate throw sites for malformed input. I would split it into a parsing step that turns the link into a validated request object (file name, token, overload, sections) and a rendering step that turns a request into nodes. The parsing half then holds all the throws and can be tested without any tree machinery.
+
+**What I would do with this**
+
+The three plugin files take four of the five slots, and three of those four functions are named `mapper` or `transformer`. My two highest-leverage moves: split `mapper` and `transformer` in transpileCodeblocks/plugin.ts while the file is warm, and add a characterization test around `createStore` before any future change lands there.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 5 |
+| `neighbor_risk` | 5 |
+| `exit_heavy` | 5 |
+| `long_function` | 3 |
+| `cyclic_hub` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`cyclic_hub`](https://hotspots.dev/analyses/patterns/cyclic_hub/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`neighbor_risk`](https://hotspots.dev/analyses/patterns/neighbor_risk/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/reduxjs/redux
+cd redux
+git checkout 61ebf8596654cf3c4b197e426e302fcb3c2bc13e
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
