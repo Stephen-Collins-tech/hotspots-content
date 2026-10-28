@@ -1,0 +1,139 @@
+---
+title: "Postgres's tablecmds.c carries the highest activity risk — 5 functions to address first"
+titleSeo: "postgres code health: tablecmds.c holds all five top refactoring priorities"
+description: "All five of the highest-risk functions in postgres/postgres sit in src/backend/commands/tablecmds.c, the ALTER TABLE implementation, and all five are classed as live-risk 'fire' functions."
+introContent: "Every one of the top five risk hotspots in postgres lives in a single file, tablecmds.c. I read that as a module-level maintainability problem rather than five unrelated functions."
+pubDate: 2026-10-28
+tags: ["oss", "c", "refactoring", "code-health"]
+draft: false
+repo: "postgres/postgres"
+commit: "4848fd6752ad6b88c5a066442df35ba208dfcec5"
+language: "c"
+hotspots_version: "2.4.0"
+analyzed_at: "2026-10-28T09:35:21Z"
+clone_depth: 100
+topRisk: 131.27
+topFunction: "ATRewriteTable"
+topFile: "src/backend/commands/tablecmds.c"
+topPatterns: ["neighbor_risk", "exit_heavy", "god_function", "long_function", "complex_branching"]
+patternCounts: {complex_branching: 4, exit_heavy: 5, god_function: 5, long_function: 5, neighbor_risk: 7, deeply_nested: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in postgres?"
+    answer: "A god function is one that does too much: it is long, branches heavily and calls a large number of other functions, so understanding or changing it means holding many responsibilities in your head at once. In postgres, all five of the top hotspots in tablecmds.c carry this flag, with fan-out between 28 and 60 distinct callees. That breadth makes the functions hard to test in isolation and lets a change ripple into code that looks unrelated. It matters most here because the same file is where ALTER TABLE behavior is implemented, so these functions sit on paths many commands share."
+  - question: "How do I reduce cyclomatic complexity in c?"
+    answer: "The main technique is extract-method: pull a self-contained branch or phase into a named function so the parent has fewer paths. Complexity above 15 deserves a look and above 30 deserves prompt attention. A concrete first step is in `ATExecChangeOwner`, where the switch over relation kinds could move into one small policy function, removing a large share of its 38 paths from the main body. For dispatch-style switches like `ATExecCmd`, the better goal is keeping each case a thin call rather than splitting the switch itself."
+  - question: "Is postgres actively maintained?"
+    answer: "The data points to active development: all five top functions are in the fire quadrant, each with 1 touch in the last year and 12 days since last change, and 9,730 functions repo-wide fall in the fire quadrant. The file-level history for tablecmds.c shows 2 commits in the data, 2 distinct authors in the last 90 days, a bug-fix rate of 0% and no reverts. Active change and high structural complexity are not mutually exclusive, and here they coincide. I would read this as an actively edited module with concentrated complexity, not as a sign of neglect."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit 4848fd6 of postgres/postgres. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how recently and how often a function has been changed. Functions that are both hard to understand and actively changing score highest, because that is where a new regression is most likely to be introduced. A very complex function that nobody has touched in years scores lower than a moderately complex one that changes every week. In this analysis the scores are tightly clustered, 130.0 to 131.27, because all five functions share the same recent change."
+---
+
+All 5 of the top hotspots in postgres/postgres live in one file, `src/backend/commands/tablecmds.c`, and each is in the 'fire' quadrant: structurally complex and changed 12 days before this snapshot. The highest-ranked, `ATRewriteTable`, has an activity-weighted risk score of 131.27, and the other four sit between 130.0 and 130.99, so no single function stands out and the whole module needs attention. This analysis covers 24,382 functions at commit 4848fd6, 4,562 of them in the critical band. I would start with `ATRewriteTable`, which has the highest fan-out of the five (60), and keep `ATExecCmd`, which has the highest complexity (76), as a thin dispatch switch.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `ATRewriteTable` | src/backend/commands/tablecmds.c | 131.3 | 41 | 4 | 60 |
+| `ATExecChangeOwner` | src/backend/commands/tablecmds.c | 131.0 | 38 | 4 | 49 |
+| `MergeConstraintsIntoExisting` | src/backend/commands/tablecmds.c | 130.8 | 26 | 5 | 28 |
+| `ATExecCmd` | src/backend/commands/tablecmds.c | 130.2 | 76 | 2 | 54 |
+| `RemoveInheritance` | src/backend/commands/tablecmds.c | 130.0 | 23 | 4 | 35 |
+
+## One file, five hotspots
+
+When the top five all share a file, the usual advice of 'refactor the worst function' stops being useful. Anyone touching ALTER TABLE behavior in `tablecmds.c` is likely to land in one of these functions, or in a neighbor that calls into them. The repository-wide picture is below: 9,730 functions are in the fire quadrant and 14,652 are in watch. None are classed as debt or ok.
+
+<BandChart fire='9730' debt='0' watch='14652' ok='0' />
+
+The antipattern mix across the five is consistent. Every one of them is flagged as a god function, long function and exit-heavy, and neighbor risk shows up in all five. It is also flagged on 2 of the 5 context-only functions, 7 occurrences in total.
+
+<PatternCloud patterns='neighbor_risk:7,exit_heavy:5,god_function:5,long_function:5,complex_branching:4,deeply_nested:1' />
+
+Two caveats before the function-level analysis. The activity-weighted scores sit within about one point of each other, and every function shows 1 touch in the last year with 12 days since last change. That points to one recent change to the file rather than five independent churn histories. The historical signals for the file are also mild: 2 commits total, a bug-fix rate of 0%, no reverts, no bug-linked commits and no review comments. So I would frame this as concentrated structural complexity in actively edited code, not as evidence of a defect-prone module.
+
+### `ATRewriteTable` — tablecmds.c
+
+<FunctionCard fn='ATRewriteTable' file='src/backend/commands/tablecmds.c' risk='131.27' band='fire' cc='41' nd='4' fo='60' touches='1' />
+
+From the name and the excerpt, this is the routine that rewrites a table's contents, opening the old relation and optionally a new heap, and preparing bulk-insert state and executor state along the way. The excerpt also shows it building expression states for constraints and partition-check quals. A cyclomatic complexity of 41 is high, but the number that stands out is fan-out: 60 distinct callees is the highest of the five, so the function touches a very wide slice of the backend. That is the main blast-radius concern for any change here.
+
+The visible structure suggests several distinct phases in one body: relation setup, insert-state setup, executor and constraint preparation, and presumably the row-processing loop. I would start here and extract the setup phases into named helpers so the core rewrite loop can be reviewed on its own. With a nesting depth of only 4, extraction should be mechanical rather than a restructuring exercise.
+
+### `ATExecChangeOwner` — tablecmds.c
+
+<FunctionCard fn='ATExecChangeOwner' file='src/backend/commands/tablecmds.c' risk='130.99' band='fire' cc='38' nd='4' fo='49' touches='1' />
+
+This handles ALTER ... OWNER. The excerpt shows a switch over relation kinds that decides whether ownership can change: tables, views, materialized views and foreign tables are allowed, indexes are handled with a warning, partitioned indexes error out unless the call is recursive, and sequences have their own checks. Much of the complexity of 38 appears to come from that per-kind policy, with a fan-out of 49 on top.
+
+The relkind policy is the natural seam. A small function that answers 'can this relation kind change owner, and how' would pull the switch and its messages out of the main flow and leave the ownership update easier to follow. Because the function is exit-heavy, each early-out path is a distinct test case, so I would write one test per relkind branch before moving anything.
+
+### `MergeConstraintsIntoExisting` — tablecmds.c
+
+<FunctionCard fn='MergeConstraintsIntoExisting' file='src/backend/commands/tablecmds.c' risk='130.79' band='fire' cc='26' nd='5' fo='28' touches='1' />
+
+This is the only function in the set flagged as deeply nested, with a nesting depth of 5, the deepest of the five. The excerpt shows an outer scan over the parent's constraints with an inner scan over the child's, matching CHECK constraints by name and NOT NULL constraints by attribute number. A nested catalog-scan loop with different matching rules per constraint type is where depth and branching pile up.
+
+I would extract the inner child-matching logic into a function that returns the matching child constraint, if any. That should reduce the nesting and lets the CHECK and NOT NULL matching rules be tested separately. The complexity of 26 is the second-lowest of the five, behind `RemoveInheritance` at 23, and the fan-out of 28 is the lowest, so this is probably among the cheaper ones to improve.
+
+### `ATExecCmd` — tablecmds.c
+
+<FunctionCard fn='ATExecCmd' file='src/backend/commands/tablecmds.c' risk='130.19' band='fire' cc='76' nd='2' fo='54' touches='1' />
+
+Here the cyclomatic complexity is the highest in the set at 76, yet the nesting depth is only 2. The excerpt explains why: it is a large switch over ALTER TABLE subcommand types, with most cases dispatching to a dedicated routine such as the add-column, drop-column, set-statistics and add-index handlers, then breaking. That is a dispatch table written as a switch, which is easier to reason about than the same complexity expressed through nested conditionals.
+
+Still, 76 paths with a fan-out of 54 means every new ALTER TABLE subcommand adds another case here, and every subcommand passes through this one function. I would not rush to split it. A first step would be to confirm that each case stays a thin call, and to move the cases that do more than dispatch, such as those that transform the command first, into their own handlers so the switch stays uniform.
+
+### `RemoveInheritance` — tablecmds.c
+
+<FunctionCard fn='RemoveInheritance' file='src/backend/commands/tablecmds.c' risk='130.0' band='fire' cc='23' nd='4' fo='35' touches='1' />
+
+This detaches a child relation from a parent. The excerpt shows it deleting the inheritance record, erroring differently for partitions and for ordinary inheritance when the link is missing, then scanning the child's attributes to decrement inheritance counts, with further handling for check and not-null constraints afterwards. Its complexity of 23 is the lowest of the five, but it carries a fan-out of 35 and a nesting depth of 4.
+
+It appears to handle three separate catalog concerns in sequence: the inheritance row, the attributes and the constraints. Each is a candidate for its own helper, which would leave the top-level function reading as three named steps. The partition-versus-inheritance error handling is a small decomposition on its own.
+
+## What the neighbors tell me
+
+The other functions in the same file that the analysis surfaces as context are low in structural complexity, with complexity values between 3 and 6. Their scores are likely elevated by the same recent activity (1 touch, 12 days since last change) seen across the file. They are in the watch quadrant, not refactoring priorities. The neighbor-risk flag on the top five is the more useful signal: changes in these functions may need coordinated edits elsewhere, and every function listed shows the same 12 days since last change.
+
+## Where I would put effort
+
+1. Start with `ATRewriteTable`: highest fan-out (60) and highest score.
+2. Add per-branch tests to `ATExecChangeOwner` before touching its relkind switch.
+3. Flatten the nested scans in `MergeConstraintsIntoExisting`.
+4. Leave `ATExecCmd` as a switch, but keep each case a thin call.
+5. Split `RemoveInheritance` into its three catalog steps.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `neighbor_risk` | 7 |
+| `exit_heavy` | 5 |
+| `god_function` | 5 |
+| `long_function` | 5 |
+| `complex_branching` | 4 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`neighbor_risk`](https://hotspots.dev/analyses/patterns/neighbor_risk/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/postgres/postgres
+cd postgres
+git checkout 4848fd6752ad6b88c5a066442df35ba208dfcec5
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
