@@ -1,0 +1,116 @@
+---
+title: "Guava's LocalCache.java carries the highest activity risk — 3 functions to address first"
+titleSeo: "guava code health: LocalCache.java leads the technical debt and refactoring priority list"
+description: "All five top-ranked functions in guava sit in LocalCache.java, with lockedGetOrLoad and storeLoadedValue mirrored across the guava and android source trees, and deep nesting and heavy fan-out concentrated in those two."
+introContent: "Every one of guava's five highest-priority functions lives in a single file, LocalCache.java, and lockedGetOrLoad and storeLoadedValue appear again in the android tree. The risk is structural: deep nesting and heavy coupling in code that sits under the cache's locking path."
+pubDate: 2026-10-29
+tags: ["oss", "java", "refactoring", "code-health"]
+draft: true
+repo: "google/guava"
+commit: "ae0fa4bdaeef91c6f309c886263eb3b319b21568"
+language: "java"
+hotspots_version: "2.5.0"
+analyzed_at: "2026-10-29T10:16:59Z"
+clone_depth: 100
+topRisk: 39.56
+topFunction: "lockedGetOrLoad"
+topFile: "guava/src/com/google/common/cache/LocalCache.java"
+topPatterns: ["deeply_nested", "god_function", "exit_heavy", "long_function", "complex_branching"]
+patternCounts: {deeply_nested: 6, exit_heavy: 2, god_function: 4, long_function: 2, complex_branching: 2}
+qaSection:
+  - question: "What is a god function and why does it matter in guava?"
+    answer: "A god function does too many jobs in one body, which shows up as long length, many direct calls to other functions, and several layers of control flow. It is hard to test in isolation because one change can alter behavior in several unrelated responsibilities at once. In guava, 4 of the flagged patterns across the top hotspots are god function, concentrated in `lockedGetOrLoad` and `storeLoadedValue` (fan-out 28 and 24) in both source trees. In those functions, locking, lookup, expiry handling, notification, and loading all share one body."
+  - question: "How do I reduce deep nesting and fan-out in java?"
+    answer: "Use extract-method to move each nested block into a named helper, and decompose-conditional to turn branch outcomes into separate methods. I would act on nesting depth of 5 or more and fan-out above 15, and treat anything near 28 as a clear signal to split. A concrete first step for `lockedGetOrLoad` is to lift the bucket-chain scan into a helper that returns the matching entry, which removes one loop and its nested conditions from the main body. Put tests around the lock, cleanup, and unlock ordering before moving anything."
+  - question: "Is guava actively maintained?"
+    answer: "The data I have does not support a repository-wide claim, but it does show active areas: 96 functions sit in the 'fire' quadrant. All five of my top hotspots are in the 'debt' quadrant with 0 touches in the last year. The most recently changed of them, `loadAll`, has 55 days since last change, while `lockedGetOrLoad` and `storeLoadedValue` stand at 62 days. Active development and concentrated structural debt are not mutually exclusive, and this analysis shows both."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone google/guava, run `git checkout ae0fa4b` to match the commit I analyzed, and use the hotspots CLI from GitHub. The command is `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with recent change activity, so functions that are both hard to understand and actively changing score highest. A complex function with no recent changes has lower near-term regression risk, but it can still rank high when its structure is bad enough. In this analysis all five top functions are 'debt' functions with 0 touches in the last year, so their scores of 37.45 to 39.56 come mostly from structure. That is why I read them as refactoring candidates to schedule, not live regressions."
+---
+
+One file, LocalCache.java, holds all 5 of my top hotspots, spread across two copies (the guava and android source trees). Anyone touching the cache internals is working in the densest risk cluster in the repository. The top function, lockedGetOrLoad, is a 'debt' function with an activity-weighted risk score of 39.56 and 0 touches in the last year, so I am framing it as structural debt with high blast radius when next changed, not as live churn. Guava is a Java core library with 45,259 analyzed functions, 432 of them critical. I would start with the cache's locked load and store paths, where nesting depth, wide fan-out, and lock-protected state pile up together.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `lockedGetOrLoad` | guava/src/com/google/common/cache/LocalCache.java | 39.6 | 9 | 6 | 28 |
+| `lockedGetOrLoad` | android/guava/src/com/google/common/cache/LocalCache.java | 38.7 | 9 | 6 | 28 |
+| `storeLoadedValue` | guava/src/com/google/common/cache/LocalCache.java | 38.2 | 11 | 5 | 24 |
+| `loadAll` | guava/src/com/google/common/cache/LocalCache.java | 37.4 | 11 | 2 | 14 |
+| `storeLoadedValue` | android/guava/src/com/google/common/cache/LocalCache.java | 37.3 | 11 | 5 | 24 |
+
+<BandChart fire='96' debt='2382' watch='946' ok='41835' />
+
+<PatternCloud patterns='deeply_nested:6,god_function:4,exit_heavy:2,long_function:2,complex_branching:2' />
+
+The quadrant split shapes how I read this list. Of 45,259 functions, only 96 are in the 'fire' quadrant and 2,382 are 'debt'. All five of my top hotspots are 'debt': none has been touched in the last year. Structure drives the ranking, so these are refactoring candidates to schedule before the next development push in this area, not regressions currently in flight. The figures for lockedGetOrLoad and storeLoadedValue below also appear twice, because the guava and android trees carry identical copies of these functions. A refactor has to land in both.
+
+The historical signals are quiet. For every function in this list, the file shows 7 commits in total, no bug-linked commits, no reverts, a bug-fix rate of 0%, and no pull-request review comments. I read that as maintainability debt, not a record of defects. It also tells me the file changes rarely, which is part of why the cost of a wrong future change is hard to gauge from history alone. Two distinct authors touched the file in the last 90 days.
+
+### `lockedGetOrLoad` — LocalCache.java
+
+<FunctionCard fn='lockedGetOrLoad' file='guava/src/com/google/common/cache/LocalCache.java' risk='39.56' band='debt' cc='9' nd='6' fo='28' touches='0' />
+
+I would start with `lockedGetOrLoad`, which pairs a nesting depth of 6 with a fan-out of 28; the android copy scores almost the same (an activity-weighted risk score of 38.68). Its cyclomatic complexity of 9 is moderate, so the trouble is not the number of paths but the depth and breadth around them. The excerpt shows a lock acquired and released in a try/finally, a scan down a hash bucket chain with key-equivalence checks, branches for entries that are loading, collected, or expired, and then a separate load step synchronized on the entry. It is flagged as deeply nested, god function, and long function, and the excerpt backs all three: lock management, table lookup, expiry handling, notification enqueuing, and load coordination share one body.
+
+<MetricBar label='Fan-out' value='28' threshold='15' max='30' />
+
+The highest-value first step is extract-method. I would pull the bucket scan into a helper that returns what was found, and move the loading-or-wait decision out of the locked region's body so each piece can be tested on its own. The ordering of lock, cleanup, and unlock is what I would protect with tests before moving anything. This function has gone 62 days without a change, so those tests can be written before anyone is under delivery pressure.
+
+### `storeLoadedValue` — LocalCache.java
+
+<FunctionCard fn='storeLoadedValue' file='guava/src/com/google/common/cache/LocalCache.java' risk='38.19' band='debt' cc='11' nd='5' fo='24' touches='0' />
+
+`storeLoadedValue` scores 38.19 in the guava tree and 37.32 in the android tree, with a cyclomatic complexity of 11, nesting depth of 5, and fan-out of 24. It is flagged as complex branching, deeply nested, and god function. From the excerpt, it takes the lock, optionally expands the table when the count passes the threshold, walks the bucket chain, and then picks one of three outcomes: replace the loading reference, treat the loaded value as already overwritten, or insert a fresh entry. Each outcome does its own bookkeeping for counts, modification tracking, removal notifications, and eviction.
+
+This branching is where a future change is most likely to go wrong, because the three outcomes share state updates that must stay consistent. I would decompose by outcome: one helper per branch, each owning its notification and count updates, with the outer method reduced to lock, lookup, and dispatch. Like its sibling, it has gone 62 days without a change, so it carries a high blast radius when next touched.
+
+### `loadAll` — LocalCache.java
+
+<FunctionCard fn='loadAll' file='guava/src/com/google/common/cache/LocalCache.java' risk='37.45' band='debt' cc='11' nd='2' fo='14' touches='0' />
+
+`loadAll` is the outlier here. With nesting depth of only 2 and fan-out of 14, it is structurally flat next to the other two. Its risk comes from a cyclomatic complexity of 11 driven by exits. The excerpt shows a stack of catch clauses that each translate a different failure into a different exception type, a stats-recording finally block, and several early throws for null maps, null keys, and null values. That matches its exit-heavy flag. Every exit path is a test case, and some depend on the loader returning unusual results.
+
+I would not refactor this one first. It is the cheapest function in the list to cover with tests, since each exit can be triggered with a stub loader, and that coverage is the useful step. If the exception translation ever needs to change, pulling the catch ladder into a single translation helper would shrink the method and put the mapping rules in one place. It has gone 55 days without a change.
+
+**Same functions, android tree**
+
+The android copies of `lockedGetOrLoad` and `storeLoadedValue` match the guava copies in complexity, nesting, and fan-out, and differ only slightly in risk score (38.68 and 37.32). With two near-identical copies of this logic, any refactor must be applied twice, and any behavioral fix risks landing in only one tree. I would treat the pair as a single work item and confirm the shared tests run against both before changing either.
+
+**What else is nearby**
+
+The context list shows what activity looks like around this cluster. A few nearby functions are 'fire' functions with 1 touch in the last year, so recent changes are landing in complex code there. The top five are different: high-impact cleanup items that nobody has needed to touch recently, which is exactly when to refactor them.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `deeply_nested` | 6 |
+| `god_function` | 4 |
+| `exit_heavy` | 2 |
+| `long_function` | 2 |
+| `complex_branching` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/google/guava
+cd guava
+git checkout ae0fa4bdaeef91c6f309c886263eb3b319b21568
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
