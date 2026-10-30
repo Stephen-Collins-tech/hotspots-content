@@ -1,0 +1,142 @@
+---
+title: "Pulsar's ManagedCursorTest holds all 5 top hotspots — one test file to address first"
+titleSeo: "apache/pulsar code health: ManagedCursorTest dominates the refactoring priority list"
+description: "All five highest-risk functions in apache/pulsar sit in a single test file, ManagedCursorTest.java, driven mostly by very high fan-out and long, multi-purpose test methods."
+introContent: "Every one of the top five hotspots in apache/pulsar lives in ManagedCursorTest.java. The risk there is less about branching and more about test methods that touch dozens of collaborators."
+pubDate: 2026-10-30
+tags: ["oss", "java", "refactoring", "code-health"]
+draft: false
+repo: "apache/pulsar"
+commit: "a996f4192d05c333944f64c1564e34dfb2187a41"
+language: "java"
+hotspots_version: "2.5.0"
+analyzed_at: "2026-10-30T10:02:58Z"
+clone_depth: 100
+topRisk: 53.61
+topFunction: "testScan"
+topFile: "managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java"
+topPatterns: ["god_function", "long_function", "exit_heavy", "complex_branching", "deeply_nested"]
+patternCounts: {exit_heavy: 2, god_function: 4, long_function: 3, complex_branching: 1, deeply_nested: 1}
+qaSection:
+  - question: "What is a god function and why does it matter in pulsar?"
+    answer: "A god function is one that does too many distinct jobs in a single body, typically visible as very high fan-out, meaning it calls a large number of different functions. That makes it hard to test or read in isolation and means a change can ripple in unexpected ways. In Pulsar, 4 of the top 5 hotspots carry this pattern, all in ManagedCursorTest.java, with fan-out values from 22 to 84. Because these are test methods, the practical cost is slow diagnosis when one fails, not production risk."
+  - question: "How do I reduce fan-out in java?"
+    answer: "The main technique is extract-method: group related calls into well-named helpers so the original function calls a handful of them instead of dozens of low-level operations. A fan-out above 15 is a signal worth examining, and above 40 warrants action soon. A concrete first step for `replayRunsOfClosePositions`, which has a fan-out of 84, is to pull the ledger-and-position setup, the cache population, and the asynchronous read-and-replay callbacks into three separate helpers. That alone should remove well over half of its direct calls."
+  - question: "Is pulsar actively maintained?"
+    answer: "The data says yes for the area I looked at. All 5 top functions are in the fire quadrant, each with 1 touch in the last year and last changed 6 days before the snapshot, and the file has 2 distinct authors in the last 90 days. Across the repository, 7,041 functions are classed as fire and 39,328 as watch. Active development and structural complexity are not mutually exclusive, and this analysis does not measure overall project quality."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit a996f41 of apache/pulsar. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how recently and how often a function has been changed. Functions that are both hard to understand and actively changing score highest. A very complex function that has not been touched in two years scores lower than a moderately complex one edited every week, because the dormant one has less near-term regression risk. This helps focus refactoring where it reduces the chance of introducing bugs now, not just where the code looks complicated in the abstract."
+---
+
+I went looking for Pulsar's riskiest code and found it all in one place. ManagedCursorTest.java in the managed-ledger module holds all 5 of the top hotspots in apache/pulsar, so this is a file-level problem, not a single-function one. Anyone adding a test or changing cursor behavior there is working in a file where every top-ranked function is a 'fire' quadrant function, all last changed 6 days ago, with activity-weighted risk scores between 50.57 and 53.61. I analyzed Pulsar at 46,369 functions, 1,752 of them critical, and I would start with `testScan` (score 53.61, fan-out 69) and `replayRunsOfClosePositions` (fan-out 84), because they pair the widest coupling with recent changes.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `testScan` | managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java | 53.6 | 7 | 2 | 69 |
+| `testConcurrentPropertyOperationsThreadSafety` | managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java | 53.2 | 10 | 4 | 43 |
+| `replayRunsOfClosePositions` | managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java | 51.6 | 12 | 3 | 84 |
+| `assertHasBacklogMatchesBacklogCountsAcrossGeneratedOperationSequence` | managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java | 51.0 | 4 | 6 | 22 |
+| `testReplayAtReadPositionMovesReadPositionForwardOnce` | managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java | 50.6 | 3 | 1 | 33 |
+
+<BandChart fire='7041' debt='0' watch='39328' ok='0' />
+
+<PatternCloud patterns='god_function:4,long_function:3,exit_heavy:2,complex_branching:1,deeply_nested:1' />
+
+The distribution first. Of 46,369 functions, 7,041 land in the fire quadrant and 39,328 in watch, with nothing in debt or ok. That split says less about Pulsar than about the snapshot: nearly everything here was touched recently enough to count as active. So the ranking among fire functions is what matters, and here one file dominates it.
+
+What the five functions share is not high cyclomatic complexity. Their complexity values run from 3 to 12, which is moderate. Fan-out (22 to 84) combined with recent change is what pushes them up. These are test methods that set up a ledger, open a cursor, add entries, and assert on several outcomes in one body. That is the shape the god_function and long_function patterns describe, and it is what I would expect from tests that exercise a stateful component end to end.
+
+I also want to be careful about what the history data does and does not say. All five functions share the same file-level signals: 2 total commits in the file's history, a bug-fix rate of 100%, no bug-linked commits, no reverts, 2 distinct authors in the last 90 days, and zero review-comment density. With only 2 commits behind it, a 100% bug-fix rate is a thin sample, not a trend, and nothing here shows that any of these tests is defective. I treat it as a mild reason to read recent changes closely, not as evidence of problems.
+
+Every function below was touched once in the last year, 6 days before the snapshot. These are not long-running churn magnets; they are recently added or recently edited, which fits a file that is still growing.
+
+### `testScan` — ManagedCursorTest.java
+
+<FunctionCard fn='testScan' file='managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java' risk='53.61' band='fire' cc='7' nd='2' fo='69' touches='1' />
+
+This is the top-ranked function, with an activity-weighted risk score of 53.61. It is a data-provider-driven test that exercises the cursor's scan operation across several outcomes: full completion, scanning from a mid-point position, user interruption, abort on a max-entries limit, abort on a timeout, a user callback that throws, and deleted entries.
+
+<MetricBar label='Fan-out' value='69' threshold='15' max='90' />
+
+A fan-out of 69 is the headline. Cyclomatic complexity is only 7 and nesting depth is 2, so the control flow is easy to follow; the cost is that one method asserts on many distinct behaviors in sequence. The exit_heavy pattern shows in the early return when there are no entries, and the god_function and long_function patterns reflect the sheer number of scenarios packed together. When it fails partway through, the stack trace is the only way to tell which scenario broke.
+
+My recommendation: split it by outcome. Scan-from-start, scan-from-position, interruption, abort limits, callback exceptions, and deleted-entry handling each become their own test sharing a small helper for ledger and cursor setup. The timeout case already has a batch-size guard that carries over easily to its own test. Each piece would then have a fan-out well under 20.
+
+### `testConcurrentPropertyOperationsThreadSafety` — ManagedCursorTest.java
+
+<FunctionCard fn='testConcurrentPropertyOperationsThreadSafety' file='managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java' risk='53.25' band='fire' cc='10' nd='4' fo='43' touches='1' />
+
+With a score of 53.25, this is a concurrency stress test: it spins up a 100-thread pool, submits 10,000 operations that randomly put, remove, or read cursor properties, and checks that no inconsistent state or unexpected exceptions appear. Cyclomatic complexity is 10 and nesting depth is 4, which comes from a switch inside a try block inside a lambda, plus a separate wait loop with its own try and catch.
+
+I would flag that the test mixes three jobs: orchestrating the executor, defining the randomized workload, and verifying results. Intermittent concurrency failures are the hardest to debug, and the extra nesting makes it harder to tell whether a failure came from the workload or from the harness. The workload creates a fresh Random per task and the failure path calls fail() from inside worker threads, so I would move the workload into a named method or small class and keep the test body to setup, submit, wait, and assert. Behavior stays identical, and nesting depth should drop to around 2.
+
+### `replayRunsOfClosePositions` — ManagedCursorTest.java
+
+<FunctionCard fn='replayRunsOfClosePositions' file='managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java' risk='51.61' band='fire' cc='12' nd='3' fo='84' touches='1' />
+
+This one has the highest fan-out in the set at 84 and the highest cyclomatic complexity at 12. It is a private helper, not a test method itself, parameterized by whether entries are partly cached and whether cache eviction is by expected read count. It builds a two-ledger layout of 600 entries, selects a specific pattern of positions, optionally pre-populates the entry cache with chosen expected read counts, runs an asynchronous replay, and verifies the returned entries and cache state.
+
+<MetricBar label='Fan-out' value='84' threshold='15' max='90' />
+
+What concerns me is that the parameters change both the setup and the assertions, so several scenarios hide behind one body. The god_function and long_function patterns both apply. Callback boilerplate for the entry read and the replay also inflates the fan-out count without adding logic.
+
+My recommendation: extract three pieces. One builds the ledger and positions, one populates the cache for the partly-cached variant, and one wraps the async read and replay into a future-returning helper. The callback adapters are the best candidates, since they appear twice and carry nothing scenario-specific. That should cut fan-out substantially and make the cache-state assertions easier to find.
+
+### `assertHasBacklogMatchesBacklogCountsAcrossGeneratedOperationSequence` — ManagedCursorTest.java
+
+<FunctionCard fn='assertHasBacklogMatchesBacklogCountsAcrossGeneratedOperationSequence' file='managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java' risk='51.05' band='fire' cc='4' nd='6' fo='22' touches='1' />
+
+This is a seeded, randomized test helper that runs 120 steps of generated operations (add, delete, mark-delete, reset, reopen) and checks backlog consistency after each one. Cyclomatic complexity is only 4, but nesting depth is 6, the deepest in the set and the source of the deeply_nested pattern. The depth comes from branching on a random operation choice, with some branches containing further conditionals for the case where no readable position exists.
+
+<MetricBar label='Nesting Depth' value='6' threshold='4' max='8' />
+
+I would leave the design alone. It is sensible for catching state-machine bugs, and the seed in each failure message lets a run be reproduced. The problem is readability of the dispatch. The fallback of 'if no readable position, add an entry instead' repeats across several branches, and that repetition drives the depth. Extracting each operation into a small method that returns its description string, with the fallback handled once, would flatten the chain into a simple selection and bring nesting down to about 2 or 3.
+
+### `testReplayAtReadPositionMovesReadPositionForwardOnce` — ManagedCursorTest.java
+
+<FunctionCard fn='testReplayAtReadPositionMovesReadPositionForwardOnce' file='managed-ledger/src/test/java/org/apache/bookkeeper/mledger/impl/ManagedCursorTest.java' risk='50.57' band='fire' cc='3' nd='1' fo='33' touches='1' />
+
+The lowest-ranked of the five, with a score of 50.57 and the simplest control flow: cyclomatic complexity 3, nesting depth 1. It tests a specific race, where a replay compares a position against the read position at the same moment a normal read completes. To set that up, it defines an anonymous Position subclass whose comparison method moves the read position as a side effect.
+
+Only the exit_heavy pattern is flagged, and the metrics are modest. I would not prioritize refactoring here. The point worth making is about maintenance: the test depends on the order in which the implementation calls the comparison method, so a change to how replay compares positions could break it for reasons unrelated to correctness. A short comment in the test explaining that dependency is enough.
+
+**What the concentration means**
+
+Two things stand out about this file. First, several other test methods in the file sit in the watch quadrant with scores near 47, just below the top five. The file looks broadly high-coupling, not just five outliers. Second, every one of these functions was last changed 6 days ago and the file has a short history of 2 commits, so the structure of this file is still being set. That is the cheapest time to establish conventions, such as scenario-per-test and shared setup helpers, before the file grows further.
+
+My suggestion to anyone working here is to apply one rule to all five: when a test body covers several scenarios or one helper has a fan-out above roughly 40, split by scenario and move shared setup to named helpers. The change is mechanical and carries low risk to production code, since all five functions are test code.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `god_function` | 4 |
+| `long_function` | 3 |
+| `exit_heavy` | 2 |
+| `complex_branching` | 1 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/apache/pulsar
+cd pulsar
+git checkout a996f4192d05c333944f64c1564e34dfb2187a41
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
