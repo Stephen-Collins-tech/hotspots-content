@@ -1,0 +1,117 @@
+---
+title: "Gradle's build-init generator carries the highest activity risk"
+titleSeo: "gradle code health: BuildScriptBuilder.java leads refactoring priority"
+description: "All five top-ranked hotspots in gradle/gradle sit in a single file, BuildScriptBuilder.java in the build-init plugin, each changed within the last 11 days."
+introContent: "All five of the highest-risk functions in gradle/gradle live in one file, the build-init script generator. I walk through what that concentration means before the next change lands there."
+pubDate: 2026-10-31
+tags: ["oss", "groovy", "refactoring", "code-health"]
+draft: false
+repo: "gradle/gradle"
+commit: "252861a9efe84b0e79dd0ffcb72ee6ebd555fa00"
+language: "groovy"
+hotspots_version: "2.5.0"
+analyzed_at: "2026-10-31T18:47:14Z"
+clone_depth: 25
+hybrid_touch_threshold: 5
+topRisk: 531.65
+topFunction: "printStatement"
+topFile: "platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java"
+topPatterns: ["exit_heavy"]
+patternCounts: {exit_heavy: 2}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in gradle?"
+    answer: "An exit-heavy function has many separate return or throw points, so each exit is a distinct path that needs its own test. In gradle, `expressionValue` in BuildScriptBuilder.java carries the pattern: it returns a different value wrapper per input type and throws on anything unrecognized. The structure is easy to read when nesting is shallow, but every new supported case adds another exit and another required test."
+  - question: "How do I reduce cyclomatic complexity in groovy?"
+    answer: "The usual technique is extract-method, often combined with decompose-conditional: pull each branch group into a named helper so the parent reads as a sequence of steps. A cyclomatic complexity above 15 is a reasonable trigger to split a function, and above 30 deserves immediate attention. A concrete first step in this repository is `printStatement`, which sits at 9: moving its comment-mode switch into its own method would remove a large share of its paths. Collapsing duplicated branches, as in `getLiteral`, also lowers the count without changing behavior."
+  - question: "Is gradle actively maintained?"
+    answer: "The data points that way, though it cannot settle the question. 4,371 functions are in the 'fire' quadrant, meaning they are both complex enough to flag and recently changed. All five top hotspots in BuildScriptBuilder.java (`printStatement`, `expressionValue`, `printFileHeader`, `getLiteral`, `makeDepSpec`) are in the 'fire' quadrant, were last changed 11 days before the analysis, and each has 1 touch in the last year. Most of the flagged code is recently changed rather than dormant."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from its GitHub repository and check out commit 252861a of gradle/gradle. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how recently and how often a function has been changed, so functions that are both hard to understand and actively changing score highest. A very complex function that nobody has touched in two years scores lower than a moderately complex one changed last week, because the dormant one has lower near-term regression risk. That is why the top five here have modest complexity numbers yet score above 527: they were all changed 11 days ago. The score directs review effort to where a mistake is most likely to be introduced right now, and it is not a judgment on code quality."
+---
+
+One file holds all five of the top hotspots in gradle/gradle: `BuildScriptBuilder.java` in the build-init plugin. That makes this a module-level finding rather than a single-function one. The leader, `printStatement`, has an activity-weighted risk score of 531.65 and sits in the 'fire' quadrant: it is both structurally non-trivial and was changed 11 days ago, which makes it worth reviewing soon. Across the 52,175 functions I analyzed at commit 252861a, 838 are critical, and the 4,371 in the 'fire' quadrant show how much of the codebase is moving at once. I would start with this file before touching anything else in build-init.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `printStatement` | platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java | 531.7 | 9 | 3 | 7 |
+| `expressionValue` | platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java | 530.3 | 7 | 1 | 2 |
+| `printFileHeader` | platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java | 528.9 | 5 | 3 | 8 |
+| `getLiteral` | platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java | 528.7 | 4 | 2 | 1 |
+| `makeDepSpec` | platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java | 527.9 | 4 | 2 | 8 |
+
+## Large Repo Analysis
+
+gradle is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the touch window (365 days by default); other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+<BandChart fire='4371' debt='1' watch='47801' ok='2' />
+
+<PatternCloud patterns='exit_heavy:2' />
+
+The quadrant split is dominated by 'watch' functions (47,801), which are active but structurally simple. The 4,371 'fire' functions are where complexity and recent change overlap, and the top five of those all come from one file. I want to be clear about what that does and does not mean. These functions have modest complexity numbers by Gradle standards (cyclomatic complexity between 4 and 9). The scores are driven by the fact that every one of them was touched 11 days ago, with 1 touch in the last year, across a file that shows 2 commits in the analysis window and 2 distinct authors in the last 90 days. The file has no bug-linked commits, no reverts, and a bug-fix rate of 0%. I read this as a file under active construction, not a file with a defect history, and the recommendations below are about keeping it maintainable while it changes.
+
+### `printStatement` — BuildScriptBuilder.java
+
+<FunctionCard fn='printStatement' file='platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java' risk='531.65' band='fire' cc='9' nd='3' fo='7' touches='1' />
+
+I would start with `printStatement` because it has the highest activity-weighted risk score in the repository (531.65) and the highest complexity of the five: cyclomatic complexity 9, nesting depth 3, fan-out 7. From the excerpt, it is the pretty-printer's core routine: it skips empty statements, decides whether a separator line is needed, handles three comment modes (on, off, and external) through a switch, delegates to the statement to write its own code, and then updates separator state. That is a lot of mutable printer state (first-statement-of-block, separator-needed, end-of-line comment, comment count) being updated across several branches in one method. The ordering of those updates matters, and a reader has to hold all of it in their head to change any one branch safely. My recommendation: extract the comment-mode switch into its own method, and extract the separator decision into a small helper that returns a boolean, so the method body reads as three steps instead of one block. Before doing that, I would confirm there are tests that cover each comment mode combined with group and block statements.
+
+### `expressionValue` — BuildScriptBuilder.java
+
+<FunctionCard fn='expressionValue' file='platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java' risk='530.28' band='fire' cc='7' nd='1' fo='2' touches='1' />
+
+`expressionValue` has an activity-weighted risk score of 530.28 with cyclomatic complexity 7, nesting depth 1, and fan-out 2. It is flagged exit-heavy, and the excerpt shows why: a flat chain of type checks that each return a different value wrapper (string, literal, map, enum) and finish with an exception for anything unrecognized. The nesting is shallow, so this is easy to read. The cost is on the testing side: each exit is a separate case, and the final throw is a path that only a deliberately unsupported input will reach. I would not restructure this one. I would make sure there is one test per branch, including the failure case, because adding a new supported value type means adding another exit to a function that is already at seven paths.
+
+### `printFileHeader` — BuildScriptBuilder.java
+
+<FunctionCard fn='printFileHeader' file='platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java' risk='528.92' band='fire' cc='5' nd='3' fo='8' touches='1' />
+
+`printFileHeader` scores 528.92 with cyclomatic complexity 5, nesting depth 3, and fan-out 8. It writes the generated-file banner only when comments are enabled, then loops over header lines with a branch for blank lines. The fan-out of 8 is mostly repeated calls to the same line-printing helper, so the coupling is narrower than the number suggests. It is the same printer class as `printStatement`, and both mutate the same separator and first-statement flags. That shared state is the real risk: a change to how one method resets those flags can change the output of the other. I would add a golden-output test that prints a header followed by statements and compares the full text, since that is where an interaction would show up.
+
+### `getLiteral` — BuildScriptBuilder.java
+
+<FunctionCard fn='getLiteral' file='platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java' risk='528.65' band='fire' cc='4' nd='2' fo='1' touches='1' />
+
+`getLiteral` has an activity-weighted risk score of 528.65 with cyclomatic complexity 4, nesting depth 2, and fan-out 1. In the excerpt it builds a Kotlin-DSL container-creation string, branching on whether a variable name and an element type are present. Four combinations produce four slightly different strings, written out as separate concatenations. This is the lowest-risk function of the five structurally; it ranks here because it was changed recently. The practical hazard is duplication: the same creation expression is spelled out four times, so a change to the output format has to be made in four places. I would collapse the four returns into a small composition of an optional declaration prefix and an optional type argument. That reduces the paths and removes the duplicated string assembly.
+
+### `makeDepSpec` — BuildScriptBuilder.java
+
+<FunctionCard fn='makeDepSpec' file='platforms/software/build-init/src/main/java/org/gradle/buildinit/plugins/internal/BuildScriptBuilder.java' risk='527.85' band='fire' cc='4' nd='2' fo='8' touches='1' />
+
+`makeDepSpec` scores 527.85 with cyclomatic complexity 4, nesting depth 2, and fan-out 8. It loops over dependencies and, for each one, branches on whether a version exists and a version catalog is in use: one path registers the library with the catalog and emits a catalog reference, the other emits the plain notation. A sibling method in the same file repeats the same catalog-or-notation branch with a different spec type. I would pull that decision into one shared helper that returns the notation and a flag, so the two methods stop carrying the same conditional. The fan-out is the more interesting number here, since version-catalog registration reaches through the script builder and its generation context. A change to catalog behavior would have to be checked in both methods today.
+
+**What the rest of the file shows**
+
+The next entries by risk come from the same file, all in the 'watch' quadrant, and they are simple individually. I mention them because the file as a whole, not any one function in it, is what a reviewer is facing: a single class containing printer logic, Kotlin and Groovy syntax rendering, dependency specs, and builder entry points. Splitting syntax rendering from statement modeling would reduce how much of the file a single change has to be reasoned against.
+
+Nearly everything else in the analysis is in the 'watch' quadrant, so the activity here is the main signal.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 2 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/gradle/gradle
+cd gradle
+git checkout 252861a9efe84b0e79dd0ffcb72ee6ebd555fa00
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
