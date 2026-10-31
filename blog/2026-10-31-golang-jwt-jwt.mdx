@@ -1,0 +1,123 @@
+---
+title: "jwt's CLI and validation paths carry the highest activity risk: 5 functions"
+titleSeo: "golang-jwt/jwt code health: signToken and ParseUnverified lead refactoring priority"
+description: "In golang-jwt/jwt, the CLI's signToken and verifyToken, plus core functions ParseUnverified, verifyAudience and ECDSA Sign, form a cluster of structurally complex code that are mostly dormant."
+introContent: "The riskiest function in golang-jwt/jwt is a CLI signing routine nobody has changed in 497 days, and most of the other top-ranked functions are just as quiet. I ran the analysis to see where complexity is piling up before the next change lands."
+pubDate: 2026-10-31
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "golang-jwt/jwt"
+commit: "9a618efd06fc5036c19970cdbb1af8d0f802cc49"
+language: "go"
+hotspots_version: "2.5.0"
+analyzed_at: "2026-10-31T17:50:47Z"
+clone_depth: 100
+topRisk: 13.68
+topFunction: "signToken"
+topFile: "cmd/jwt/main.go"
+topPatterns: ["exit_heavy", "god_function", "long_function", "stale_complex"]
+patternCounts: {exit_heavy: 5, god_function: 1, long_function: 1, stale_complex: 1}
+qaSection:
+  - question: "What is an exit-heavy function and why does it matter in jwt?"
+    answer: "An exit-heavy function has many return points, so each one is a separate path a test must cover. In golang-jwt/jwt all five top hotspots carry this pattern, which fits Go's explicit error handling: `ParseUnverified` returns a distinct error for each failed decode step, and `Sign` in `ecdsa.go` has separate returns for key type, hash availability and curve mismatch. The practical cost is test burden, since a cyclomatic complexity of 27 in `ParseUnverified` implies a comparable number of cases to cover. It is manageable, but only if those error branches are tested individually."
+  - question: "How do I reduce cyclomatic complexity in Go?"
+    answer: "Use extract-method to move each responsibility into its own function, and replace repeated branch blocks with a shared helper. A cyclomatic complexity above 15 warrants splitting, and above 30 warrants prompt attention. In `signToken` (complexity 42), the first step I would take today is extracting the three near-identical key-family branches into one helper that converts and parses the key, which removes roughly half the branches. Then separate claim assembly from signing so each piece can be tested on its own."
+  - question: "Is jwt actively maintained?"
+    answer: "The data shows a mixed picture. None of the 116 functions are in the 'fire' quadrant, and all five top hotspots have had no commits in the last year. `ParseUnverified` in `parser.go` was changed most recently, 39 days before the analysis, so the core parsing code is not abandoned. The CLI functions `signToken` and `verifyToken` and ECDSA `Sign` have gone 497 days without a change, and `verifyAudience` 479 days. Stable and structurally complex are not mutually exclusive; the dormancy here reads as settled code rather than neglected code, but it does mean refactoring risk is front-loaded onto whoever touches it next."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the hotspots CLI from GitHub, check out commit 9a618ef of golang-jwt/jwt, and run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with recent commit frequency, so functions that are both hard to understand and actively changing score highest. In this repository every top function has had no commits in the last year, so the scores (10.98 to 13.68) appear to reflect structure and blast radius rather than live churn. The ranking tells you where to invest refactoring effort so the next change is safer, not where bugs currently live."
+---
+
+The function I would worry about most is `signToken` in `cmd/jwt/main.go`: 497 days without a change, a cyclomatic complexity of 42 and a fan-out of 16. Whoever modifies it next inherits a large blast radius. It is not an emergency, since none of the 116 functions I analyzed in golang-jwt/jwt sit in the 'fire' quadrant. All five top hotspots are 'debt', and 13 functions land in the critical band, so the pattern is accumulated structure rather than live churn. golang-jwt/jwt is the Go library for creating, parsing and validating JSON Web Tokens, and the hotspots I flagged span the CLI, the parser, the claims validator and the ECDSA signer.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `signToken` | cmd/jwt/main.go | 13.7 | 42 | 2 | 16 |
+| `ParseUnverified` | parser.go | 12.6 | 27 | 2 | 9 |
+| `verifyAudience` | validator.go | 12.2 | 17 | 3 | 4 |
+| `verifyToken` | cmd/jwt/main.go | 11.5 | 15 | 1 | 16 |
+| `Sign` | ecdsa.go | 11.0 | 13 | 2 | 10 |
+
+<BandChart fire='0' debt='45' watch='0' ok='71' />
+
+<PatternCloud patterns='exit_heavy:5,god_function:1,long_function:1,stale_complex:1' />
+
+The first thing I noticed is what the distribution does not contain. There are zero 'fire' functions and zero 'watch' functions. Of 116 functions, 45 are 'debt' (complex but quiet) and 71 are 'ok'. That tells me this repository's risk is not about regressions in flight. It is about complexity that has been left alone, and the cost lands on the next person who opens these files. Every one of the top five has had no commits in the last year.
+
+Exit-heavy is the dominant pattern: all five top functions have many return paths, which means a large test-coverage burden relative to their size. That is partly a Go idiom, since explicit error returns show up as branches, and I read much of this complexity as error-path branching rather than tangled business logic.
+
+### `signToken` — cmd/jwt/main.go
+
+<FunctionCard fn='signToken' file='cmd/jwt/main.go' risk='13.68' band='debt' cc='42' nd='2' fo='16' touches='0' />
+
+<MetricBar label='Cyclomatic Complexity' value='42' threshold='10' max='60' />
+
+I would start with `signToken` because it combines a cyclomatic complexity of 42 with a fan-out of 16 and has not been changed in 497 days. It is the only function in the top five flagged as a god function, a long function and stale-complex all at once. From the source excerpt, it reads claims data, unmarshals JSON, merges command-line claims, loads a key, resolves a signing algorithm, builds a token, merges headers, then branches on key family (ECDSA, RSA, EdDSA) to parse the key before signing. That is at least six distinct responsibilities in one function, and the three key-family branches repeat the same type-assertion-then-parse shape.
+
+The file-level history gives modest context: a bug-fix rate of 33% across 9 commits, no reverts, no bug-linked commits. That reads as maintainability debt rather than a defect signal. My recommendation is extract-method: pull claim assembly, key loading, and key-family parsing into separate helpers. The repeated key-conversion branches collapse naturally into one helper keyed on algorithm family, which would cut the branch count roughly in half and make each piece testable without invoking the whole CLI flow.
+
+### `ParseUnverified` — parser.go
+
+<FunctionCard fn='ParseUnverified' file='parser.go' risk='12.61' band='debt' cc='27' nd='2' fo='9' touches='0' />
+
+This is the one I would weigh most heavily by importance, because it sits in the library's core parsing path rather than the CLI. It has a cyclomatic complexity of 27, fan-out of 9, and an activity-weighted risk score of 12.61. It was last changed 39 days ago, the most recent of the five, and the file shows 1 distinct author in the last 90 days, so ownership is narrow. The file's history shows a bug-fix rate of 0% across 14 commits, with no reverts, which is reassuring context.
+
+From the excerpt, the function splits the token, decodes and unmarshals the header, decodes the claims through either a plain unmarshal or a number-preserving decoder (with special handling for map-type claims), resolves the signing method from the header, then decodes the signature. Each step has its own error return, which accounts for the exit-heavy pattern. Every one of those paths is a required test case. My suggestion is to extract header decoding and claims decoding into their own methods; the claims step in particular has a four-way branch (map or not, number mode or not) that deserves isolated tests.
+
+### `verifyAudience` — validator.go
+
+<FunctionCard fn='verifyAudience' file='validator.go' risk='12.17' band='debt' cc='17' nd='3' fo='4' touches='0' />
+
+`verifyAudience` has a cyclomatic complexity of 17 and the deepest nesting among the top five at 3, with a small fan-out of 4. It has gone 479 days without a change. What stands out to me is the file-level review signal: a pull-request review comment density of 28.0, far higher than the 0 to 6 range on the other top-five files. I would not read that as a defect signal, but it suggests this logic drew sustained discussion, which fits an audience check with two modes (match any expected audience versus match all) plus an empty-audience case that depends on whether any audience is expected.
+
+The file's bug-fix rate is 25% across 8 commits, with no reverts. Because this is a claim-validation function, a wrong branch means a token is accepted or rejected incorrectly, so the cost of an untested path is higher than the metrics alone suggest. I would split it into the empty-audience check, the match-any path, and the match-all path, and write table-driven tests that pin each mode separately before anyone modifies it.
+
+### `verifyToken` — cmd/jwt/main.go
+
+<FunctionCard fn='verifyToken' file='cmd/jwt/main.go' risk='11.45' band='debt' cc='15' nd='1' fo='16' touches='0' />
+
+`verifyToken` is `signToken`'s sibling in the same file, with the same 497 days since last change and the same fan-out of 16, but a lower cyclomatic complexity of 15 and flat nesting of 1. Its risk is coupling rather than branching. It loads the token, trims whitespace with a regular expression, calls the library parser with a key-lookup callback, prints debug output, and prints claims. The key-family switch (ECDSA, RSA, EdDSA, default) lives inside the callback.
+
+Because the two CLI functions share a file and an age, any refactor of the key-loading logic in one will probably want a matching change in the other. That is a coordinated-edit risk worth noting, though I am inferring it from the shared structure rather than from change history, which shows no touches. I would extract the shared key-family dispatch into one helper used by both, which reduces duplicated branching and fan-out in each.
+
+### `Sign` — ecdsa.go
+
+<FunctionCard fn='Sign' file='ecdsa.go' risk='10.98' band='debt' cc='13' nd='2' fo='10' touches='0' />
+
+The ECDSA `Sign` method has a cyclomatic complexity of 13 and fan-out of 10, untouched for 497 days. It is the smallest of the five and, honestly, the least alarming. From the excerpt it type-switches the key, checks hash availability, hashes the signing string, signs, validates the curve size against the configured size, and serializes r and s into fixed-width byte arrays. Each guard is a separate return, which is again the exit-heavy pattern.
+
+The file's bug-fix rate is 40%, but that is 2 of only 5 commits, so I would not lean on it; the sample is too small to say anything firm. The pull-request review comment density is 0. I would leave the structure alone for now and make sure the failure branches (wrong key type, unavailable hash, curve mismatch) each have a dedicated test. If it is ever refactored, the serialization step is the natural extraction.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 5 |
+| `god_function` | 1 |
+| `long_function` | 1 |
+| `stale_complex` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`stale_complex`](https://hotspots.dev/analyses/patterns/stale_complex/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/golang-jwt/jwt
+cd jwt
+git checkout 9a618efd06fc5036c19970cdbb1af8d0f802cc49
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
