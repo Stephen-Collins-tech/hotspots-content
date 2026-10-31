@@ -1,0 +1,149 @@
+---
+title: "IPython's interactiveshell.py carries the highest structural risk"
+titleSeo: "ipython code health: interactiveshell.py technical debt and refactoring priorities"
+description: "Four of the five highest-risk functions in ipython/ipython live in IPython/core/interactiveshell.py, and all five top hotspots are structural debt that has not been touched in 87 days."
+introContent: "Four of the five riskiest functions in ipython/ipython sit in a single file, interactiveshell.py, and none has been touched in 87 days. That makes this a module-level refactoring problem, not a list of isolated cleanups."
+pubDate: 2026-10-31
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "ipython/ipython"
+commit: "fb18ef0d9fc66200e884d287067f211d55e721ea"
+language: "python"
+hotspots_version: "2.5.0"
+analyzed_at: "2026-10-31T17:55:25Z"
+clone_depth: 100
+topRisk: 36.71
+topFunction: "_ofind"
+topFile: "IPython/core/interactiveshell.py"
+topPatterns: ["exit_heavy", "god_function", "long_function", "neighbor_risk", "complex_branching"]
+patternCounts: {exit_heavy: 10, god_function: 8, long_function: 8, neighbor_risk: 8, complex_branching: 4, deeply_nested: 4}
+qaSection:
+  - question: "What is a god function and why does it matter in ipython?"
+    answer: "A god function is one that does too many things: it is long, branches heavily, and calls many other functions directly. That makes it hard to test in isolation, because a test has to set up everything the function touches, and changes ripple unexpectedly because many behaviors share one body. In ipython I found 8 functions repo-wide carrying this pattern; in the top five, examples include `_complete` with a fan-out of 24 and `run_ast_nodes` with a fan-out of 20. In a dynamically typed codebase the real coupling is often wider than the count suggests, since what gets called depends on runtime types."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "The main technique is extract-method combined with decompose-conditional: pull each independent branch group into a named function so the parent reads as a sequence of steps. A cyclomatic complexity above 15 is worth splitting, and above 30 deserves immediate attention. A concrete first step in ipython is `find_user_code` (complexity 17): move each retrieval source (history, URL, file, namespace) into its own small function and have the parent try them in order. That should cut the parent's complexity roughly in half and give each source its own test."
+  - question: "Is ipython actively maintained?"
+    answer: "The data shows development is active, but not in my Top 5. All five top hotspots are debt-quadrant functions with 0 touches in the last year, and all five were last changed 87 days ago. Elsewhere, 27 functions are in the fire quadrant, including several in completer.py that each have 1 touch in the last year and were last changed between 1 and 8 days ago, and completer.py shows 5 distinct authors in the last 90 days. Active development and high structural debt coexist here: the recent work is concentrated in completion and theming code, while the large shell functions are waiting for their next change."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub and check out the analyzed commit with `git checkout fb18ef0`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how recently and how often a function has been changed, so functions that are both hard to understand and actively changing score high. This points refactoring effort at code where a change is most likely to introduce a bug soon, not just code that looks complicated in the abstract. In this analysis the top five are all debt with 0 touches in the last year, so their scores of 35.51 to 36.71 are driven mainly by structural complexity and coupling. The fire-quadrant functions in completer.py have recent change adding live regression risk on top of their complexity."
+---
+
+interactiveshell.py holds 4 of the 5 highest-risk functions in ipython/ipython (`_ofind`, `find_user_code`, `showtraceback`, `run_ast_nodes`), with the fifth, `_complete`, in completer.py. All five are in the debt quadrant: 0 touches in the last year and 87 days since last change, so the argument here is high blast radius when next touched, not live churn. IPython is the interactive Python shell and kernel, and this analysis covers 1,910 functions, 156 of them in the critical band.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `_ofind` | IPython/core/interactiveshell.py | 36.7 | 19 | 6 | 15 |
+| `find_user_code` | IPython/core/interactiveshell.py | 36.6 | 17 | 5 | 19 |
+| `showtraceback` | IPython/core/interactiveshell.py | 36.0 | 11 | 6 | 16 |
+| `_complete` | IPython/core/completer.py | 35.6 | 28 | 5 | 24 |
+| `run_ast_nodes` | IPython/core/interactiveshell.py | 35.5 | 23 | 3 | 20 |
+
+<BandChart fire='27' debt='443' watch='21' ok='1419' />
+
+The distribution is lopsided in a way that shapes how I read the rest of this post. Of 1,910 functions, 443 are structural debt (complex, currently quiet) and only 27 are in the fire quadrant (complex and changing). Every function in my Top 5 is debt. That means the case for refactoring them rests on what happens when someone next opens the file, not on what is happening there today.
+
+<PatternCloud patterns='exit_heavy:10,god_function:8,long_function:8,neighbor_risk:8,complex_branching:4,deeply_nested:4' />
+
+The pattern counts point the same way: exit-heavy, god-function, and long-function dominate. These are functions that do a lot, return from many places, and couple to many collaborators.
+
+## Why one file matters more than five functions
+
+Four of the five hotspots share interactiveshell.py. The shared 87-day last-change date across all four, plus file-level history of 7 commits in total and 2 distinct authors in the last 90 days, suggests these functions were last touched together, probably in one sweep. If the next change to this shell touches one of them, I would expect it to touch several, because they sit next to each other and all four carry the neighbor-risk pattern. Reviewing them as a group is cheaper than reviewing them one at a time.
+
+The file-level history is quiet: no bug-linked commits, no reverts, a bug-fix rate of 0% across 7 commits, and zero review-comment density. I read this as maintainability debt rather than a defect signal. Nothing here says these functions are broken. It says they are expensive to change safely.
+
+### `_ofind` — interactiveshell.py
+
+<FunctionCard fn='_ofind' file='IPython/core/interactiveshell.py' risk='36.71' band='debt' cc='19' nd='6' fo='15' touches='0' />
+
+I would start with `_ofind` because it has the highest activity-weighted risk score in the repository, 36.71, and the combination of a nesting depth of 6 with a cyclomatic complexity of 19 is the hardest to hold in your head. From the excerpt, this function resolves a dotted name to an object by walking a list of namespaces, and it has a separate special path for magic functions. Inside the namespace loop there is a second loop that walks the remaining name parts, with a blanket exception handler around attribute access and a distinct branch for integer-like parts. That is where the depth comes from.
+
+<MetricBar label='Nesting Depth' value='6' threshold='4' max='10' />
+
+The function was last changed 87 days ago with 0 touches in the last year, so this is structural debt with high blast radius when next touched. Fan-out of 15 in a dynamically typed language understates the coupling, since the objects being resolved are arbitrary user objects and runtime types decide what happens. My recommendation is extract-method on the inner part-walking loop into a helper that takes an object and the remaining parts and returns the object and its parent. That alone should remove two levels of nesting and make the lookup logic testable without building a full shell.
+
+### `find_user_code` — interactiveshell.py
+
+<FunctionCard fn='find_user_code' file='IPython/core/interactiveshell.py' risk='36.65' band='debt' cc='17' nd='5' fo='19' touches='0' />
+
+This function's docstring says it tries a target as history ranges, a URL, a .py file, a filename, and finally an expression in the user namespace. The excerpt confirms that sequence: each source gets its own branch, several with their own fallback for Unicode decoding errors, and the function ends with a type check on the evaluated result. That is a chain of strategies written as one function, which is why it has a fan-out of 19 and a cyclomatic complexity of 17.
+
+The pattern here is a natural fit for decomposition. I would split retrieval into one small function per source (history, URL, file, namespace) and have `find_user_code` try them in order. Each source then has its own tests, and the Unicode fallback, which is duplicated between the URL and file paths according to the excerpt, can live in one place. The activity-weighted risk score is 36.65, with 0 touches in the last year and 87 days since last change.
+
+### `showtraceback` — interactiveshell.py
+
+<FunctionCard fn='showtraceback' file='IPython/core/interactiveshell.py' risk='36.02' band='debt' cc='11' nd='6' fo='16' touches='0' />
+
+`showtraceback` has the lowest cyclomatic complexity of the group at 11, but a nesting depth of 6 and a fan-out of 16 earn it a place in the top five. The excerpt shows an outer try wrapping an inner try, a dispatch on exception type (syntax errors, usage errors, everything else), a nested helper that recursively checks for exception groups, and a further try around traceback formatting with its own fallback path. The exception-handling-inside-exception-handling shape is what drives the depth.
+
+This function is the documented single entry point for presenting user tracebacks, and it has multiple return paths, so a failure here during an already-failing user session is awkward to diagnose. The exit-heavy pattern means each return needs its own test. I would extract the exception-group check out of the function body to module level and pull the structured-traceback formatting into a helper that returns the formatted lines or None. That should bring the nesting depth to 3 or 4 without changing behavior. With 0 touches in the last year and 87 days since last change, this is a refactor to do deliberately before the next feature that touches error display.
+
+### `_complete` — completer.py
+
+<FunctionCard fn='_complete' file='IPython/core/completer.py' risk='35.59' band='debt' cc='28' nd='5' fo='24' touches='0' />
+
+`_complete` is the one function in my Top 5 outside interactiveshell.py, and it has the highest cyclomatic complexity (28) and fan-out (24) of the five. Its docstring calls it the provisional, richer variant of the older stateful `complete` API and says it 'could (and should) be made much cleaner' once that older API is dropped. That is the maintainers' own note that this function carries transitional weight.
+
+<MetricBar label='Cyclomatic Complexity' value='28' threshold='10' max='40' />
+
+The file has the most outside-signal activity of the group: 8 total commits, 5 distinct authors in the last 90 days, and a bug-fix rate of 12.5%, which is one bug-fix commit out of eight. That is a small count and I would not read it as a defect trend, but the wider ownership spread plus the highest complexity make this the function where a misunderstanding between authors is most likely. The excerpt shows a long setup phase that normalizes cursor position, line buffer, and text, mutates instance state along the way, and then builds a completion context before running matchers. I would extract that normalization into a function that returns a context object, which removes a chunk of the branching from the function and stops the state mutation from interleaving with matcher dispatch. The function has 0 touches in the last year and was last changed 87 days ago.
+
+### `run_ast_nodes` — interactiveshell.py
+
+<FunctionCard fn='run_ast_nodes' file='IPython/core/interactiveshell.py' risk='35.51' band='debt' cc='23' nd='3' fo='20' touches='0' />
+
+`run_ast_nodes` is the outlier in shape: its nesting depth is only 3, but its cyclomatic complexity of 23 and fan-out of 20 come from breadth rather than depth. The excerpt shows it as an async function that decides which parts of a cell run as plain statements and which run interactively, based on an interactivity mode with five accepted values. It rewrites the node list for the assign-capture mode, then splits into the two groups, then compiles and executes them with an async-detection helper defined inline.
+
+Because it is flat but wide, the extract-method fix is straightforward: pull the mode-to-split decision (the part that ends in 'Interactivity was %r') into a pure function that takes the node list and mode and returns the two lists. That piece has no I/O and is easy to test for all five modes. The remaining function then only compiles and runs. This function sits on the cell-execution path, so the 87 days since last change and 0 touches in the last year suggest it has been quiet, which makes it a good candidate for characterization tests before any refactor.
+
+## What I would watch alongside the debt
+
+The five-function table is all debt, but the fire quadrant is not empty: 27 functions fall in it, and several of the highest-scoring are in completer.py, the same file as `_complete`. Each has 1 touch in the last year and was last changed between 1 and 8 days ago. If I were prioritizing review time, I would treat completer.py as the place where live change and structural debt overlap, and interactiveshell.py as the place where debt is waiting for the next change.
+
+## Takeaways
+
+- Treat interactiveshell.py as a module, not a list: four of the top five functions are there, all last changed 87 days ago, so one change is likely to reach several of them.
+- Start with `_ofind` (nesting depth 6) and extract the part-walking loop into a helper.
+- Split `find_user_code` into one function per source (history, URL, file, namespace) and share the Unicode fallback.
+- Add characterization tests for `run_ast_nodes` across all five interactivity modes before changing it.
+- Review completer.py as the one place where debt and live changes meet: `_complete` is the most complex function in the top five, and several fire-quadrant functions share its file.
+
+## Reproduce
+
+The exact commands are in the reproduction answer below.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `exit_heavy` | 10 |
+| `god_function` | 8 |
+| `long_function` | 8 |
+| `neighbor_risk` | 8 |
+| `complex_branching` | 4 |
+| `deeply_nested` | 4 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`neighbor_risk`](https://hotspots.dev/analyses/patterns/neighbor_risk/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/ipython/ipython
+cd ipython
+git checkout fb18ef0d9fc66200e884d287067f211d55e721ea
+hotspots analyze . --mode snapshot --explain-patterns --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
