@@ -1,0 +1,146 @@
+---
+title: "SQLAlchemy's compiler.py carries the highest activity risk — 5 functions to address first"
+titleSeo: "sqlalchemy code health: compiler.py holds all five top refactoring priorities"
+description: "All five of the highest-risk functions in sqlalchemy/sqlalchemy live in lib/sqlalchemy/sql/compiler.py, led by visit_insert with a cyclomatic complexity of 64."
+introContent: "Every one of the top five risk hotspots in SQLAlchemy sits in a single file, lib/sqlalchemy/sql/compiler.py. I walk through what that concentration means and where I would start reviewing."
+pubDate: 2026-11-02
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: true
+repo: "sqlalchemy/sqlalchemy"
+commit: "1b20ec2056c1bde92c618c5b5507f213b8527483"
+language: "python"
+hotspots_version: "2.6.3"
+analyzed_at: "2026-11-02T10:57:42Z"
+clone_depth: 100
+hybrid_touch_threshold: 5
+topRisk: 59.93
+topFunction: "visit_insert"
+topFile: "lib/sqlalchemy/sql/compiler.py"
+topPatterns: ["neighbor_risk", "god_function", "long_function", "exit_heavy", "complex_branching"]
+patternCounts: {complex_branching: 3, deeply_nested: 1, god_function: 7, long_function: 7, neighbor_risk: 9, exit_heavy: 4}
+qaSection:
+  - question: "What is a god function and why does it matter in sqlalchemy?"
+    answer: "A god function is a single function that does too much: it is long, branches heavily, and calls many other functions, so it becomes the place where unrelated decisions get coordinated. It matters because it is hard to test in isolation and any change to it can ripple into everything it calls. In sqlalchemy, seven god-function flags show up across the top hotspots, and all five top functions live in lib/sqlalchemy/sql/compiler.py. `_deliver_insertmanyvalues_batches` is the sharpest example, with a fan-out of 35 distinct functions called."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "The main technique is extract-method, often combined with decompose-conditional: pull each cohesive branch group into a named helper that returns a value. As a rule of thumb, a cyclomatic complexity above 15 warrants splitting and above 30 warrants prompt attention. A concrete first step in this analysis is `_deliver_insertmanyvalues_batches`, whose opening decision chain computes two booleans and could move into its own method returning both. Doing the same for the empty-insert validation and bind-parameter counting in `visit_insert` (cyclomatic complexity 64) would remove a large share of its branches without changing behavior."
+  - question: "Is sqlalchemy actively maintained?"
+    answer: "The data shows active development alongside structural debt. Two of the top five functions, `_process_parameters_for_postcompile` and `_literal_execute_expanding_parameter`, are 'fire' functions with 1 touch in the last year, most recently 13 days ago. At the same time, `visit_insert`, `visit_cte` and `_deliver_insertmanyvalues_batches` each have 0 touches in the last year and have gone 88 days without a change. Across the repository, 422 functions are in the 'fire' quadrant and 527 are in 'debt', so activity and accumulated complexity coexist."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository and check out the analyzed commit with `git checkout 1b20ec2`. Then run `hotspots analyze . --mode snapshot --explain-patterns --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how often a function has been changed recently, so functions that are both hard to understand and actively changing score highest. A function with a cyclomatic complexity of 80 that has not been touched in two years scores lower than one with a cyclomatic complexity of 20 that changes every week, because the dormant one has lower near-term regression risk. In this analysis the scores run from 55.43 to 59.93 across the top five, and the quadrant label separates live risk ('fire') from structural debt ('debt'). The score is a prioritization aid for review and refactoring, not a judgment that the code is defective."
+---
+
+All five of the top hotspots in sqlalchemy/sqlalchemy live in one file, `lib/sqlalchemy/sql/compiler.py`, and that concentration matters more than any single function in it. The repository has 8,575 functions, 288 of them in the critical band, and this module supplies the top five. The leader, `visit_insert`, is a 'debt' function: an activity-weighted risk score of 59.93, cyclomatic complexity of 64, and 88 days since last change, so its risk is structural and its blast radius is high when someone next edits it. Two others, `_process_parameters_for_postcompile` and `_literal_execute_expanding_parameter`, are 'fire' functions last changed 13 days ago, which makes them the live regression risks in the same file.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `visit_insert` | lib/sqlalchemy/sql/compiler.py | 59.9 | 64 | 4 | 22 |
+| `visit_cte` | lib/sqlalchemy/sql/compiler.py | 58.4 | 39 | 3 | 21 |
+| `_process_parameters_for_postcompile` | lib/sqlalchemy/sql/compiler.py | 58.1 | 27 | 5 | 23 |
+| `_deliver_insertmanyvalues_batches` | lib/sqlalchemy/sql/compiler.py | 56.9 | 40 | 4 | 35 |
+| `_literal_execute_expanding_parameter` | lib/sqlalchemy/sql/compiler.py | 55.4 | 12 | 2 | 11 |
+
+## Large Repo Analysis
+
+sqlalchemy is a large repository. To stay within memory constraints, this analysis used **hybrid touch mode**: structural complexity — CC, ND, FO — is measured precisely for every function. Git activity is tracked at the function level (via `git log -L`) only for files with 5 or more commits in the touch window (365 days by default); other files use a file-level approximation. Rankings therefore surface functions that are both structurally complex and in the most actively-changing parts of the codebase. Dormant code with high structural complexity will rank lower than it would under a full per-function analysis — to surface it, run `hotspots analyze . --per-function-touches` on a machine with sufficient memory.
+
+<BandChart fire='422' debt='527' watch='2822' ok='4804' />
+
+<PatternCloud patterns='neighbor_risk:9,god_function:7,long_function:7,exit_heavy:4,complex_branching:3,deeply_nested:1' />
+
+The pattern counts tell the same story as the file concentration. Nine neighbor-risk flags, seven god-function flags and seven long-function flags across a top-five list means these are not five unrelated problems. They are one module with a consistent shape: large methods that each coordinate a lot of other code. I read `compiler.py` as the place where SQL statement structure gets turned into strings, and the metrics suggest that job has been concentrated into a few very large methods.
+
+One caveat before the individual sections. The file-level history is not alarming. Across 13 total commits on the file, there are no bug-linked commits and no reverts, and the bug-fix rate is 15.4%. The file has 3 distinct authors in the last 90 days, and no pull-request review comments were recorded. I am treating this as a maintainability and change-safety argument, not a defect argument. These file-level signals apply to the file as a whole and do not prove anything about any one function.
+
+### `visit_insert` — compiler.py
+
+<FunctionCard fn='visit_insert' file='lib/sqlalchemy/sql/compiler.py' risk='59.93' band='debt' cc='64' nd='4' fo='22' touches='0' />
+
+<MetricBar label='Cyclomatic Complexity' value='64' threshold='10' max='70' />
+
+I would start with `visit_insert` because it has the highest activity-weighted risk score in the repository, 59.93, and the largest cyclomatic complexity in this list at 64. It has 0 touches in the last year and has gone 88 days without a change, so this is structural debt rather than live churn. That is exactly why I would schedule it: the next person to edit it inherits 64 independent paths and a fan-out of 22.
+
+The excerpt shows why the number is so high. The function handles top-level versus CTE-nested compilation, positional versus named bind parameters, a numeric-bind special case, an empty-insert check that depends on three separate dialect capability flags, and a multi-parameter branch that again depends on dialect support. Each of those is a decision that stacks onto the others. It is also flagged exit-heavy, so the number of return and raise paths adds to the test burden on top of the branching.
+
+My recommendation is extract-method along the seams the code already shows. The positional bind-parameter counting block (the part commented as needed for insertmanyvalues) can become its own helper with a clear return value. The dialect capability validation for empty inserts can move into a small guard method. Neither change alters behavior, and each one removes branches from the main body. Because the function is dormant right now, this is a good window to do it with no merge conflicts against in-flight work.
+
+### `visit_cte` — compiler.py
+
+<FunctionCard fn='visit_cte' file='lib/sqlalchemy/sql/compiler.py' risk='58.42' band='debt' cc='39' nd='3' fo='21' touches='0' />
+
+`visit_cte` is the second 'debt' function, with an activity-weighted risk score of 58.42, cyclomatic complexity of 39, nesting depth of 3 and a fan-out of 21. It has also gone 88 days without a change and has 0 touches in the last year. Nesting depth 3 is modest, so the difficulty here is breadth of branching rather than depth.
+
+From the excerpt, the function tracks CTEs by level and name, decides whether an incoming CTE is new, a repeat, a restatement, or enclosed by another same-named CTE, and handles a 'nest_here' relocation case that raises a compile error if stated in two places. That is a lot of identity and ordering logic in one method, and it reads and mutates several pieces of compiler state (the stack, the by-level-name tables, the CTE collection). Mutating shared state is what makes high complexity here expensive to test: a case has to set up the right prior state before it can exercise a branch.
+
+I would separate the lookup of an existing CTE from the decision about what to do with it. A function that answers 'what is the existing CTE at this level and name, and has it been relocated' could return a small result, and the remaining body would branch on that result. That also gives a natural place to write focused tests for the relocation and restatement cases.
+
+### `_process_parameters_for_postcompile` — compiler.py
+
+<FunctionCard fn='_process_parameters_for_postcompile' file='lib/sqlalchemy/sql/compiler.py' risk='58.14' band='fire' cc='27' nd='5' fo='23' touches='1' />
+
+This is the first 'fire' function in the list, and the one I would put at the top of the live-risk queue. It has an activity-weighted risk score of 58.14, cyclomatic complexity of 27, a nesting depth of 5, and a fan-out of 23, with 1 touch in the last year and 13 days since last change. Nesting depth 5 is the deepest in the top five and is the only function here flagged as deeply nested.
+
+The docstring says it handles 'expanding' parameters (typically IN tuples rendered per element for an otherwise fixed SQL string) and literal-bind parameters marked for literal execution. The excerpt shows it maintaining a large amount of local state before the main loop even starts: new processors, replacement expressions, sets to update, a set of names the expanded elements are not allowed to take, and separate positional and non-positional position lists. The comments in the excerpt also distinguish escaped from unescaped parameter names across different structures, which is the kind of invariant a reader has to hold in their head while editing.
+
+Because it was changed 13 days ago and sits at nesting depth 5, I would prioritize review of recent changes to it and add test cases that combine features (positional plus numeric binds, expanding plus literal-execute) rather than testing each in isolation. For refactoring, the pre-loop setup could be extracted into a small state-holder object, and the per-parameter body could be split into one helper for literal-execute parameters and one for expanding parameters. Flattening that nesting is the most direct way to bring the nesting depth down.
+
+### `_deliver_insertmanyvalues_batches` — compiler.py
+
+<FunctionCard fn='_deliver_insertmanyvalues_batches' file='lib/sqlalchemy/sql/compiler.py' risk='56.88' band='debt' cc='40' nd='4' fo='35' touches='0' />
+
+<MetricBar label='Fan-out' value='35' threshold='15' max='40' />
+
+This function has the highest fan-out of the five at 35 distinct functions called, with cyclomatic complexity of 40 and nesting depth 4. It is a 'debt' function: 0 touches in the last year and 88 days since last change. In Python, where calls resolve at runtime, a fan-out of 35 probably understates the real coupling, since the dialect and the insertmanyvalues object it reads from can change what actually runs.
+
+The excerpt shows an opening decision chain that picks between row-at-a-time and batched delivery, with comments explaining several distinct reasons for downgrading to row-at-a-time: a backend that cannot use DEFAULT for repeated rows, a request for deterministic parameter order without sentinel columns, and upsert behavior with bound parameters in the SET clause (the code references issue #13130). After that decision, there is the delivery logic itself. A generator that returns an iterator of batches also carries invisible control flow, because the body does not run until it is consumed.
+
+The cleanest first move is to extract the opening decision chain into a method that returns the two booleans it already computes (row-at-a-time and downgraded). That chain is pure decision logic with documented rationale, so it is straightforward to unit test by dialect capability. It would take a sizable share of the branches out of a function that is otherwise about producing batches. Anyone adding a new reason to downgrade, as the upsert case appears to have been, would then touch a small, well-named method instead of the generator body.
+
+### `_literal_execute_expanding_parameter` — compiler.py
+
+<FunctionCard fn='_literal_execute_expanding_parameter' file='lib/sqlalchemy/sql/compiler.py' risk='55.43' band='fire' cc='12' nd='2' fo='11' touches='1' />
+
+The last 'fire' function in the list is also the least complex of the five: cyclomatic complexity of 12, nesting depth of 2, and fan-out of 11, with an activity-weighted risk score of 55.43. It was last changed 13 days ago, the same day as `_process_parameters_for_postcompile`. Its position in the top five comes mostly from activity plus the file-level context, not from raw branching.
+
+The docstring references ticket 13695 and explains the recent change: element names generated for an expanding parameter can collide with other parameter names, so a counter-based uniquifier is applied. The excerpt also shows local render helpers that differ depending on whether bind casts are rendered.
+
+I would treat this as a review-and-test item rather than a refactor. Recently changed code in a function with a mutable shared set of taken names deserves tests that cover collisions across multiple expanding parameters and across tuple elements, since those are the cases the docstring says motivated the change. If the function grows further, the empty-values, tuple, and scalar branches are natural candidates for separate helpers.
+
+**What the file-level picture suggests**
+
+Three of the five are 'debt' functions that have been quiet for 88 days, and two are 'fire' functions changed 13 days ago. My practical ordering would be: review recent changes to `_process_parameters_for_postcompile` first, because it combines nesting depth 5 with recent activity; schedule extract-method work on `visit_insert` and `_deliver_insertmanyvalues_batches` while they are dormant; and add collision-focused tests around `_literal_execute_expanding_parameter`.
+
+## Patterns Found
+
+Antipatterns detected across the top functions in this snapshot:
+
+| Pattern | Occurrences |
+|---|---|
+| `neighbor_risk` | 9 |
+| `god_function` | 7 |
+| `long_function` | 7 |
+| `exit_heavy` | 4 |
+| `complex_branching` | 3 |
+| `deeply_nested` | 1 |
+
+_These labels belong to two tiers — Tier 1 (structural): `complex_branching`, `deeply_nested`, `exit_heavy`, `long_function`, `god_function`. Tier 2 (relational/temporal): `hub_function`, `cyclic_hub`, `middle_man`, `neighbor_risk`, `stale_complex`, `churn_magnet`, `shotgun_target`, `volatile_god`._
+
+See more analyses with these patterns: [`complex_branching`](https://hotspots.dev/analyses/patterns/complex_branching/), [`deeply_nested`](https://hotspots.dev/analyses/patterns/deeply_nested/), [`exit_heavy`](https://hotspots.dev/analyses/patterns/exit_heavy/), [`god_function`](https://hotspots.dev/analyses/patterns/god_function/), [`long_function`](https://hotspots.dev/analyses/patterns/long_function/), [`neighbor_risk`](https://hotspots.dev/analyses/patterns/neighbor_risk/).
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/sqlalchemy/sqlalchemy
+cd sqlalchemy
+git checkout 1b20ec2056c1bde92c618c5b5507f213b8527483
+hotspots analyze . --mode snapshot --explain-patterns --force --hybrid-touches 5
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
