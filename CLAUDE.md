@@ -15,7 +15,7 @@ Posts should read as authored by one analyst, not a team. Use `I`, `I've`, `I ra
 | Data pattern | Angle to use |
 |---|---|
 | 3+ hotspots in one file | Open with that file as the protagonist |
-| One antipattern dominates all 5 functions | Lead with the pattern, not the rankings |
+| One antipattern dominates all 5 functions (posts from before hotspots 3.0 only; 3.0 no longer detects patterns) | Lead with the pattern, not the rankings |
 | All hotspots touched in the last few days | Lead with the "being changed right now" framing |
 | Very small repo, enormous CC values | Open with the size-vs-complexity contrast |
 | Hotspots spread across 4–5 different files | Open with architectural scatter or coupling risk |
