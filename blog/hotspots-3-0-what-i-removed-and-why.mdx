@@ -1,0 +1,101 @@
+---
+title: "Hotspots 3.0: I Removed Everything I Couldn't Back With Evidence"
+category: product-releases
+description: "hotspots 3.0 is a deliberate subtraction: fewer commands, a simpler activity score on a fixed scale, activity tiers instead of quadrants, and a few things I added only after checking the evidence twice."
+pubDate: 2026-11-02
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "hotspots"
+  - "release"
+draft: false
+introContent: "hotspots 3.0 is mostly things taken away. I audited every command, flag and output field against what I could actually show works, cut what failed, and rebuilt the activity score so it's simpler and bounded. Here's the whole path, including the two ideas that didn't survive checking."
+qaSection:
+  - question: "What changed in hotspots 3.0?"
+    answer: "Three things. The surface got smaller: seven commands remain (analyze, diff, coordinate, train, prune, config, telemetry), and the output formats, touch modes, pattern detection and several policies without evidence behind them are gone. The activity risk score is now a sum of four terms, each scaled to a fixed range, so no one term can swamp the others. And functions are grouped by activity tier (active or quiet) instead of the four quadrants, with the snapshot schema at version 6."
+  - question: "Will my existing scripts break?"
+    answer: "If you parse the JSON output, yes, in the ways listed in the post: triage groups are active and quiet, the per-function pattern, driver and action fields are gone, and file paths in snapshots are now relative to the repo. If you only read the ranked output the CLI prints, nothing needed to change. I chose a clean major version over a deprecation cycle because I'd rather break loudly once than carry compatibility code for features nobody could justify."
+  - question: "Can I lower my activity risk by fixing the code?"
+    answer: "Not directly, and that's by design. Activity risk is built from how often and how recently a file changes, so editing a file raises it for every function in that file. It falls back down as the file goes quiet. Use the structural score and its band to judge whether a refactor helped, and the activity score to decide where to look first."
+---
+
+I started this release with a simple question I'd been avoiding: for each thing hotspots does, can I point to evidence that it works? Not "it seems reasonable", not "someone might want it". Evidence I'd be comfortable showing you.
+
+The answer for a lot of the tool was no. So 3.0 is mostly subtraction, and this post is the whole path, including the parts where I was wrong.
+
+## The standard
+
+Over the last year I've run a lot of experiments on what predicts where defects and fixes land. Most results are modest, a few are solid, and several are clearly negative. For a long time the CLI quietly carried features from all three groups, because adding something is cheap and removing it feels like admitting a mistake.
+
+I set one rule: if I can't back a feature, it goes. And I assumed no one depends on any particular output shape, which let me skip the deprecation cycles, migration code and compatibility shims that usually make a cleanup take three times as long as it should.
+
+## What went
+
+The list is long, so here it is by kind rather than by flag:
+
+- **Output formats** nobody needed. CSV, XLSX, JSONL and the LLM-context dump are gone. JSON, text, HTML and SARIF stay.
+- **Touch modes.** There used to be per-function, hybrid and file-level ways of counting how often code changes, plus a cache and an `estimate` command to predict how long they would take. Touch data is now file-level, read in one pass, so there is nothing to choose and nothing to estimate.
+- **Pattern detection.** The antipattern labels (`god_function`, `churn_magnet` and friends) and the `driver` field are gone. I couldn't show they added anything beyond the numbers they were derived from.
+- **Call-graph metrics** other than fan-in: PageRank, betweenness, strongly connected components, dependency depth, neighbor churn. Module-level views went with them.
+- **Policies.** Four of the CI policies had no support and are removed. I later cut a fifth, `rapid-growth`, for a reason I'll get to. What remains are `critical-introduction` and `excessive-risk-regression`.
+- **Configuration knobs.** The complexity weights, band cutoffs and scoring weights used to be configurable. Nothing I measured said tuning them per repo helps, and one shared definition keeps scores comparable across repos and over time. They are fixed constants now, and a config file that still sets them is rejected with an error rather than silently ignored.
+- **Commands.** `trends`, `upgrade` and `init` are gone, and `compact` folded into `prune --compact`. Seven commands remain: `analyze`, `diff`, `coordinate`, `train`, `prune`, `config` and `telemetry`.
+
+The PR that did all this deleted about 180 functions and touched 125 more. Most of the big functions that survived got simpler.
+
+## A simpler activity score
+
+The old activity risk multiplied structural complexity by activity, and the structural term was so large numerically that it drowned the git signals. Those git signals, how often and how recently a file changes, turned out to be where most of the predictive value was.
+
+The new score is a plain sum of four terms, each scaled to the range zero to one:
+
+- structural complexity, divided by the largest value I've observed
+- churn: lines added and deleted over 180 days, on a log scale
+- touch frequency over 365 days
+- recency: a linear fall-off to zero over 35 days
+
+That gives a range of roughly zero to four, no term can swamp the others, and the score for a function no longer depends on what else is in the repo.
+
+I want to be straight about how much to trust it. The direction is backed: git activity matters, and the call-graph and depth terms I removed contributed nothing. The specific constants and the equal weighting are design choices that keep the score bounded and comparable. I ran a head-to-head against the old formula on a set of repos. The new one was no worse and modestly better, but the margin was narrow and the sample small. Treat it as a reasonable default, not a validated optimum.
+
+One consequence is worth saying out loud. **You can't fix an activity score by editing the code.** It's built from how recently and how often a file changes, so working on a file raises it for every function in that file, including ones you didn't touch. It decays by itself as the file goes quiet. The structural score and its band are the part a refactor can improve. The activity score tells you where to look first.
+
+## Tiers instead of quadrants
+
+Functions used to land in one of four quadrants: fire, debt, watch, ok. Each quadrant mixed two questions, how complex is this and is anyone working on it. In 3.0 those are separate. `band` still says how complex a function is, and a new `tier` says `active` (its file is touched more than the repo median, or changed in the last 30 days) or `quiet`. If you want what used to be "fire", ask for an active function in a high or critical band.
+
+The snapshot schema moves to version 6 with that change. While dogfooding I found a portability bug: function identifiers and file paths in snapshots were absolute paths, so a snapshot made on one machine didn't line up with one made on another. They are repo-relative now.
+
+## Testing it on itself
+
+I ran 3.0 against its own pull request. It reported five blocking policy failures, and all of them were artifacts: functions that absorbed the body of a function I'd merged away looked like sudden jumps in complexity. It's a fair example of what these policies can't see, and a reminder that a CI gate is a prompt to look, not a verdict.
+
+The release checks caught me twice too. A test still exercised a command I'd deleted, and a doc citation tripped the repo's own check against leaking internal references. Both were cheap to fix and a good argument for running the gates on your own changes.
+
+## Two additions, and two ideas that didn't survive
+
+Before releasing I went back through the latest research once more. It changed the plan more than once.
+
+I **removed `rapid-growth`**. The research showed it almost never fired independently of the absolute-increase check, and on my own diff it was the only noise.
+
+I **removed `--blend-churn`**. Its apparent win didn't hold up when I re-checked it with a more careful baseline, and the new activity score already contains a churn term.
+
+I **added `ownership_risk` to `coordinate`**: normalized author entropy as a number from zero to one, plus a low, medium or high band. It ranks a set of files by how likely people are to collide on them, and the ordering held when I left each repo out in turn and tested on it.
+
+And two ideas **didn't make it**. I'd planned to add a changed-file count to the diff summary, because file count looked like a strong cheap signal. Checking my earlier results, I'd already compared it against changed-lines-in-touched-functions and it came out consistently weaker, so it stayed out. I'd also meant to re-validate the 3 / 6 / 9 band cutoffs, and found they had been validated already. Not building something because you checked first is a perfectly good outcome.
+
+## Shipping it
+
+3.0.0 is out on npm, PyPI, crates.io, Homebrew and GitHub Releases.
+
+The pipeline that generates these analysis posts reads the CLI's output, so it needed to change in lockstep. I pinned it to the last 2.x release until it could read the new shape, then moved the pin. It now reads both generations: the tier and the older quadrant map onto each other, so stored snapshots and the posts I've already published keep working and keep rendering. New posts simply have no pattern labels.
+
+Every command and flag that survived now has a page explaining why it exists, when to use it, how to read its output and how it relates to the others. If a flag stays, I should be able to tell you what it's for. That was the bar for keeping it.
+
+## What I'd take from it
+
+Features accumulate because adding is cheap and cutting needs a reason. Deciding on a standard first, evidence or it goes, made the cuts easy to defend and the keeps easy to explain. Checking again before release changed the plan several times, and in each case I was glad I'd looked.
+
+If you hit something in 3.0 that you relied on and shouldn't have lost, open an issue and tell me what it was for. I'd rather learn what it was worth than guess.
+
+_I use Hotspots to highlight structural and activity risk, not "bad code." [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
