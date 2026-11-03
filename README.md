@@ -81,7 +81,7 @@ Every post must contain these four elements, but their order, framing, and surro
    git clone https://github.com/<owner>/<repo>
    cd <repo>
    git checkout <sha>
-   hotspots analyze . --mode snapshot --explain-patterns --force
+   hotspots analyze . --mode snapshot --force
    ```
 4. **Footer** — editorial policy link, one line.
 
@@ -89,7 +89,7 @@ Every post must contain these four elements, but their order, framing, and surro
 
 **Vary the intro frame** — pick the angle that fits the data, never default to the same opening:
 - *File-concentration angle*: when one file holds 3+ hotspots, open with that file as the protagonist.
-- *Pattern angle*: when a single antipattern (e.g. `god_function`) dominates across all hotspots, lead with the pattern rather than any individual function.
+- *Pattern angle* (posts from before hotspots 3.0 only; 3.0 no longer detects patterns): when a single antipattern (e.g. `god_function`) dominates across all hotspots, lead with the pattern rather than any individual function.
 - *Velocity angle*: when all top functions have very recent commit activity, open with the "actively breaking" framing.
 - *Contrast angle*: when a tiny repo has extreme CC values, open with that size-vs-complexity contrast.
 - *Spread angle*: when hotspots span many files with no dominant file, open with the architectural scatter.
@@ -153,7 +153,7 @@ Use the frontmatter values to reproduce locally:
 git clone https://github.com/<owner>/<repo>
 cd <repo>
 git checkout <sha>
-hotspots analyze . --mode snapshot --explain-patterns --force
+hotspots analyze . --mode snapshot --force
 ```
 
 Compare your local output to the linked `snapshot.json` and `index.html` on R2.
@@ -193,7 +193,7 @@ Repro:
 git clone https://github.com/<owner>/<repo>
 cd <repo>
 git checkout <sha>
-hotspots analyze . --mode snapshot --explain-patterns --force
+hotspots analyze . --mode snapshot --force
 ```
 
 _See editorial policy in the repository README. Full report: <report_html>_
@@ -215,7 +215,7 @@ _See editorial policy in the repository README. Full report: <report_html>_
 
 1. Parse frontmatter; ensure required keys are present and URLs are HTTPS.
 2. Confirm R2 URLs resolve with HTTP 200.
-3. Optionally clone the target repo at `commit` and run `hotspots analyze . --mode snapshot --explain-patterns --force`.
+3. Optionally clone the target repo at `commit` and run `hotspots analyze . --mode snapshot --force`.
 4. Compare top findings against `blog/data/*.summary.json`.
 
 ## FAQ
