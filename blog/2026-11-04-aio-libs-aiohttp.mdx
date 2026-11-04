@@ -1,0 +1,108 @@
+---
+title: "aiohttp's client and WebSocket paths carry the highest activity risk"
+titleSeo: "aiohttp code health: _request and WebSocket frame parsing lead refactoring priority"
+description: "In aiohttp, the client request path, the WebSocket frame reader, multipart form parsing and TLS setup are all structurally complex and were changed within the last 8 days."
+introContent: "Five of aiohttp's highest activity-risk functions were modified in the last 8 days, and the biggest, ClientSession's _request, has a cyclomatic complexity of 96. If you ship code against the client or WebSocket layers this week, you are working in the highest-risk code in the repo."
+pubDate: 2026-11-04
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: true
+repo: "aio-libs/aiohttp"
+commit: "a97d2343e804944d3eeed03ef7981fcbbfb2a409"
+language: "python"
+hotspots_version: "3.0.0"
+analyzed_at: "2026-11-04T10:44:58Z"
+clone_depth: 100
+topRisk: 2.78
+topFunction: "_request"
+topFile: "aiohttp/client.py"
+qaSection:
+  - question: "What makes the cyclomatic complexity of `_request` a problem in aiohttp?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is both a potential bug surface and a test case you need. `_request` in aiohttp/client.py has a cyclomatic complexity of 96 and calls 67 distinct functions, which is far past the usual threshold of about 10 for moderate and 30 for high. At that size nobody can hold every path in their head, so a change to redirect handling, SSL arguments or tracing can interact with branches the author never looked at. It was also changed 8 days ago, which makes it a live regression risk and not just a cleanup item."
+  - question: "How do I reduce cyclomatic complexity in Python?"
+    answer: "The main techniques are extract-method and decompose-conditional: pull cohesive blocks out into named helper functions, and replace deep chains of conditions with early returns or dispatch tables. As a rule of thumb, a cyclomatic complexity above 15 warrants splitting and above 30 warrants immediate attention. A concrete first step for `_request` would be moving the argument validation (session closed check, SSL type check, data and json exclusivity) and the json-to-payload conversion into separate helpers, which should cut a meaningful share of the branches. For `_feed_data`, the reserved-bit, opcode and control-frame length checks could become one validation function that is easy to table-test."
+  - question: "Is aiohttp actively maintained?"
+    answer: "The data says yes for the code I analyzed. All five top hotspots are in the active tier: `_feed_data` and `_handle_frame` were changed 2 days ago with 9 touches each in the last year, and `_request`, `post` and `_start_tls_connection` were changed 8 days ago with 10, 8 and 7 touches. Overall, 887 of 1,226 functions are in the active tier. Active development and high structural complexity are not mutually exclusive, and here they overlap in the same functions."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the commit I analyzed, a97d234. The command is `hotspots analyze . --mode snapshot --force`, run after `git checkout a97d234`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. This helps focus refactoring effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+I found 76 critical-band functions among the 1,226 I analyzed in aiohttp, the async HTTP client/server framework, and all five of the top hotspots are in the active tier, meaning they are both structurally complex and in code that is changing now. `_request` in aiohttp/client.py leads with an activity-weighted risk score of 2.78, a cyclomatic complexity of 96 and a fan-out of 67, and it was last changed 8 days ago after 10 touches in the last year. Two WebSocket reader functions were changed 2 days ago, so anyone shipping client, WebSocket or request-parsing changes this week is touching live regression risk rather than a backlog item.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `_request` | aiohttp/client.py | 2.8 | 96 | 6 | 67 |
+| `_feed_data` | aiohttp/_websocket/reader_py.py | 2.7 | 54 | 5 | 12 |
+| `post` | aiohttp/web_request.py | 2.6 | 30 | 7 | 31 |
+| `_handle_frame` | aiohttp/_websocket/reader_py.py | 2.6 | 29 | 4 | 16 |
+| `_start_tls_connection` | aiohttp/connector.py | 2.6 | 20 | 6 | 17 |
+
+Most of the repository is not a problem. Of the 1,226 functions, 700 sit in the low band and 887 are in the active tier. What stands out is where the critical band meets recent change. The five functions below are all critical and all active, and they cluster in four places: the client request path, the WebSocket frame reader, server-side request body parsing, and TLS connection setup.
+
+<BandChart active='887' quiet='339' />
+
+I want to be clear about what this ranking does and does not say. High activity-weighted risk means a function is hard to reason about and sits in code that is being modified. It is not a claim that the code is defective, and only one of these five files shows any bug-fix history in the data I have. It is a claim about where a mistake would be easiest to make and hardest to catch.
+
+### `_request` — client.py
+
+<FunctionCard fn='_request' file='aiohttp/client.py' risk='2.78' band='active' cc='96' nd='6' fo='67' touches='10' />
+
+I would start with `_request` because it has the highest activity-weighted risk score in the repo (2.78) and it was changed 8 days ago, after 10 touches in the last year. This is the core of the client session: it takes roughly thirty keyword parameters covering SSL, proxies, timeouts, redirects, compression, header and field size limits, middlewares and an upload tracker. The excerpt shows it validating the session state, normalizing the method, checking the SSL argument type, rejecting simultaneous data and json arguments, and then setting up redirect history and tracing state inside a try block built to guarantee that tracing and upload tracking settle.
+
+<MetricBar label='Cyclomatic Complexity' value='96' threshold='10' max='100' />
+
+A cyclomatic complexity of 96 means about 96 independent paths, each of which is a test case you need and a place a regression can hide. A fan-out of 67 means it calls 67 distinct functions, and in Python, where those calls resolve at runtime, the real coupling is probably wider than that number suggests. The file-level history is quiet: no bug-linked commits, no reverts, and a bug-fix rate of 0% across 4 commits, with 2 distinct authors in the last 90 days. That makes this maintainability debt under active modification, not a known trouble spot.
+
+My recommendation is to extract the pre-flight validation (session closed check, SSL type check, data/json exclusivity) and the payload construction into helpers, so the redirect loop and tracing lifecycle can be read and tested on their own. The comments in the excerpt show the settlement guarantees for the upload tracker and traces are deliberately subtle; those invariants are exactly what extraction should make more visible, not less.
+
+**`_feed_data` and `_handle_frame` — _websocket/reader_py.py**
+
+<FunctionCard fn='_feed_data' file='aiohttp/_websocket/reader_py.py' risk='2.71' band='active' cc='54' nd='5' fo='12' touches='9' />
+
+These two share a file, a change history and a role, so I will treat them together. Both were changed 2 days ago, both have 9 touches in the last year, and the file has 3 distinct authors in the last 90 days. Together they make up the pure-Python WebSocket read path: `_feed_data` parses raw bytes into frames, and `_handle_frame` interprets each frame.
+
+The `_feed_data` excerpt shows a loop over a state machine that reads header bytes, extracts the fin, reserved-bit and opcode fields by bit shifting, and then raises protocol errors for non-zero reserved bits, unknown opcodes, fragmented control frames and oversized control payloads. It also has a backpressure check against a queue size limit that stalls the reader. With a cyclomatic complexity of 54 and nesting depth of 5, validation, buffering, flow control and framing all live in one function, which is where I would expect ordering mistakes to creep in.
+
+`_handle_frame` has a cyclomatic complexity of 29 and a fan-out of 16. The excerpt shows it validating continuation frames, accumulating partial payloads, decompressing deflate-compressed messages with a size limit, and raising different close codes for each failure. The type annotations carry a note that a Cython declaration file uses C int, which suggests this file has a compiled counterpart that must stay in step with the Python version. That is an inference from the annotations, but if it holds, every change here has a second place to be verified.
+
+Neither function shows bug-linked commits or reverts at the file level, and the bug-fix rate is 0% across 5 commits. The risk is that the file is changing at a steady pace while both functions carry a lot of protocol logic. I would pull the header validation out of `_feed_data` into a function that takes the parsed fields and returns or raises, and split `_handle_frame` into message assembly, decompression and control-frame handling. The RFC-driven checks are easy to table-test once they are isolated.
+
+### `post` — web_request.py
+
+<FunctionCard fn='post' file='aiohttp/web_request.py' risk='2.64' band='active' cc='30' nd='7' fo='31' touches='8' />
+
+`post` has the deepest nesting among the five: a nesting depth of 7, with a cyclomatic complexity of 30 and a fan-out of 31. It was last changed 8 days ago after 8 touches in the last year. It is the only file in this group with any bug-fix signal, at a bug-fix rate of 25% across 4 commits, along with 4 distinct authors in the last 90 days, the widest ownership spread of the five. One bug-fix commit in four is a small sample and I would not read much into it, but it does mean this file deserves a bit more review attention than a quiet one with the same complexity.
+
+The excerpt shows it parsing form bodies, with a multipart branch that loops over fields, enforces total size and field count limits, streams file uploads into a spooled temporary file, and switches to executor-based writes once the file rolls to disk. The size checks appear at several levels, once per field and again mid-read per chunk, and the close-and-raise cleanup path is duplicated depending on whether the file has rolled over. That duplication, at depth 7, is where I would look first.
+
+My recommendation is to extract the file-upload branch into its own coroutine that owns the spooled file, its rollover state and its cleanup, so the limits are checked in one place and the temporary file is closed in one place. The outer function would then handle the content-type dispatch and field accumulation, which should bring nesting down by several levels.
+
+### `_start_tls_connection` — connector.py
+
+<FunctionCard fn='_start_tls_connection' file='aiohttp/connector.py' risk='2.59' band='active' cc='20' nd='6' fo='17' touches='7' />
+
+`_start_tls_connection` has the lowest cyclomatic complexity of the five at 20, but a nesting depth of 6 and a fan-out of 17 put it in the critical band. It was changed 8 days ago after 7 touches in the last year, and the file has 2 commits in the history I have, with no bug-linked commits or reverts. The excerpt shows a TLS upgrade of an existing transport, used for connections through an HTTPS proxy. It has two near-identical `start_tls` calls differing only in whether a shutdown timeout is passed, transport cleanup in a bare exception handler, fingerprint verification, and a long chain of exception translations for certificate, SSL, OS and type errors.
+
+The nesting comes mostly from try blocks inside try blocks inside a timeout context, which is the shape resource-cleanup code usually takes. The repeated `start_tls` call is the easiest win: build the keyword arguments once and conditionally add the shutdown timeout. Moving fingerprint checking and the error translation into helpers would flatten the structure without changing behavior.
+
+**What I would do this week**
+
+All five are in the active tier, so the review priority is clear: anything touching `_request`, the two WebSocket reader functions, `post` or `_start_tls_connection` deserves a second reviewer and a targeted test pass. Further down the list there are critical-band functions that are quiet, and I would treat those as structural debt to schedule rather than rush.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/aio-libs/aiohttp
+cd aiohttp
+git checkout a97d2343e804944d3eeed03ef7981fcbbfb2a409
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
