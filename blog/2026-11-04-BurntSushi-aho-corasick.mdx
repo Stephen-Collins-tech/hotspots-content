@@ -1,0 +1,116 @@
+---
+title: "aho-corasick's search loops and prefilter builder carry the highest activity risk"
+titleSeo: "aho-corasick code health: search loops and prefilter builder lead refactoring priority"
+description: "In BurntSushi/aho-corasick, the two forward-search loops in src/automaton.rs and the prefilter build function in src/util/prefilter.rs combine high complexity with changes made in the last week."
+introContent: "Five functions in aho-corasick are both structurally dense and sitting in code that changed within the last week, including the core search loops that every match goes through. I walk through why those matter more than the larger but dormant functions elsewhere in the repo."
+pubDate: 2026-11-04
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "BurntSushi/aho-corasick"
+commit: "6c0abf5681bfc30bb9d8f7f52b68a350b436fffa"
+language: "rust"
+hotspots_version: "3.0.0"
+analyzed_at: "2026-11-04T11:02:52Z"
+clone_depth: 100
+topRisk: 1.76
+topFunction: "try_find_fwd_imp"
+topFile: "src/automaton.rs"
+qaSection:
+  - question: "What makes the nesting depth of try_find_fwd_imp a problem in aho-corasick?"
+    answer: "Nesting depth is the deepest level of nested control structures inside a function. In `try_find_fwd_imp` it is 7, alongside a cyclomatic complexity of 26 and a fan-out of 11, meaning the function calls 11 distinct functions. Deep nesting forces a reader to hold several active conditions at once, such as being inside the scan loop, inside a special-state check, and inside a match branch with an anchored-search filter. It also makes each path harder to isolate in a test, and a mistake in one nested branch can silently change behavior in another."
+  - question: "How do I reduce cyclomatic complexity in rust?"
+    answer: "The main technique is extract-method, combined with decompose-conditional for chains of branches. As a rule of thumb, complexity above 15 warrants splitting and above 30 warrants prompt attention, so `build` in src/util/prefilter.rs at 32 is the clearest candidate. A concrete first step is to pull the start-byte versus rare-byte comparison out into its own function that returns which prefilter to prefer, then test it with table-driven cases. That one extraction should remove a large share of the branches from the parent function. In Rust, returning an enum from the extracted function also lets the compiler check that every case is handled."
+  - question: "Is aho-corasick actively maintained?"
+    answer: "The data shows recent activity in the code I flagged. All five top functions are in the active tier: the two search loops were last changed 7 days ago, and the prefilter `build` and both packed-builder functions were changed today (0 days ago). The two packed-builder functions have 2 touches in the last year each, and the other three have 1 each. At the same time, 384 of 606 functions are in the quiet tier, including `build_imp` in the Teddy builder, which hasn't been changed in 873 days. Recent changes and long-dormant complex code coexist here, which is common in a stable library."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from its GitHub repository. I analyzed commit 6c0abf5, so run `git checkout 6c0abf5` and then `hotspots analyze . --mode snapshot --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the file has changed. Functions that are both hard to understand and in changing code score highest. A very complex function that hasn't been touched in two years scores lower than a moderately complex one changed this week, because the dormant one has less near-term regression risk. This points refactoring effort at the code most likely to have bugs introduced right now, not just the code that looks complicated in the abstract."
+---
+
+Every match aho-corasick finds passes through two search loops that changed within the last seven days. Five functions in the crate are both structurally complex and in recently changed code, which makes them live regression risks for anyone shipping changes this week. The highest activity-weighted risk score in the 606-function analysis, 1.76, belongs to `try_find_fwd_imp` in src/automaton.rs, which sits in the critical band along with its overlapping-search sibling and the prefilter `build` function in src/util/prefilter.rs. Across the repo, 25 functions are critical and 222 sit in active code. I would start with the active critical ones, because the dormant critical functions, like `build_imp` in the Teddy builder with a cyclomatic complexity of 72, are structural debt rather than moving targets.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `try_find_fwd_imp` | src/automaton.rs | 1.8 | 26 | 7 | 11 |
+| `try_find_overlapping_fwd_imp` | src/automaton.rs | 1.7 | 22 | 7 | 10 |
+| `build` | src/util/prefilter.rs | 1.6 | 32 | 3 | 4 |
+| `build` | src/packed/api.rs | 1.6 | 11 | 2 | 8 |
+| `add` | src/packed/api.rs | 1.6 | 7 | 2 | 6 |
+
+## Codemod / Tooling Files in Results
+
+Two of the context-only critical functions, both named `main` in benchmarks/engines/rust-aho-corasick/main.rs and benchmarks/engines/rust-old-aho-corasick/main.rs, are benchmark harness entry points rather than library code. They score as critical on cyclomatic complexity (40 and 38) but have gone 1056 days without a change and are not part of the shipped crate. If you want the report to focus on library code, add `{ "exclude": ["benchmarks/"] }` to `.hotspotsrc.json`.
+
+The top of this list is dominated by two things: the generic search loops in the automaton module, and the builder logic that decides which prefilter to use. Both are in code that changed recently, so I treat them as the review priority. The functions with the largest raw complexity are mostly elsewhere and mostly untouched, which I cover at the end.
+
+<BandChart active='222' quiet='384' />
+
+### `try_find_fwd_imp` — automaton.rs
+
+<FunctionCard fn='try_find_fwd_imp' file='src/automaton.rs' risk='1.76' band='critical' cc='26' nd='7' fo='11' touches='1' />
+
+I would start here because it has the highest activity-weighted risk score in the repo, 1.76, and it was last changed 7 days ago. From the name and the source excerpt, this is the forward search routine for ordinary (non-overlapping) matching. It is an inline-always generic function over the automaton trait. It sets up a start state, handles a match at the start position, consults an optional prefilter, and then runs a byte-at-a-time loop that checks for dead and match states.
+
+The metrics say a lot about why this is hard to review. A cyclomatic complexity of 26 means 26 independent paths, each a test case. A nesting depth of 7 is well past the point where I would call the control flow easy to hold in my head, and the loop body nests a state-classification check, a dead/match branch, and an anchored-search filter inside it. Fan-out of 11 means a change here touches the automaton trait's surface in many places at once.
+
+The source comments are unusually candid about the design. They explain that anchored and unanchored searches share one automaton, and that anchored searches ignore matches that don't begin at the search start. That is a subtle invariant living inside a single function. There is also a comment recording that loop unrolling and bounds-check elision were tried without a consistent benchmark win. I read that as a sign the function is deliberately shaped for performance, so my recommendation is conservative: extract the match-handling branch (the anchored-start filtering and match construction) into a small helper, and verify with benchmarks that the inlining behavior is unchanged before merging anything.
+
+Historical context is mild. The file has a bug-fix rate of 23% across 13 commits, with no bug-linked commits and no reverts recorded. That is context for review priority, not evidence of a defect in this function.
+
+### `try_find_overlapping_fwd_imp` — automaton.rs
+
+<FunctionCard fn='try_find_overlapping_fwd_imp' file='src/automaton.rs' risk='1.75' band='critical' cc='22' nd='7' fo='10' touches='1' />
+
+This is the overlapping-match counterpart, with an activity-weighted risk score of 1.75, also last changed 7 days ago, and the same file-level history as the function above. Its cyclomatic complexity is 22, nesting depth 7, fan-out 10.
+
+The structural difference matters. Where the non-overlapping version returns a match, this one takes a mutable overlapping-state object and threads resumption logic through it: the code has to distinguish a first call from a continuation, track how many matches in the current state have been reported, and re-enter the scan loop at the right offset. That resumable-state design explains a good share of the complexity. The loop then handles dead states, match states, and a start-state prefilter case, with an assertion guarding the assumption that a special non-dead, non-match state with an active prefilter is a start state.
+
+The two functions share most of their skeleton, which means a fix to one often needs a mirrored fix in the other. My recommendation is to pull the shared state-classification step into one helper that both call, and to split the state-initialization prefix of this function (the `None` versus `Some` handling at the top) into its own function so the loop is readable on its own. I would also add a test that exercises resumption after each kind of early return, since each early return is a distinct path out.
+
+### `build` — util/prefilter.rs
+
+<FunctionCard fn='build' file='src/util/prefilter.rs' risk='1.63' band='critical' cc='32' nd='3' fo='4' touches='1' />
+
+This function has the highest cyclomatic complexity of the five, 32, but with shallow nesting (3) and low fan-out (4). It was changed today, and the file has one author in the last 90 days. The pattern is different from the search loops: this is wide rather than deep.
+
+From the excerpt, it decides which prefilter to construct. It returns early when prefilters are disabled, prefers a memmem-based prefilter when there is a single pattern, considers a packed prefilter, and then compares start-byte and rare-byte prefilters using pattern length, minimum length, byte counts, and rank sums. The comments describe these as heuristics for picking the cheaper option. That is a decision table written as nested conditionals and early returns.
+
+The file has a bug-fix rate of 20% over 5 commits, no bug-linked commits, no reverts, and a review-comment density of 1.33 per pull request, the highest of the top five. That suggests reviewers are engaging with this file. Because the logic is a heuristic selection, each branch is a behavior choice rather than a correctness requirement, and those are the changes that are easiest to get subtly wrong and hardest to notice, since results stay correct while performance shifts. My recommendation is to extract the start-versus-rare byte comparison into a named function that returns an enum of which prefilter to prefer, then test that function directly with table-driven cases. That would take the main function well below the point where I would flag it.
+
+**`build` and `add` — packed/api.rs**
+
+<FunctionCard fn='build' file='src/packed/api.rs' risk='1.63' band='high' cc='11' nd='2' fo='8' touches='2' />
+
+<FunctionCard fn='add' file='src/packed/api.rs' risk='1.62' band='high' cc='7' nd='2' fo='6' touches='2' />
+
+I group these two because they share a file, a history, and a story. Both are in the high band rather than critical, both were changed today, and both have been touched twice in the last year. The file has 7 commits, a bug-fix rate of 0%, no reverts, and one distinct author in the last 90 days.
+
+The `build` function (cyclomatic complexity 11, fan-out 8) constructs the packed searcher from accumulated patterns. From the excerpt, it returns nothing when the builder is inert or empty, clones and configures the patterns, constructs a Rabin-Karp helper, and then selects Teddy or Rabin-Karp depending on a forced-algorithm setting. The `add` function (cyclomatic complexity 7, fan-out 6) accumulates patterns and silently makes the builder inert when it exceeds a pattern limit or receives an empty pattern.
+
+Neither is structurally alarming. Their score comes mostly from sitting in a file that is changing. What I would watch is the silent-inert behavior in `add`: a builder that quietly stops accepting patterns and later returns nothing from `build` is a design where a caller can lose patterns without a signal. I would not refactor either function now. I would add tests pinning down the inert transitions (limit exceeded, empty pattern) so that the ongoing changes to this file cannot alter that behavior unnoticed.
+
+**The dormant critical functions**
+
+The largest numbers in the repo are not in the top five. Some critical-band functions are quiet, which makes them structural debt with a high blast radius the next time someone touches them, not live regression risks. I would leave them alone until a feature or fix forces a change, and then refactor first so that the change lands in smaller pieces.
+
+A note on Rust specifically: the metrics here cannot see ownership, lifetime, or unsafe-block complexity, and I have no visibility into whether these functions contain unsafe code. The cyclomatic and nesting values are therefore a floor on how hard these functions are to review, not a ceiling.
+
+
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/BurntSushi/aho-corasick
+cd aho-corasick
+git checkout 6c0abf5681bfc30bb9d8f7f52b68a350b436fffa
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
