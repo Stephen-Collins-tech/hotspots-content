@@ -1,0 +1,120 @@
+---
+title: "psycopg's type adapters carry the highest activity risk — 5 functions to address first"
+titleSeo: "psycopg code health: array, composite and datetime adapters lead refactoring priority"
+description: "In psycopg/psycopg, the top five activity-weighted hotspots all sit in the type adapter layer (array.py, composite.py, datetime.py), and all five were changed within the last five days of the analyzed commit."
+introContent: "All five of psycopg's top hotspots live in the Postgres type conversion layer, and every one was modified within the last five days. If you are touching array, composite or timestamp adapters this week, you are working in the densest cluster of complex, changing code in the repo."
+pubDate: 2026-11-04
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: true
+repo: "psycopg/psycopg"
+commit: "b9e2f3535777cffb679ce3e6dc7f2b758dc9ac06"
+language: "python"
+hotspots_version: "3.0.0"
+analyzed_at: "2026-11-04T10:48:38Z"
+clone_depth: 100
+topRisk: 2.28
+topFunction: "_load_text"
+topFile: "psycopg/psycopg/types/array.py"
+qaSection:
+  - question: "What makes the fan-out of 15 in `_load_text` a problem in psycopg?"
+    answer: "Fan-out is the count of distinct functions a function calls directly, and a value around 15 is a strong signal of broad coupling. In `_load_text` it means the array parser touches regex matching, slicing, decoding, error construction and the item loader inside one function body, so a change to any of them can alter its behavior. Because Python resolves the loader call at runtime, the real dependency surface is wider than the number suggests. Combined with CC 14 and ND 4, it is hard to test each failure path in isolation."
+  - question: "How do I reduce cyclomatic complexity and fan-out in python?"
+    answer: "Use extract-method to pull self-contained steps into named helpers, and decompose-conditional for long branch chains. As a rule of thumb, CC above 15 warrants splitting and CC above 30 needs immediate attention. A concrete first step for `_load_text` (CC 14, FO 15) is to move the dimension-prefix stripping and the quoted-item unescape into their own functions, which removes the deepest nesting and several error branches from the main loop. For `register_composite` (CC 9, FO 14), separating loader registration from dumper registration would shrink the number of calls in the main body substantially."
+  - question: "Is psycopg actively maintained?"
+    answer: "The data says yes. All five top hotspots are in the active tier, and they were last changed between 1 and 5 days before the analyzed commit; `_load_text` and `_dump_list` were each touched 6 times in the last year, `_load_iso` 3 times, and `register_composite` and `_dump_text_sequence` 2 times each. Across the repo, 860 of 1,733 functions are in the active tier. Active development and structural debt are not mutually exclusive, and here the activity is concentrated in exactly the complex adapter code. The quiet tier tells the other half: the five critical-band functions in `_queries.py`, `_pq_ctypes.py` and `pq_ctypes.py` each have 1 touch in the last year and 148 days since last change."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit b9e2f35 of psycopg/psycopg. Then run `hotspots analyze . --mode snapshot --force` from the repo root. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently the file has changed, so functions that are both hard to understand and in changing code score highest. A very complex function that has not been touched in two years scores lower than a moderately complex one changed every week, because the dormant one has lower near-term regression risk. In this analysis, `_load_text` scores 2.28 with 6 touches in the last year, while the quiet `_split_query` scores 1.29 despite a higher CC of 15, with 1 touch and 148 days since last change. This points refactoring effort at code where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+Five functions in psycopg's type adapter layer are both structurally complex and in code that changed within the last five days of commit b9e2f35, and three of them sit in the critical band. The highest, `_load_text` in `psycopg/psycopg/types/array.py`, has an activity-weighted risk score of 2.28 with CC 14, ND 4 and FO 15. psycopg is the PostgreSQL driver for Python; this analysis covers 1,733 functions, 66 of them critical and 860 in the active tier, so if you ship a change to array, composite or timestamp handling this week, I would start with the adapters before anything else.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `_load_text` | psycopg/psycopg/types/array.py | 2.3 | 14 | 4 | 15 |
+| `register_composite` | psycopg/psycopg/types/composite.py | 2.1 | 9 | 3 | 14 |
+| `_dump_list` | psycopg/psycopg/types/array.py | 2.1 | 7 | 4 | 6 |
+| `_dump_text_sequence` | psycopg/psycopg/types/composite.py | 2.1 | 8 | 2 | 6 |
+| `_load_iso` | psycopg/psycopg/types/datetime.py | 2.1 | 10 | 2 | 10 |
+
+The distribution first. Of 1,733 functions, 860 are in the active tier and 873 are quiet. The top five are not a close call within that split: all five are active, and each was last changed between 1 and 5 days before the analyzed commit.
+
+<BandChart active='860' quiet='873' />
+
+There is a second cluster worth naming. The five critical-band functions I pulled as context are all in the quiet tier, each with 1 touch in the last year and 148 days since last change. They are not what I would look at this week, and the five below are.
+
+### `_load_text` — array.py
+
+<FunctionCard fn='_load_text' file='psycopg/psycopg/types/array.py' risk='2.28' band='critical' cc='14' nd='4' fo='15' touches='6' />
+
+This is the function that parses the text representation of a Postgres array back into nested Python lists. I would start with `_load_text` because it has the highest activity-weighted risk score in the repo (2.28) and it has been touched 6 times in the last year, most recently 4 days ago.
+
+The excerpt shows a single loop over regex matches that handles an opening bracket, a closing bracket and an item token as separate branches. It maintains a stack of nested lists and raises a data error in several places for malformed input. That explains the shape of the metrics: CC 14 is a branch per token kind and per malformed-input case, ND 4 comes from the item branch nesting its NULL check, quote check and unescape inside the loop, and FO 15 reflects a lot of small calls (regex matching, slicing, decoding, the loader's own load) packed into one body. In Python, the loader call is dispatched at runtime, so the real coupling is wider than the number suggests.
+
+The file-level history adds context without proving anything about this function. The file has 6 commits in total, a bug-fix rate of 66.7%, no commits explicitly linked to bugs, no reverts, 3 distinct authors in the last 90 days, and a low pull request review comment density of 0.25. A high bug-fix rate on a small commit count is a reason to review carefully, not a verdict.
+
+My recommendation: split the token handling. Pull the dimension-prefix stripping into its own helper, and move the quoted-item unescape and NULL handling into a small function that returns the decoded value. That removes the deepest nesting and the error-heavy preamble, and leaves the loop as a clear state machine over three token types that can be tested directly with malformed inputs.
+
+### `register_composite` — composite.py
+
+<FunctionCard fn='register_composite' file='psycopg/psycopg/types/composite.py' risk='2.14' band='critical' cc='9' nd='3' fo='14' touches='2' />
+
+This is the public entry point for registering the loaders and dumpers for a composite type. Its activity-weighted risk score is 2.14. CC is a moderate 9 and ND is 3, but FO is 14, and that fan-out is what pushes it into the critical band.
+
+From the excerpt, the function validates its input, registers array and type info, defaults the factory and object maker, builds and registers a text loader and a binary loader, and then conditionally builds and registers dumpers if the factory is a type. Those are several distinct responsibilities in one function body, which is why the call count is high. It was last changed 1 day before the analyzed commit, with 2 touches in the last year.
+
+The file's history is short: 2 commits, a bug-fix rate of 50%, no bug-linked commits, no reverts, and 1 distinct author in the last 90 days. The pull request review comment density is 6.0, the highest of the five, which suggests this change drew real discussion. I read that as a sign the reviewers noticed the function's breadth, not as a quality judgement.
+
+My recommendation: extract the loader registration and the dumper registration into two helpers, for example one that registers both loaders and one that decides the sequence maker and registers dumpers. The public signature stays the same, and the conditional dumper path, which currently warns about non-sequence types, becomes independently testable.
+
+### `_dump_list` — array.py
+
+<FunctionCard fn='_dump_list' file='psycopg/psycopg/types/array.py' risk='2.09' band='high' cc='7' nd='4' fo='6' touches='6' />
+
+`_dump_list` is the dumping counterpart to `_load_text`, serializing a Python list into the array text format. It sits in the high band rather than critical, with CC 7, ND 4 and FO 6, and the same file-level history as `_load_text`: 6 touches in the last year, last changed 4 days ago.
+
+The metrics are modest but the nesting is not. The excerpt shows a recursive call for nested lists, and inside the loop a chain that distinguishes lists, non-null items, items the sub-dumper turns into nothing, and items needing quotes. That is where ND 4 comes from. I count this one as a function that bears watching rather than an urgent refactor: the complexity is bounded and the recursion is a reasonable structure for nested arrays.
+
+Because `_load_text` and `_dump_list` live in the same file and share the same recent churn, I would review them together. A change to quoting or escaping rules on one side usually has to be mirrored on the other, and reviewing only one of them is how asymmetries get in. The excerpt also shows the quoting logic delegating to a cached regex helper, which is a good seam: if you extract the per-item encode step, the quote decision can stay in that helper.
+
+### `_dump_text_sequence` — composite.py
+
+<FunctionCard fn='_dump_text_sequence' file='psycopg/psycopg/types/composite.py' risk='2.09' band='high' cc='8' nd='2' fo='6' touches='2' />
+
+This function serializes a sequence into a composite type's text representation. With CC 8, ND 2 and FO 6 it is the simplest of the five structurally, and it is in the high band. It shares file history with `register_composite`: 2 touches in the last year, last changed 1 day before the analyzed commit, 1 distinct author in the last 90 days.
+
+The excerpt shows a flat loop with a short chain for NULL items, empty strings and values needing quotes, which accounts for the CC without deep nesting. I would not refactor it for its own sake. The recommendation is mostly about testing: each of those item cases (null, empty, needs quoting, plain) is a distinct path, and a table-driven test over those four cases plus the empty sequence gives full branch coverage cheaply. That matters more than usual because the function was changed 1 day before the analyzed commit.
+
+### `_load_iso` — datetime.py
+
+<FunctionCard fn='_load_iso' file='psycopg/psycopg/types/datetime.py' risk='2.09' band='critical' cc='10' nd='2' fo='10' touches='3' />
+
+`_load_iso` parses an ISO-format timestamp-with-timezone string into a Python datetime in the connection's timezone. It is critical-band with CC 10, ND 2 and FO 10, touched 3 times in the last year and last changed 5 days before the analyzed commit.
+
+The excerpt shows several sequential responsibilities: matching the format, padding the fractional seconds, computing the timezone offset from optional hour, minute and second parts, building a temporary UTC datetime, and then two separate exception paths for overflow near the datetime maximum and for invalid values. The overflow fallback, which returns a fixed-offset datetime, is the sort of edge case that is easy to regress when someone tidies the happy path.
+
+The file history shows 3 commits, a bug-fix rate of 66.7%, no bug-linked commits, no reverts, 1 distinct author in the last 90 days and no pull request review comments. Zero review comments on a critical-band function in active code is the signal I would act on: a second reader would be useful here.
+
+My recommendation: extract the offset calculation and the fractional-seconds padding into small pure functions. Both are straight arithmetic that can be tested exhaustively, and removing them takes the main function down to match, build, shift and error handling. Keep a dedicated test for the datetime-maximum overflow case before any change.
+
+**What I would do this week**
+
+If you are shipping changes to the type layer, review `_load_text` and `_dump_list` as a pair, give `_load_iso` a second reviewer, and add boundary tests around `register_composite` before touching it. The query and ctypes functions, untouched for 148 days, can wait until someone is already working in those files.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/psycopg/psycopg
+cd psycopg
+git checkout b9e2f3535777cffb679ce3e6dc7f2b758dc9ac06
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
