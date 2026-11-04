@@ -1,0 +1,110 @@
+---
+title: "JUnit5's DefaultLocaleExtension carries the highest activity risk"
+titleSeo: "junit5 code health: DefaultLocaleExtension createFromParts leads refactoring priority"
+description: "In junit-team/junit5, createFromParts in DefaultLocaleExtension.java is the only top-five function with meaningful branching (cyclomatic complexity 7), while the other four hotspots are tests or a small equals method that score on recent churn rather than structure."
+introContent: "I analyzed 12,079 functions in junit5 and the highest-ranked hotspot is a locale-configuration helper with a cyclomatic complexity of 7, not a sprawling engine class. The rest of the top five is mostly test code that changed four days ago."
+pubDate: 2026-11-04
+tags: ["oss", "java", "refactoring", "code-health"]
+draft: true
+repo: "junit-team/junit5"
+commit: "30b21678d96c4c206e73d54ed172729805bfbc44"
+language: "java"
+hotspots_version: "3.1.0"
+analyzed_at: "2026-11-04T16:33:54Z"
+clone_depth: 100
+topRisk: 1.99
+topFunction: "createFromParts"
+topFile: "junit-jupiter-api/src/main/java/org/junit/jupiter/api/util/DefaultLocaleExtension.java"
+qaSection:
+  - question: "What makes the cyclomatic complexity of createFromParts a problem in junit5?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a place a bug can hide and a case a test must cover. `createFromParts` in `DefaultLocaleExtension.java` has a complexity of 7, which is moderate in absolute terms but is the highest among the five top-ranked functions, where the next-highest is 3 and the other three are 1. The function chains compound conditions over language, country, and variant, so the combinations are easy to under-test. It also sits in code that was last changed 4 days ago, which is why it ranks first."
+  - question: "How do I reduce cyclomatic complexity in java?"
+    answer: "The usual technique is decompose-conditional: pull the compound checks into small, well-named predicates or a single lookup of which locale parts are present, so the valid combinations are listed once. A complexity above 15 warrants splitting, and above 30 warrants immediate attention; `createFromParts` at 7 is below that but still benefits from the cleanup. A concrete first step is to write one test per branch, including the invalid combinations, then replace the if/else-if chain with a single check that maps the supplied parts to a locale and routes every other case to one error path."
+  - question: "Is junit5 actively maintained?"
+    answer: "The data points to active work. All five top functions are in the active tier and were last changed 4 days ago, with 2 to 3 touches in the last year each, and 1,926 of 12,079 functions are in the active tier overall. The files behind them also show 2 distinct authors in the last 90 days. At the same time, 41 functions are critical and 10,153 are quiet, including heavier functions such as `assertArrayElementsEqual`, with a nesting depth of 12 and no change in 36 days. Active development and structural debt coexist here."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone junit-team/junit5, run `git checkout 30b2167`, and then run `hotspots analyze . --mode snapshot --force` using the hotspots CLI from GitHub. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. A function with a cyclomatic complexity of 80 that has not been touched in two years scores lower than one with a complexity of 20 that is touched every week, because the dormant one has lower near-term regression risk. That is why `createFromParts` (activity-weighted risk score of 1.99) outranks `nullSafeToString` (1.31) here even though the latter has a complexity of 14: `createFromParts` was changed 4 days ago, while `nullSafeToString` has not changed in 36 days. The ranking helps focus review on code where a mistake is most likely to be introduced right now."
+---
+
+The first thing I noticed in junit5 is a complexity outlier: `createFromParts` in `DefaultLocaleExtension.java` has a cyclomatic complexity of 7, while the fifth-ranked function, `executesNestedClassTemplatesTwiceEach`, has a complexity of 1. That gap makes it a different kind of problem from the rest of the list: the other four are ranked by recent churn and fan-out, while this one has real branching that needs a test case per path. It is in the active tier with an activity-weighted risk score of 1.99, was changed 4 days ago, and sits in the critical band, so it is structural complexity in code that is changing now rather than a backlog item. I looked at 12,079 functions across the repository, 41 of them critical, and I would start with `createFromParts` because it is the only top-five function where the structure itself, not the volume of setup code, drives the score.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `createFromParts` | junit-jupiter-api/src/main/java/org/junit/jupiter/api/util/DefaultLocaleExtension.java | 2.0 | 7 | 3 | 10 |
+| `createMethodDescriptorImpersonator` | jupiter-tests/src/test/java/org/junit/jupiter/engine/extension/OrderedMethodTests.java | 2.0 | 1 | — | 4 |
+| `equals` | junit-jupiter-api/src/main/java/org/junit/jupiter/api/extension/ExtensionContext.java | 1.9 | 3 | 1 | 2 |
+| `executesClassTemplateClassTwice` | jupiter-tests/src/test/java/org/junit/jupiter/engine/ClassTemplateInvocationTests.java | 1.9 | 1 | — | 80 |
+| `executesNestedClassTemplatesTwiceEach` | jupiter-tests/src/test/java/org/junit/jupiter/engine/ClassTemplateInvocationTests.java | 1.9 | 1 | — | 103 |
+
+<BandChart active='1926' quiet='10153' />
+
+Most of the repository is quiet: 10,153 of 12,079 functions sit in the quiet tier, with little or no recent activity. The five functions I am looking at here are all in the active tier, and every one of them was last changed 4 days ago. That shared timestamp suggests they were touched around the same time, and I would treat the list as a snapshot of where recent work landed rather than a ranking of the worst code in the project. Only one of the five is critical; `createMethodDescriptorImpersonator` is high band, and the other three are moderate-band functions that I flag separately below.
+
+### `createFromParts` — DefaultLocaleExtension.java
+
+<FunctionCard fn='createFromParts' file='junit-jupiter-api/src/main/java/org/junit/jupiter/api/util/DefaultLocaleExtension.java' risk='1.99' band='critical' cc='7' nd='3' fo='10' touches='2' />
+
+I would start with `createFromParts` because it has a cyclomatic complexity of 7, a nesting depth of 3, and a fan-out of 10, and it was touched twice in the last year, most recently 4 days ago. Reading the excerpt, it takes a `DefaultLocale` annotation and validates which combination of language, country, and variant was supplied. It first rejects configurations that mix a locale provider with explicit parts, then walks an if/else-if chain that accepts language plus country plus variant, language plus country, or language alone, and throws a configuration exception for anything else.
+
+<MetricBar label='Cyclomatic Complexity' value='7' threshold='10' max='20' />
+
+That is a modest complexity in absolute terms, below the usual threshold of 10, and I want to be clear about that. What puts it at the top is the combination of seven paths, several compound boolean conditions (`!language.isEmpty() && !country.isEmpty() && !variant.isEmpty()` and its siblings), and recent activity. Compound conditions like these are where gaps in combination coverage tend to hide: for example, the third branch's `variant.isEmpty()` condition is an easy line to misread. The file shows no historical defect signal: no bug-linked commits, a bug-fix rate of 0%, no reverts, 2 total commits, and 2 distinct authors in the last 90 days. So I read this as maintainability debt in code that is in motion, and the live regression risk comes from the next edit rather than from any track record of problems.
+
+My recommendation is concrete. Confirm there is a test for every one of the seven paths, including the invalid combinations (country without language, variant without country). Then consider replacing the chain with a small decision on which parts are present, so the valid combinations are listed once and everything else falls into a single error path. Because the same file also validates provider-based configuration in `getFromProvider`, a shared validation helper would keep the two error-message styles consistent.
+
+### `createMethodDescriptorImpersonator` — OrderedMethodTests.java
+
+<FunctionCard fn='createMethodDescriptorImpersonator' file='jupiter-tests/src/test/java/org/junit/jupiter/engine/extension/OrderedMethodTests.java' risk='1.98' band='high' cc='1' nd='0' fo='4' touches='3' />
+
+This is a test helper in `OrderedMethodTests.java` with a cyclomatic complexity of 1, no nesting, and a fan-out of 4. It builds a local stub class implementing `MethodDescriptor` whose accessors either throw `UnsupportedOperationException`, return empty values, or delegate `equals` and `hashCode` to a wrapped method. Its activity-weighted risk score of 1.98 and high band come from the file being touched 3 times in the last year, most recently 4 days ago, not from any branching in the function itself. The file has no bug-linked commits, no reverts, and 2 distinct authors in the last 90 days.
+
+I would not refactor this one. It is a test fixture that appears to exist so tests can check how ordering behaves when a descriptor is replaced. The useful action is to watch it: if the `MethodDescriptor` interface gains members, this stub is a place that will need a matching edit, since it implements every method by hand.
+
+### `equals` — ExtensionContext.java
+
+<FunctionCard fn='equals' file='junit-jupiter-api/src/main/java/org/junit/jupiter/api/extension/ExtensionContext.java' risk='1.94' band='moderate' cc='3' nd='1' fo='2' touches='3' />
+
+This `equals` implementation sits inside the namespace type nested in `ExtensionContext.java`. It short-circuits on identity and otherwise compares the list of parts to another namespace's parts. A cyclomatic complexity of 3, nesting depth of 1, and fan-out of 2 make it about as simple as a non-trivial method gets. It is in the moderate band, and the file was touched 3 times in the last year and changed 4 days ago.
+
+The public API surface is what makes this file worth a reviewer's attention. The excerpt shows an experimental store-scope enum and an internal accessor for the parts, so this file is evolving even if `equals` itself is not. I would leave `equals` alone and review the surrounding API changes instead. There are no bug-linked commits and no reverts in the file's history.
+
+### `executesClassTemplateClassTwice` — ClassTemplateInvocationTests.java
+
+<FunctionCard fn='executesClassTemplateClassTwice' file='jupiter-tests/src/test/java/org/junit/jupiter/engine/ClassTemplateInvocationTests.java' risk='1.94' band='moderate' cc='1' nd='0' fo='80' touches='3' />
+
+<MetricBar label='Fan-out' value='80' threshold='15' max='110' />
+
+This parameterized test has a cyclomatic complexity of 1 and a nesting depth of 0, but a fan-out of 80. The excerpt explains why: it builds a series of unique identifiers for a class template, its two invocations, and nested methods, then asserts an exact sequence of events using chained event matchers. Almost every call is a small builder or matcher, so the fan-out reflects a long script rather than tangled logic.
+
+The file's bug-fix rate is 33%, which is one of 3 commits, and there are no reverts. I would not read that as a defect signal on a 3-commit file. The practical cost of this shape is brittleness: any change to how events are emitted or how identifiers are formed means editing a long, ordered expectation list. It bears watching rather than refactoring now; if this test keeps changing, I would extract helpers that build the per-invocation identifiers and expected event sequences so a change touches one helper instead of dozens of lines.
+
+### `executesNestedClassTemplatesTwiceEach` — ClassTemplateInvocationTests.java
+
+<FunctionCard fn='executesNestedClassTemplatesTwiceEach' file='jupiter-tests/src/test/java/org/junit/jupiter/engine/ClassTemplateInvocationTests.java' risk='1.94' band='moderate' cc='1' nd='0' fo='103' touches='3' />
+
+This is the same shape as the previous test, only larger, with a fan-out of 103 and a cyclomatic complexity of 1. It declares identifiers for two outer invocations, each containing a nested template with two inner invocations, then asserts the full event sequence. The same file-level history applies: 3 touches in the last year, a bug-fix rate of 33%, no reverts, and 2 distinct authors in the last 90 days.
+
+The nested structure multiplies the identifier setup, and the excerpt shows names like outer-invocation-1-inner-invocation-2-nested-method repeated across four combinations. It sits in the moderate band, so it bears watching rather than urgent work. If I wanted to reduce edit cost in this file, though, this is where I would begin, because a loop or helper that generates the identifiers and expected events per outer and inner index would cut the line count sharply. Since it is a test with straight-line logic, the risk is maintenance effort, not branching.
+
+**Context from the quiet tier**
+
+The next-ranked functions are all quiet and all critical, and they tell a different story. They were each touched once in the last year and have not changed in 36 days. They are structurally heavier than anything in the top five, and they rank lower only because the activity weighting favors code that changed recently.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/junit-team/junit5
+cd junit5
+git checkout 30b21678d96c4c206e73d54ed172729805bfbc44
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
