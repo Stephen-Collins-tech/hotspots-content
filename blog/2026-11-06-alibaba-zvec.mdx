@@ -1,0 +1,122 @@
+---
+title: "zvec's segment.cc carries the highest activity risk — 5 functions to address first"
+titleSeo: "zvec code health: segment.cc leads the refactoring priority list"
+description: "All five of the highest-risk functions in alibaba/zvec live in src/db/index/segment/segment.cc, a file touched 45 times in the last year and changed a day before this analysis."
+introContent: "Every one of the top five hotspots in zvec lives in a single file, segment.cc, and that file was modified a day before I ran the analysis. This is a module-level review problem, not a single-function one."
+pubDate: 2026-11-06
+tags: ["oss", "c++", "refactoring", "code-health"]
+draft: false
+repo: "alibaba/zvec"
+commit: "b1670ff1b5c7980627b021ffc2bd9e3842dfb43c"
+language: "c++"
+hotspots_version: "3.3.2"
+analyzed_at: "2026-11-06T03:13:41Z"
+clone_depth: 484
+topRisk: 3.55
+topFunction: "fetch"
+topFile: "src/db/index/segment/segment.cc"
+qaSection:
+  - question: "What makes the fan-out of 106 in `fetch` a problem in zvec?"
+    answer: "Fan-out is the count of distinct functions a function calls directly, and a value of 15 or more is already a strong signal of broad coupling. `fetch` in segment.cc has a fan-out of 106, so a change to any of those callees can alter its behavior, and testing it in isolation means stubbing or setting up a large surface. It also carries a cyclomatic complexity of 56, so the many calls are spread across many execution paths. Both numbers together make it hard to reason about what a one-line change will affect."
+  - question: "How do I reduce cyclomatic complexity and fan-out in c++?"
+    answer: "Use extract-method to move cohesive blocks into named helpers, and decompose-conditional where long branch chains select behavior. A cyclomatic complexity above 15 warrants splitting, and above 30 warrants attention soon; `fetch_normal` at 36 is in that range. A concrete first step is to split it along its own comments: move the phase that maps documents and columns to blocks into one function returning the request map, and the batched per-block fetch into another. That alone should roughly halve the branching in each piece."
+  - question: "Is zvec actively maintained?"
+    answer: "The data says yes for the code I examined. All five top functions are in the active tier, `segment.cc` was touched 45 times in the last year, and it was last changed 1 day before the snapshot. There were 8 distinct authors in the last 90 days, so work is spread across several people rather than one maintainer. Active development and structural complexity are not mutually exclusive, and here they coincide in the same file."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub, clone alibaba/zvec, and check out commit b1670ff. Then run `hotspots analyze . --mode snapshot --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently its file has changed, so functions that are both hard to understand and in changing code score highest. A function with a cyclomatic complexity of 80 that hasn't been touched in two years scores much lower than one with a complexity of 20 that is touched every week, because the dormant one has lower near-term regression risk. That prioritization points refactoring effort at where it lowers the chance of introducing bugs right now, rather than where the code merely looks complicated in the abstract."
+---
+
+All 5 of the top hotspots in zvec sit in one file, `src/db/index/segment/segment.cc`, and that concentration is the story: anyone changing segment behavior is working inside a file where `fetch`, `alter_column`, `fetch_normal`, `create_fts_index` and `scan` all score between 3.46 and 3.55 on activity-weighted risk. This is live regression risk rather than a cleanup backlog item, because all five are in the active tier, the file has been touched 45 times in the last year, and it was last changed 1 day before the snapshot, with 8 distinct authors in the last 90 days. zvec is a C++ vector database from Alibaba; I analyzed 13,380 functions at commit b1670ff, of which 1,253 land in the critical band. I would start with `fetch`, then read the rest as a group.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `fetch` | src/db/index/segment/segment.cc | 3.5 | 56 | 5 | 106 |
+| `alter_column` | src/db/index/segment/segment.cc | 3.5 | 34 | 5 | 99 |
+| `fetch_normal` | src/db/index/segment/segment.cc | 3.5 | 36 | 4 | 79 |
+| `create_fts_index` | src/db/index/segment/segment.cc | 3.5 | 21 | 5 | 50 |
+| `scan` | src/db/index/segment/segment.cc | 3.5 | 23 | 5 | 38 |
+
+The ranking below is a reading order, not a measurement. This is C++, where templates and macros can hide complexity from static analysis, and the risk score has not been validated on C++. I am using it to decide where to read first, nothing more.
+
+<BandChart active='7194' quiet='6186' />
+
+Across the repo, 7,194 functions are in the active tier and 6,186 are quiet. The critical band holds 1,253 functions, and the five I cover here are the highest-scoring of them. What sets them apart is that they share a file, so they also share its history.
+
+The file-level signals are the same for all five, so I will state them once. `segment.cc` has 45 total commits in the last year, a bug-fix rate of 53.33%, zero reverts, zero bug-linked commits in the enrichment data, 8 distinct authors in the last 90 days, and a review comment density of 3.75. More than half the commits to this file are tagged as bug fixes, which I read as a reason to review it carefully. It does not tell me any individual function is defective, and the zero bug-linked and zero revert counts point the other way. The high bug-fix rate and the number of authors are reasons I would review changes to this file carefully.
+
+### `fetch` — segment.cc
+
+<FunctionCard fn='fetch' file='src/db/index/segment/segment.cc' risk='3.55' band='critical' cc='56' nd='5' fo='106' touches='45' />
+
+<MetricBar label='Fan-out' value='106' threshold='15' max='120' />
+
+I would start with `fetch` because it has the highest activity-weighted risk score in the repo at 3.55, a cyclomatic complexity of 56, and a fan-out of 106, in a file that changed 1 day before the snapshot. A fan-out above 100 means this one function directly calls more than a hundred distinct functions, so a change to almost any collaborator can alter its behavior.
+
+From the excerpt, `fetch` takes a shared lock, validates a global document ID, binary-searches the segment's ID list to translate it, decides which forward columns to return based on whether output fields were requested, builds an Arrow result schema column by column, and then calls into the execution path and checks the returned batch has exactly one row. That is at least five distinct jobs in one body: locking, ID translation, column selection, schema construction and result validation. It also has several early `return nullptr` exits after logging an error, and each of those is a separate path to test.
+
+My recommendation: extract the column-selection logic and the schema-building loop into their own helpers. Both are self-contained transformations from inputs to a vector, and pulling them out should remove a large share of the branching without touching the locking or the ID lookup.
+
+### `alter_column` — segment.cc
+
+<FunctionCard fn='alter_column' file='src/db/index/segment/segment.cc' risk='3.51' band='critical' cc='34' nd='5' fo='99' touches='45' />
+
+The second function is `alter_column`, with an activity-weighted risk score of 3.51, a cyclomatic complexity of 34, a nesting depth of 5 and a fan-out of 99. It is a schema-mutation path, and the excerpt shows why that matters: it checks for a memory store, looks up the old field, converts the new schema to an Arrow field, reads the existing blocks as a table, evaluates an expression over it, writes the new column back across blocks, and then, if the new schema has an inverted index, reopens and rebuilds the column indexer.
+
+That sequence is a multi-stage operation with many error exits, each returning a different status. The log message in the not-supported branch says 'Add column' even though the function is `alter_column`, which suggests the code was adapted from a sibling and is worth a second look when someone next edits it. I would not read anything more into that than a naming inconsistency.
+
+My recommendation: split the function along its stages — validate, rewrite blocks, update indexes — so each stage returns a status and can be tested on its own. The inverted-index rebuild at the end is the cleanest first extraction.
+
+### `fetch_normal` — segment.cc
+
+<FunctionCard fn='fetch_normal' file='src/db/index/segment/segment.cc' risk='3.47' band='critical' cc='36' nd='4' fo='79' touches='45' />
+
+`fetch_normal` scores 3.47 with a cyclomatic complexity of 36, a nesting depth of 4 and a fan-out of 79. The excerpt shows an explicit two-phase structure: phase one maps each requested document and column to a block and block-local row, falling back to a memory store when no persisted block covers it, and phase two executes a batched fetch per block. The comments label those phases themselves.
+
+The interesting part is that the author already drew the seam. A two-phase function with a documented boundary is the easiest kind to split, because the intermediate structure — the map from block to column to row pairs — is already the interface between the halves. A nested loop over rows and columns that mixes the local-row-ID special case, the persisted-block lookup and the memory-store lookup is where the depth and most of the branching come from.
+
+My recommendation: extract phase one into a function that returns the block request map, and phase two into a function that consumes it. The memory-store offset calculation inside phase one is a good candidate for its own small helper.
+
+### `create_fts_index` — segment.cc
+
+<FunctionCard fn='create_fts_index' file='src/db/index/segment/segment.cc' risk='3.47' band='critical' cc='21' nd='5' fo='50' touches='45' />
+
+`create_fts_index` has the lowest cyclomatic complexity of the five at 21, but a nesting depth of 5 and a fan-out of 50, and it scores 3.47. The function builds a full-text-search index for a column. From the excerpt it validates the parameters, short-circuits if the field is already indexed with identical parameters, rejects a type mismatch, snapshots or creates a fresh index, removes an existing field indexer when parameters changed, creates the new one, and then scans the forward store to replay documents.
+
+What stands out is the repeated cleanup pattern: several error branches call a directory-removal helper before returning. When cleanup is duplicated across exit paths, adding a new early return is where a leak creeps in. That is a code-shape observation, and I am not claiming it has happened here.
+
+My recommendation: wrap the new index path in a small scope guard or RAII object that removes the directory unless the operation is committed. That removes the repeated cleanup calls and shrinks the branching without changing behavior.
+
+### `scan` — segment.cc
+
+<FunctionCard fn='scan' file='src/db/index/segment/segment.cc' risk='3.46' band='critical' cc='23' nd='5' fo='38' touches='45' />
+
+`scan` is the fifth, at 3.46, with a cyclomatic complexity of 23, a nesting depth of 5 and a fan-out of 38. It validates the requested columns, takes a shared lock, iterates the persisted scalar blocks collecting the columns each block contains, scans the memory store if it has rows, groups readers by document ID range, and builds an Arrow schema from the column list.
+
+It shares a pattern with `fetch`: the schema-building loop that maps the global ID column, the user ID column and ordinary fields to Arrow types appears in both functions, with slightly different nullability arguments. Two near-duplicates in the same file are a maintenance risk when one is changed and the other is forgotten, and given the 45 touches this year I would check whether they have drifted apart on purpose.
+
+My recommendation: pull the column-to-Arrow-field mapping into one shared helper that takes a nullability option. That removes a branch chain from two of the top five functions at once.
+
+## Where to start
+
+I would read `fetch` first, then `fetch_normal` and `scan` together, since all three deal with how rows and columns are located and returned, then `alter_column` and `create_fts_index` as the two mutation paths. The single most useful refactor across the group is the shared schema-building helper, because it reduces complexity in `fetch` and `scan` simultaneously.
+
+For context, the next tier down is quieter. Several functions outside `segment.cc` have high complexity but have gone weeks without a change, so they are structural debt rather than live risk. The five in `segment.cc` are different: they are changing now.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/alibaba/zvec
+cd zvec
+git checkout b1670ff1b5c7980627b021ffc2bd9e3842dfb43c
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
