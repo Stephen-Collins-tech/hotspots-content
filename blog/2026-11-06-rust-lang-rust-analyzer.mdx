@@ -1,0 +1,120 @@
+---
+title: "rust-analyzer: 5 high-risk functions in HIR lowering and inference"
+titleSeo: "rust-analyzer code health: HIR lowering and type inference lead refactoring priority"
+description: "Five critical-band functions across hir-def, hir-ty, and ide-diagnostics are both structurally complex and changed within the last five days, with the lowering code in expr_store/lower.rs taking two of the five slots."
+introContent: "Five of rust-analyzer's riskiest functions were modified within the last five days, and two of them live in the same lowering file. If you are shipping changes to pattern lowering, type inference, or MIR evaluation this week, you are working in the most structurally dense, fastest-moving code in the repo."
+pubDate: 2026-11-06
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: false
+repo: "rust-lang/rust-analyzer"
+commit: "55effabb762bbd0a21c5af530ea447bd6772881d"
+language: "rust"
+hotspots_version: "3.3.3"
+analyzed_at: "2026-11-06T20:51:52Z"
+clone_depth: 5018
+topRisk: 3.43
+topFunction: "collect_pat"
+topFile: "crates/hir-def/src/expr_store/lower.rs"
+qaSection:
+  - question: "What makes the cyclomatic complexity of collect_pat a problem in rust-analyzer?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a potential bug surface and a test case you need to write. `collect_pat` has a cyclomatic complexity of 61, where around 10 is considered moderate and 30 or more is high. It also calls 35 distinct functions and was last changed 5 days ago, so a fix to one pattern kind has to be validated against many others. Because it lowers every Rust pattern form in one match, a regression in one arm is hard to isolate from the rest."
+  - question: "How do I reduce cyclomatic complexity in a Rust dispatch function like lower_type_ref?"
+    answer: "The standard technique is extract-method: move the body of each large match arm into its own named function so the match becomes a thin dispatcher. A cyclomatic complexity above 15 is a reasonable point to start splitting, and above 30 it deserves attention soon. For `lower_type_ref`, which sits at 40, the function-pointer arm (parameter list, varargs, ABI, binder) is the obvious first extraction and should remove a large share of the branching in one move. Each extracted piece can then be tested directly instead of through the full type-kind match."
+  - question: "Is rust-analyzer actively maintained?"
+    answer: "Yes, by the numbers in this snapshot. All five top functions are in the 'active' tier, and they were last changed between 1 and 5 days before the analysis: `add_missing_ok_or_some` 1 day ago, `resolve_variant` 2 days, `patch_addresses` 3 days, and `collect_pat` and `lower_type_ref` 5 days. `resolve_variant` has 142 touches in the last year and 9 distinct authors in the last 90 days, and `collect_pat` and `lower_type_ref` each have 125 touches. Active development and structural debt coexist here: the same code that is being changed most is also the most complex."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit 55effab of rust-lang/rust-analyzer. Then run `git checkout 55effab` followed by `hotspots analyze . --mode snapshot --force` from the repository root. The same command works on any local git repository without extra configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently a file has changed. Functions that are both hard to understand and in changing code score highest. A function with a cyclomatic complexity of 80 that has not been touched in two years scores lower than one with a complexity of 20 that changes every week, because the dormant one has lower near-term regression risk. This points refactoring effort at the code where it reduces the chance of introducing bugs right now."
+---
+
+Five functions in rust-analyzer are both structurally complex and in code that was touched within the last five days, which makes them live regression risks rather than backlog items. rust-analyzer is a Rust language server with 15,178 functions in this snapshot, 707 of them in the critical band, and the top five all sit in the 'active' tier. I would start with `collect_pat` in `crates/hir-def/src/expr_store/lower.rs`: an activity-weighted risk score of 3.43, a cyclomatic complexity of 61, and 125 touches in the last year, last changed 5 days ago.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `collect_pat` | crates/hir-def/src/expr_store/lower.rs | 3.4 | 61 | 4 | 35 |
+| `add_missing_ok_or_some` | crates/ide-diagnostics/src/handlers/type_mismatch.rs | 3.4 | 18 | 4 | 20 |
+| `resolve_variant` | crates/hir-ty/src/infer.rs | 3.4 | 42 | 3 | 17 |
+| `patch_addresses` | crates/hir-ty/src/mir/eval.rs | 3.3 | 36 | 4 | 14 |
+| `lower_type_ref` | crates/hir-def/src/expr_store/lower.rs | 3.3 | 40 | 3 | 25 |
+
+The five functions below span three crates: `hir-def` (name and pattern lowering), `hir-ty` (type inference and MIR evaluation), and `ide-diagnostics` (quick-fix generation). The scores are tightly bunched, between 3.34 and 3.43. I read that as a cluster of comparable risks, not a clear single worst offender, so the order below is a starting point rather than a strict ranking.
+
+<BandChart active='9446' quiet='5732' />
+
+Most of the repo is in the 'active' tier, so 'active' by itself says little here. What separates these five is that they combine a critical band with recent changes, and two of them share a file.
+
+### `collect_pat` — lower.rs
+
+<FunctionCard fn='collect_pat' file='crates/hir-def/src/expr_store/lower.rs' risk='3.43' band='critical' cc='61' nd='4' fo='35' touches='125' />
+
+From the name, the path, and the excerpt, `collect_pat` lowers AST patterns into the HIR pattern representation. The excerpt shows one large match over pattern kinds (identifier patterns, tuple-struct patterns, reference patterns, path patterns, or-patterns, and more). I count that shape as the main source of the cyclomatic complexity of 61.
+
+<MetricBar label='Cyclomatic Complexity' value='61' threshold='10' max='70' />
+
+Two details stand out. The identifier-pattern arm does name resolution inline, to decide whether a bare identifier is a binding or a path to a constant, enum variant, or unit/tuple struct. That is a semantic decision embedded inside what is otherwise a syntactic lowering step. The function also recurses into itself and into sibling helpers while threading a mutable binding list, so a mistake in one arm can affect how bindings are collected in another. A fan-out of 35 is broad coupling for a single function.
+
+The history around the file adds context without proving anything about this function specifically. The file shows a bug-fix rate of 22%, 1 revert, 5 distinct authors in the last 90 days, and a review-comment density of 21. That review density is the highest among the three files here. Pattern lowering is correctness-sensitive, since a wrong resolution decision changes what downstream analysis sees. My recommendation is to extract the identifier-pattern arm, including the resolution logic, into its own method. That would make the binding-versus-path decision testable without going through the whole match, and it would remove the most distinctive branch from the main function.
+
+### `add_missing_ok_or_some` — type_mismatch.rs
+
+<FunctionCard fn='add_missing_ok_or_some' file='crates/ide-diagnostics/src/handlers/type_mismatch.rs' risk='3.38' band='critical' cc='18' nd='4' fo='20' touches='67' />
+
+This is a diagnostic quick-fix generator. Judging by the excerpt, it offers to wrap a mismatched expression in `Ok(...)` or `Some(...)`. Its cyclomatic complexity of 18 is far lower than the others in this set, and it ranks second because it was changed one day ago, the most recent in the group, and has 67 touches in the last year. The fan-out of 20 is also notable for a function this size.
+
+The excerpt shows several special-case branches for the unit-type scenario: an empty block, a block with statements, a bare return, and a block-like expression inside a statement list. Each builds its own text edit with its own indentation arithmetic. That is a lot of fiddly behavior, and it is easy to get subtly wrong for formatting edge cases. The file's bug-fix rate is 53%, the highest of the five, over 34 commits, with no reverts and 4 distinct authors in the last 90 days. I would read that as the file being a frequent site of corrections, though I would not infer that this function is defective.
+
+My suggestion is to split the unit-handling cases into small helpers, one per source form (block, return, block-like statement), each returning an optional edit. That would let each form get a focused test with exact expected text. Because the function is short on complexity but heavy on edit-construction detail, snapshot-style tests will pay off more here than structural refactoring.
+
+### `resolve_variant` — infer.rs
+
+<FunctionCard fn='resolve_variant' file='crates/hir-ty/src/infer.rs' risk='3.37' band='critical' cc='42' nd='3' fo='17' touches='142' />
+
+`resolve_variant` has the highest touch count in this set: 142 touches in the last year, with the most recent change 2 days ago. The file also has the widest ownership spread, with 9 distinct authors in the last 90 days and 112 total commits. For a function with a cyclomatic complexity of 42 inside type inference, that many concurrent contributors raises the odds that two in-flight changes touch overlapping logic.
+
+From the excerpt, the function resolves a path to a variant and a type. It builds a type-lowering context from many pieces of inference state, then branches on whether the path carries a type anchor. Inside that branch it handles the `<Self>::AssocType` projection case, then dispatches on whether the resolved type is a struct, union, or enum. The excerpt includes a `FIXME` about reporting errors for generics on a variant, which marks one known unfinished edge. Several early returns yield an error type with no variant, and every one of those exits is a path a test must cover.
+
+The file-level history is comparatively calm: a bug-fix rate of 20%, no reverts, and zero review-comment density. My recommendation is to separate the type-anchor branch from the plain-path branch, and to pull the `Self`-associated-type projection step into its own helper. The context-construction preamble is a second extraction candidate, since it is a long block of setup that obscures the resolution logic.
+
+### `patch_addresses` — eval.rs
+
+<FunctionCard fn='patch_addresses' file='crates/hir-ty/src/mir/eval.rs' risk='3.34' band='critical' cc='36' nd='4' fo='14' touches='90' />
+
+`patch_addresses` lives in the MIR evaluator, which is the machinery for evaluating compiled code, as in constant evaluation. From the excerpt, it walks a value of a given type and rewrites memory addresses using a patch map, recursing through references, slices, function pointers, and struct fields. Its recursion and byte-level reads and writes make it harder to reason about than the cyclomatic complexity of 36 suggests. The function reads raw bytes, splits them into pointer and metadata halves for unsized references, and writes updated addresses back. In Rust terms, ownership and lifetimes are not what make this risky; the risk is correctness of layout and offset arithmetic. A wrong offset here could misdirect memory in the evaluator.
+
+The patch-lookup logic appears twice with near-identical shape, once for sized targets and once for unsized ones. That duplication is a clear extraction target: a small helper that reads an address, consults the patch map, writes back if found, and returns the resulting address would remove the repetition and give the byte-level step a single place to be tested. The file's history shows a bug-fix rate of 21% over 48 commits, no reverts, 5 distinct authors in the last 90 days, and a review-comment density of 6. It was last changed 3 days ago, with 90 touches in the last year.
+
+### `lower_type_ref` — lower.rs
+
+<FunctionCard fn='lower_type_ref' file='crates/hir-def/src/expr_store/lower.rs' risk='3.34' band='critical' cc='40' nd='3' fo='25' touches='125' />
+
+This is the second function from `lower.rs`, and it shares the file-level numbers with `collect_pat`: 125 touches in the last year, last changed 5 days ago, a bug-fix rate of 22%, 1 revert, and a review-comment density of 21. Because these are file-level signals, they add context to both functions but I would not count them twice as independent evidence.
+
+The doc comment and excerpt show it converts an AST type into a HIR type reference, again as a large match over type kinds: parenthesized, tuple, never, path, pointer, array, slice, reference, inferred, and function-pointer types. The function-pointer arm is the heaviest, with parameter-list handling, varargs detection, a nested `lower_abi` helper, and binder handling all inline. That single arm is a strong candidate to become its own method, which would shrink the main match to near one line per type kind. With a cyclomatic complexity of 40 and a fan-out of 25, this is the cheapest split of the five.
+
+Together, `collect_pat` and `lower_type_ref` are two large match-dispatch functions in one file, both recursing through the AST. I would plan their refactoring together, since the same file is being edited for both and a shared approach (one small method per syntax kind) would keep the two consistent.
+
+**Context from quieter code**
+
+Some critical-band code sits outside the main list because it is quiet rather than actively changing. In `ide-db`, a group of functions in the import-merging file was last changed 96 days ago, so it is structural debt rather than live churn. Separately, a function in `crates/ide/src/doc_links.rs` has a cyclomatic complexity of 40 and has gone 60 days without a change. It has the highest complexity value outside the top five.
+
+## Where to start
+
+I would start with `lower_type_ref`, since the function-pointer arm is a self-contained extraction with a clear boundary. Then I would apply the same one-method-per-syntax-kind approach to `collect_pat`, beginning with the identifier-pattern resolution logic. After that I would take `resolve_variant`, where nine recent authors make an early split valuable, followed by the duplicated patch-lookup logic in `patch_addresses`. `add_missing_ok_or_some` is the lowest priority for structural change but the strongest candidate for added tests, given the 53% bug-fix rate on its file.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/rust-lang/rust-analyzer
+cd rust-analyzer
+git checkout 55effabb762bbd0a21c5af530ea447bd6772881d
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
