@@ -1,0 +1,132 @@
+---
+title: "Solid's reactive core: 5 high-risk functions in signal.ts to address first"
+titleSeo: "solid code health: signal.ts reactive core leads refactoring priority"
+description: "All five top hotspots in solidjs/solid live in packages/solid/src/reactive/signal.ts, each in the critical band and each changed on the day of analysis."
+introContent: "Every one of the five riskiest functions in solid sits in a single file, signal.ts, and all five were modified on the day I ran the analysis. That is a module-level risk, not a function-level one."
+pubDate: 2026-11-06
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: false
+repo: "solidjs/solid"
+commit: "bc50fe5649ba4fb1ef33f26643dba56c1c002b56"
+language: "typescript"
+hotspots_version: "3.3.2"
+analyzed_at: "2026-11-06T10:40:56Z"
+clone_depth: 92
+topRisk: 2.89
+topFunction: "createResource"
+topFile: "packages/solid/src/reactive/signal.ts"
+qaSection:
+  - question: "What makes the fan-out of createResource a problem in solid?"
+    answer: "Fan-out is the count of distinct functions a function calls directly, and a value of 15 or more is a strong signal of broad coupling. `createResource` has a fan-out of 35, alongside a cyclomatic complexity of 37, so it depends on a large part of the reactive system at once. Any change to one of those callees can ripple into it, and testing it in isolation means setting up many collaborators. Since it was touched 13 times in the last year and changed 0 days ago, I read that coupling as a live regression risk."
+  - question: "How do I reduce cyclomatic complexity in typescript?"
+    answer: "The usual technique is extract-method combined with decompose-conditional: pull each distinct responsibility into a named function and replace repeated conditionals with a single helper. As a rule of thumb, a cyclomatic complexity above 15 warrants splitting and above 30 warrants prompt attention. A concrete first step in solid is `createResource` (complexity 37): move the argument-overload normalization into a helper that returns a source, fetcher, and options triple, and move the hydration setup into its own function. In `runTop` (complexity 24), a small accessor for the effective node state would remove a large amount of repeated branching."
+  - question: "Is solid actively maintained?"
+    answer: "The data points to active development. All five of the top hotspots are in the active tier, each with 13 touches in the last year and 0 days since last change, and the file they share has 2 distinct authors in the last 90 days. Across the repo, 235 of 731 functions are in the active tier. Active development and structural debt are not mutually exclusive, and the concentration of risk in signal.ts shows that the most-changed code is also some of the most complex."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository, clone solidjs/solid, and run `git checkout bc50fe5`. Then run `hotspots analyze . --mode snapshot --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. A function with a very high cyclomatic complexity that hasn't been touched in two years scores lower than a moderately complex one touched every week, because the dormant one has lower near-term regression risk. This helps focus refactoring effort where it reduces the chance of introducing bugs now, not just where the code looks complicated in the abstract."
+---
+
+Five functions top my risk ranking for solidjs/solid, and all five live in one file: packages/solid/src/reactive/signal.ts. Every one is in the critical band and the active tier, so this is a module that needs attention, not a single function. I analyzed 731 functions at commit bc50fe5, 35 of them critical. The top function, `createResource`, has an activity-weighted risk score of 2.89, a cyclomatic complexity of 37, a fan-out of 35, and 13 touches in the last year, with its last change 0 days ago. That is structurally complex code that is also changing right now, which makes it a live regression risk rather than a backlog item, and I would start with signal.ts before looking anywhere else.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `createResource` | packages/solid/src/reactive/signal.ts | 2.9 | 37 | 4 | 35 |
+| `runTop` | packages/solid/src/reactive/signal.ts | 2.7 | 24 | 4 | 5 |
+| `load` | packages/solid/src/reactive/signal.ts | 2.7 | 16 | 2 | 13 |
+| `writeSignal` | packages/solid/src/reactive/signal.ts | 2.7 | 16 | 5 | 5 |
+| `completeUpdates` | packages/solid/src/reactive/signal.ts | 2.7 | 16 | 5 | 9 |
+
+## Codemod / Tooling Files in Results
+
+The context-only functions `propagate`, `trigger`, `endBatch`, `createReactiveObject`, and `updateNode` come from files under packages/solid/bench/libraries/ (kairo.cjs, vuerx.cjs, preact.cjs, s-mod.cjs), which look like bundled third-party reactive libraries used as benchmark comparisons. They score as quiet, with 168 days since last change, and they do not belong in a refactoring plan for solid itself. To exclude them, use `{ "exclude": ["packages/solid/bench/libraries/"] }` in `.hotspotsrc.json`.
+
+The distribution below shows how much of the codebase is under active change. Of 731 functions, 235 are in the active tier and 496 are quiet. The five functions I'm covering are all in the active group, and they all share one file with one history.
+
+<BandChart active='235' quiet='496' />
+
+One thing worth noting before the per-function sections: the file-level history is identical across all five functions. Each shows 13 touches in the last year, 0 days since last change, 12 total commits on the file, a bug-fix rate of 58.33%, zero reverts, zero bug-linked commits, and 2 distinct authors in the last 90 days. A bug-fix rate that high on a 12-commit file suggests that much of the recent history may be corrective work, though this is a heuristic. That does not mean any particular function here is defective. The two-author spread is small, so it is possible that knowledge of how these pieces interact sits with few people.
+
+The other piece of shared context is that these functions are not independent. From the excerpts, `runTop`, `completeUpdates`, `writeSignal`, and `load` all call `runUpdates`, and the transition-handling logic (checks against a running transition, with parallel state fields) shows up in several of them. A change to how transitions work is likely to require coordinated edits across more than one of these five.
+
+### `createResource` — signal.ts
+
+<FunctionCard fn='createResource' file='packages/solid/src/reactive/signal.ts' risk='2.89' band='critical' cc='37' nd='4' fo='35' touches='13' />
+
+<MetricBar label='Cyclomatic Complexity' value='37' threshold='10' max='60' />
+
+<MetricBar label='Fan-out' value='35' threshold='15' max='50' />
+
+I would start with `createResource` because it combines the highest activity-weighted risk score in the repo (2.89) with a cyclomatic complexity of 37, a fan-out of 35, and a change made 0 days ago. The signature itself hints at the problem: it accepts several overloaded argument shapes, and the excerpt shows it normalizing them with a branch on whether the second argument is a function before any real work starts. It then sets up a set of signals (value, error, tracking trigger, state), registers cleanup against the current owner, handles hydration and shared-config lookups, and defines `loadEnd`, `completeLoad`, `read`, and the inner `load` as closures that mutate shared local variables like the pending promise, the resolved flag, and the scheduled flag.
+
+The fan-out of 35 is the number I'd worry about most. It means this function is coupled to a large surface of the reactive system, so a change to any of those callees can show up here. A nesting depth of 4 is moderate; the difficulty here is breadth, not depth. TypeScript generics (`T, S, R`) and the union-typed parameters also add implicit branching that a cyclomatic count understates.
+
+My recommendation: separate argument normalization from resource construction. Pull the overload-resolution branch into a small helper that returns a normalized source, fetcher, and options triple, then move the hydration and cleanup setup into its own function. That alone should cut a meaningful share of the 37 paths and make the closure state easier to follow.
+
+### `runTop` — signal.ts
+
+<FunctionCard fn='runTop' file='packages/solid/src/reactive/signal.ts' risk='2.74' band='critical' cc='24' nd='4' fo='5' touches='13' />
+
+`runTop` has an activity-weighted risk score of 2.74, a cyclomatic complexity of 24, a nesting depth of 4, and a low fan-out of 5. So this is a function with a lot of paths but few dependencies: the complexity is almost entirely branching logic.
+
+From the excerpt, the repeated pattern is the expression that selects between the transition state and the normal state depending on whether a transition is running. It appears many times in a few lines, along with early returns for suspended nodes, pending nodes, and disposed nodes. That is a lot of exits to cover in tests, and each repetition of the conditional state read is a place where one copy could drift from the others.
+
+The cheapest improvement I can see is to introduce a small accessor, something like a helper that returns the effective state of a node given the transition flag, and use it everywhere the ternary appears. That removes a block of repeated conditionals without changing behavior and makes the remaining logic easier to read. After that, I would split the ancestor-walking loop from the update loop into two functions.
+
+### `load` — signal.ts
+
+<FunctionCard fn='load' file='packages/solid/src/reactive/signal.ts' risk='2.71' band='critical' cc='16' nd='2' fo='13' touches='13' />
+
+`load` is the inner fetch routine inside `createResource`, and it has an activity-weighted risk score of 2.71, a cyclomatic complexity of 16, a nesting depth of 2, and a fan-out of 13. Its shallow nesting is a good sign, and the excerpt reads as a sequence of guard clauses and early returns: skip if already scheduled, bail when the lookup is null or false, handle a synchronous fetcher error, handle a non-promise return, handle a promise that already carries a resolved value, and finally set up the pending state and chain the result handlers.
+
+That is a lot of exits for one function. Each early return is a separate path that needs a test, and several of them call `loadEnd` with slightly different argument combinations, which is easy to get subtly wrong. Because `load` is a closure inside `createResource`, it also reads and writes the outer function's local state, so it cannot be tested on its own.
+
+My recommendation is to extract the fetcher invocation, the part that runs the fetcher under `untrack` and captures a thrown error, into a function that returns a tagged result (error, sync value, or promise). The remaining body then becomes a dispatch on that result, which is simpler to reason about and test.
+
+### `writeSignal` — signal.ts
+
+<FunctionCard fn='writeSignal' file='packages/solid/src/reactive/signal.ts' risk='2.69' band='critical' cc='16' nd='5' fo='5' touches='13' />
+
+<MetricBar label='Nesting Depth' value='5' threshold='4' max='10' />
+
+`writeSignal` has an activity-weighted risk score of 2.69, a cyclomatic complexity of 16, a fan-out of 5, and the deepest nesting among the five at 5 levels (tied with `completeUpdates`). This is the function that updates a signal's value and notifies its observers, so it sits on the hot path for essentially every reactive update. That makes its blast radius large even though its fan-out is low.
+
+The excerpt shows the depth: a comparator check, then a transition check, then a branch on whether a transition is running, then an observer loop inside a `runUpdates` callback, with further conditions on transition state and purity inside the loop. It also contains an infinite-loop guard that throws when the update queue exceeds a large threshold, with a more descriptive message in development builds.
+
+The observer-marking loop is the obvious extraction target. Moving the body of the loop into a function like `markObserverStale` flattens the nesting by two or three levels and gives the transition-versus-normal branching a single, testable home. I would also pull the value-assignment block (the part that decides between writing the current value and writing the transition value) into its own helper.
+
+### `completeUpdates` — signal.ts
+
+<FunctionCard fn='completeUpdates' file='packages/solid/src/reactive/signal.ts' risk='2.67' band='critical' cc='16' nd='5' fo='9' touches='13' />
+
+`completeUpdates` has an activity-weighted risk score of 2.67, a cyclomatic complexity of 16, a nesting depth of 5, and a fan-out of 9. It is the function that flushes queued updates and, when a transition has finished, commits it. The excerpt shows a three-way structure: flush the update queue, finish the transition if nothing is pending, or pause the running transition and defer its effects. The transition-finishing branch is where the depth comes from, with a nested update callback that iterates disposed nodes and transition sources, cleans owned nodes, and resets transition fields.
+
+This function also shares a call relationship with `runTop` and `writeSignal` through `runUpdates`, so a change to the update-batching contract can require edits in all three. I would treat these as one cluster when planning work.
+
+The transition-commit block is the natural extraction: a function such as `commitTransition` that takes the sources and disposed set and performs the cleanup. That would take the deepest part of the nesting out of `completeUpdates` and leave it as a short coordinator.
+
+## Where to start
+
+I would start with `createResource` and `load` together, since they share local state and a single extraction there reduces the highest fan-out and one of the highest exit counts at once. Next I would introduce the effective-state accessor in `runTop`, since it is the lowest-risk change and removes the most visible repetition. Then I would flatten `writeSignal` and `completeUpdates`, which share the transition-handling logic and the deepest nesting.
+
+The file's history is the reason I would not do these casually. A bug-fix rate of 58.33% across 12 commits, 2 distinct authors in the last 90 days, and a change made 0 days ago mean this is a small, busy, fix-heavy area. I would make the refactors behavior-preserving, one extraction per change, so that each is easy to review.
+
+Other entries outside the top five, such as those in the benchmark library files, are a different category and I would leave them alone for now.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/solidjs/solid
+cd solid
+git checkout bc50fe5649ba4fb1ef33f26643dba56c1c002b56
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
