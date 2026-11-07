@@ -1,0 +1,120 @@
+---
+title: "pgx's pgconn.go carries the highest activity risk — 5 functions to address first"
+titleSeo: "pgx code health: pgconn.go leads refactoring priority across 1,610 functions"
+description: "All five of the highest-risk functions in jackc/pgx live in pgconn/pgconn.go, led by connectOne with cyclomatic complexity 106 and fan-out 42 in code touched 49 times in the last year."
+introContent: "Every one of the five riskiest functions in pgx sits in a single file, pgconn/pgconn.go. I would treat that file, not any one function in it, as the unit of review."
+pubDate: 2026-11-07
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "jackc/pgx"
+commit: "adf514b283858adc96a816b60ade2b424cd57768"
+language: "go"
+hotspots_version: "3.3.4"
+analyzed_at: "2026-11-07T09:52:39Z"
+clone_depth: 437
+topRisk: 3.37
+topFunction: "connectOne"
+topFile: "pgconn/pgconn.go"
+qaSection:
+  - question: "What makes connectOne's cyclomatic complexity of 106 a problem in pgx?"
+    answer: "Cyclomatic complexity is the number of independent execution paths through a function, and each path is a potential bug surface and a test case you need to cover. A value of 30 is already considered high, and `connectOne` sits at 106 with a fan-out of 42 distinct called functions. In practice that means one function owns protocol version parsing, dialing, TLS negotiation, hooks, and startup handling, so a change to any one step requires reasoning about all the others. It is also in the active tier: 49 touches in the last year, most recently 3 days ago, so the risk is live."
+  - question: "How do I reduce cyclomatic complexity in go?"
+    answer: "Use extract-method: pull each stage of a long sequential function into a named helper that returns an error, and let the parent function simply chain them. A cyclomatic complexity above 15 warrants splitting, and above 30 warrants immediate attention. A concrete first step for `connectOne` (complexity 106) is to move the TLS upgrade block into its own function, then do the same for protocol-version parsing. Those two extractions alone should remove a meaningful share of the 106 paths, and the TLS helper may also be reusable by `CancelRequest`."
+  - question: "Is pgx actively maintained?"
+    answer: "The data says yes. All five top hotspots are in the active tier, and the file they share, pgconn/pgconn.go, was touched 49 times in the last year, most recently 3 days ago, by 6 distinct authors in the last 90 days. Across the repository, 774 of 1,610 functions are in the active tier. Active development and structural debt are not mutually exclusive, and pgx shows both: the same file that is changing this often also holds the highest-risk functions."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone jackc/pgx, run `git checkout adf514b`, then run `hotspots analyze . --mode snapshot --force` using the hotspots CLI from GitHub. The same command works on any local git repository without configuration, so you can compare your own code against the numbers here."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines how structurally complex a function is (cyclomatic complexity, nesting depth, fan-out) with how much and how recently its file has changed, so functions that are both hard to understand and in changing code score the highest. In this analysis `connectOne` leads with a score of 3.37. A complex function that hasn't been touched in months, like `parseURLSettings` at 79 days since its last change and a score of 1.39, ranks lower than the same-sized function in a file changing every week, because the dormant one has lower near-term regression risk. This helps teams focus refactoring effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+All five of the top hotspots in jackc/pgx live in pgconn/pgconn.go: connectOne, CopyFrom, NextResult, CopyTo and CancelRequest. Anyone touching connection setup, COPY, batch result reading or query cancellation is working inside the same high-risk module. pgx is a Go PostgreSQL driver, and my analysis of commit adf514b covers 1,610 functions, 203 of them in the critical band. I would start with `connectOne`: cyclomatic complexity of 106, fan-out of 42, and an activity-weighted risk score of 3.37 in a file touched 49 times in the last year, most recently 3 days ago. That makes it a strong candidate for early review.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `connectOne` | pgconn/pgconn.go | 3.4 | 106 | 5 | 42 |
+| `CopyFrom` | pgconn/pgconn.go | 3.2 | 41 | 3 | 29 |
+| `NextResult` | pgconn/pgconn.go | 3.2 | 27 | 4 | 10 |
+| `CopyTo` | pgconn/pgconn.go | 3.2 | 26 | 3 | 15 |
+| `CancelRequest` | pgconn/pgconn.go | 3.2 | 21 | 3 | 21 |
+
+The file is the story here, so I will start with the tier picture and then go function by function.
+
+<BandChart active='774' quiet='836' />
+
+Across the repository, 774 functions are in the active tier and 836 are quiet. All five top hotspots are active. The file they share has 49 touches in the last year, 3 days since its last change, and 6 distinct authors in the last 90 days. Those figures are file-level, so every function below shares them. What separates the five is structure, not activity. The file-level history also shows 34 total commits with a bug-fix rate of 32.35%, no bug-linked commits and no reverts. I read that as context for prioritizing review, not as evidence that any particular function is defective.
+
+### `connectOne` — pgconn.go
+
+<FunctionCard fn='connectOne' file='pgconn/pgconn.go' risk='3.37' band='critical' cc='106' nd='5' fo='42' touches='49' />
+
+<MetricBar label='Cyclomatic Complexity' value='106' threshold='30' max='120' />
+
+Cyclomatic complexity of 106 is well into the extreme range, and fan-out of 42 means it directly calls 42 distinct functions. From the excerpt, it handles the whole connection handshake in one body: protocol version parsing, dialing, TLS negotiation (direct or via a start-TLS step), the AfterNetConnect hook, context watcher setup, and the start of the startup sequence. Nearly every step has its own error return, so the branch count comes from many sequential failure paths rather than from deep nesting. Nesting depth is 5, the highest of the five.
+
+The excerpt also has a comment about a race: the application-supplied context watcher handler may read fields on the connection that this function writes while handling backend key data, so a deadline-only watcher is used during connect. Go concurrency hazards like that are not visible in structural metrics, and they are the kind of constraint a 106-path function makes easy to break by accident.
+
+My recommendation is to extract the stages into named helpers: protocol-version resolution, TLS upgrade, and the startup message loop. Pull the TLS block out first, since the same TLS setup logic also appears in `CancelRequest`. Keep the watcher-ordering comment attached to whichever helper owns that sequencing.
+
+### `CopyFrom` — pgconn.go
+
+<FunctionCard fn='CopyFrom' file='pgconn/pgconn.go' risk='3.25' band='critical' cc='41' nd='3' fo='29' touches='49' />
+
+`CopyFrom` has cyclomatic complexity of 41 and fan-out of 29. The excerpt shows a function that takes the connection lock, sends the COPY query, spawns a goroutine that reads from the supplied reader and writes encoded copy data, and then runs a select loop over an error channel and a message-signal channel in the calling goroutine. A comment in the code explains why the writer goroutine cannot use the normal async close path: it would race with the main goroutine.
+
+This is the clearest case in the list where metrics undersell the risk. Cyclomatic complexity counts branches, but not the interleaving of two goroutines sharing one connection. I would start with this function if I were reviewing for correctness rather than size, because every change to error handling has to be reasoned about on both sides of the channel.
+
+My recommendation is to split the writer goroutine body into a named method on a small copy-writer type, so its error and abort contract can be tested in isolation. The select loop can then stay in `CopyFrom` with a much lower branch count.
+
+### `NextResult` — pgconn.go
+
+<FunctionCard fn='NextResult' file='pgconn/pgconn.go' risk='3.21' band='critical' cc='27' nd='4' fo='10' touches='49' />
+
+`NextResult` on `MultiResultReader` has cyclomatic complexity of 27 and nesting depth of 4, with a low fan-out of 10. That profile says the difficulty is in control flow, not coupling. The excerpt shows a loop that peeks at messages and then a type switch over protocol message kinds such as BindComplete, RowDescription and CommandComplete. The comments describe a queue of statement descriptions and result formats that has to stay aligned with the server's message order, including for commands that return no rows.
+
+That bookkeeping is the risky part. It tracks state across loop iterations, so a mistake in one case branch can misalign every later result in a batch. I would be most wary of edits here that add a new message type without a test covering the empty-result case.
+
+My recommendation is to move each case of the type switch into its own small method, and consider a tiny struct for the statement-description and result-format queue so the pop operation lives in one place.
+
+### `CopyTo` — pgconn.go
+
+<FunctionCard fn='CopyTo' file='pgconn/pgconn.go' risk='3.19' band='critical' cc='26' nd='3' fo='15' touches='49' />
+
+`CopyTo` has cyclomatic complexity of 26 and fan-out of 15. It is the mirror image of `CopyFrom`: it sends a COPY query, then loops receiving messages and writing copy data to the supplied writer until ReadyForQuery arrives. Unlike `CopyFrom`, it does not use a deferred unlock. The excerpt shows explicit unlock calls on several return paths and no unlock on the asyncClose error paths.
+
+I am not claiming that is a defect. The excerpt does not show enough to say, and the asymmetry may be intentional. But a function whose lock release is spread across multiple return paths is harder to change safely than one that defers it, and with 26 paths that is a review burden.
+
+My recommendation is to read this function side by side with `CopyFrom` and decide deliberately whether the two should share a locking convention. Then extract the message-switch into a helper so the loop body shrinks.
+
+### `CancelRequest` — pgconn.go
+
+<FunctionCard fn='CancelRequest' file='pgconn/pgconn.go' risk='3.19' band='critical' cc='21' nd='3' fo='21' touches='49' />
+
+`CancelRequest` has cyclomatic complexity of 21 and fan-out of 21, the highest fan-out relative to complexity of the five. It opens a separate connection to the server, with special handling for unix sockets and a fallback to configured host and port, then optionally wraps that connection in TLS to mirror the primary connection, writes a cancel packet containing the backend process ID and secret key, and waits for the server to acknowledge.
+
+Because the excerpt includes a TLS setup path very close to the one in `connectOne`, I would check whether the two can share a helper. Duplicated security-relevant setup is a place where one copy tends to get updated and the other does not.
+
+My recommendation is to extract the address-resolution logic (the unix-socket branch and its fallback dial) into its own function. That alone removes several branches and makes the cancel packet construction readable on its own.
+
+## Where to start
+
+I would review `pgconn/pgconn.go` as one module. First, `connectOne`: extract the TLS upgrade and protocol-version steps, since they have the highest branch count and are shared in spirit with `CancelRequest`. Second, `CopyFrom`, where the goroutine and channel interplay deserves a focused concurrency review regardless of its branch count. Third, align the locking approach in `CopyTo` with `CopyFrom`, or document why they differ. The file-level history shows no reverts and no bug-linked commits, so I read this as maintainability debt in fast-moving code rather than a known problem area.
+
+For contrast, the next tier down in my data is all quiet: high-complexity functions elsewhere in the repository that have rarely changed in the last year. They are structural debt, but they are not where I would spend review time first.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/jackc/pgx
+cd pgx
+git checkout adf514b283858adc96a816b60ade2b424cd57768
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
