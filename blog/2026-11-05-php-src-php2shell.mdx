@@ -1,0 +1,106 @@
+---
+title: "14 years of php-src history: where bugs get fixed, and the php2shell parser nobody edited"
+titleSeo: "php-src bug history: activity finds the file, complexity finds the function (php2shell case study)"
+description: "I ran hotspots over php-src's full history and 1,137 past fixes. Recent activity picks out the files that later get fixed. Complexity picks out the function inside the file. The php2shell multipart parser fits both."
+introContent: "The multipart parser the php2shell advisory points at barely changed in 14 years, and it was in the top 0.4% of php-src functions by complexity the whole time. A test on 1,137 past fixes shows why that doesn't make the ranking useless."
+pubDate: 2026-11-05
+tags: ["oss", "c", "security", "code-health"]
+draft: true
+repo: "php/php-src"
+commit: "80dd1a3364a4e58c0b561bb41603cbfa49e2d705"
+language: "c"
+hotspots_version: "3.3.3"
+analyzed_at: "2026-11-06T20:42:35Z"
+clone_depth: 150291
+topRisk: 3.73
+topFunction: "php_openssl_sockop_set_option"
+topFile: "ext/openssl/xp_ssl.c"
+---
+
+In October, PHP shipped fixes for two remote code execution bugs that researchers call php2shell, [CVE-2026-109618](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w) (out-of-memory corruption) and [CVE-2026-109619](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp) (stale global state). Both were fixed in one commit, [`3584a98bd`](https://github.com/php/php-src/commit/3584a98bda0f2c0d367255b046798b0d3a221a19). One of the code paths the advisory names is the multipart request parser, `SAPI_POST_HANDLER_FUNC` in `main/rfc1867.c`. I wanted to know what a code-health tool would have said about that code over time, and whether the answer generalizes. This is a descriptive study. It is not a claim that hotspots predicts vulnerabilities.
+
+[The standard hotspots analysis of php-src, run a day later at commit `088f299`, is here.](/blog/2026-11-06-php-php-src) This post is about history, so I used a full clone (150,291 commits since 1999) and ran hotspots 3.3.3 at many commits.
+
+## The parser did not move for 14 years
+
+I sampled 65 commits from October 2012 to now and tracked `SAPI_POST_HANDLER_FUNC`.
+
+![Line charts of SAPI_POST_HANDLER_FUNC cyclomatic complexity (flat between 83 and 88) and length (622 to 665 lines) from 2012 to 2026, with a sharp step at the php2shell fix](/blog/assets/2026-11-05-php-src-php2shell/parser-cc-loc-history.png)
+
+Its cyclomatic complexity stayed between 83 and 88 and its length between 622 and 665 lines from 2012 until this fall. By structural rank it was always in the top 0.4% of php-src's functions, between 8th and 77th in the sampled snapshots. The only large step is the fix itself: on the PHP-8.2 branch the patch took it from CC 89 to 106 and from 643 to 768 lines, mostly by adding limits.
+
+![Line chart of the same function's structure rank, always in the top 0.4%, and activity rank, mostly outside the top 10%, on a log scale](/blog/assets/2026-11-05-php-src-php2shell/parser-structure-vs-activity-rank.png)
+
+Its activity rank was a different story. Activity-weighted risk combines complexity with how much and how recently code changes, and this function was touched only 1 to 21 times in any given year, so the activity ranking pushed it anywhere between the top 9% and the top 53% of functions. It was complex and quiet.
+
+![Line chart of trailing-year commit touches for the parser in orange, between 1 and 21 in any sample, against five other functions in gray that reach as high as 159](</blog/assets/2026-11-05-php-src-php2shell/touches-per-year.png>)
+
+For comparison, I tracked five other functions alongside it: `php_error_cb`, `zend_error_zstr_at`, `zend_mm_alloc_pages`, `php_register_variable_ex` and `zend_call_function`. They drew more touches than the parser in most years.
+
+![Six small line charts of cyclomatic complexity over time for the parser and five other functions, each on its own scale](</blog/assets/2026-11-05-php-src-php2shell/related-functions-cc-history.png>)
+
+The ranking is also relative to a repository that more than doubled. php-src went from about 11,100 functions in 2012 to about 27,700 now, and the number in the critical band went from about 2,000 to about 4,500.
+
+![Stacked area chart of php-src functions by risk band from 2012 to 2026, showing total functions growing from about 11,100 to about 27,700 and the critical band from about 2,000 to about 4,500](</blog/assets/2026-11-05-php-src-php2shell/functions-per-risk-band.png>)
+
+That is the observation that started this post, and my first draft concluded that activity-weighted ranking underrates code like this. The rest of the data says that conclusion is incomplete.
+
+## Test 1: inside a file, complexity picks the function
+
+I collected past security fixes (85 commits citing a CVE or GHSA since 2013) and every bug-labelled GitHub fix since 2021 that touches one to four C files (1,060 commits). For each, I ran hotspots on the parent commit, found which functions the diff touched, and compared them with the other functions in the same files.
+
+| Fix set | Commits compared | Fixed function structurally riskier | Fixed function riskier by activity |
+|---|---|---|---|
+| CVE fixes | 74 | 61 | 59 |
+| GitHub bug fixes | 802 | 698 | 681 |
+
+Within a file the fixed function is more complex than its neighbors in 87% of GitHub commits, and more recently or heavily active in 85%. Weighting every commit equally, 46% of the fixed functions sit in the top 10% of all php-src functions by structure, against 13% of their same-file neighbors. By activity it is 40% against 30%, so the structural gap is much wider. The pattern holds in 2021 to 2022, 2023 to 2024 and 2025 to 2026, and in the larger categories (engine, JIT, opcache, DOM, standard, streams, SPL).
+
+One caution: functions that get fixed are also longer. When I compare each fixed function only with same-file functions of similar length, the gaps shrink to 39% against 35% by structure and 39% against 36% by activity. Complexity keeps a small edge, but most of "complex functions get fixed" is "long functions get fixed". Inside a file, recent activity adds little because activity is largely a property of the whole file.
+
+## Test 2: across files, activity picks the file
+
+Then I asked the question the other way. For 1,145 fix commits (85 CVE fixes plus 1,060 GitHub bug fixes; 1,137 had a fixed C file I could rank, 83 CVE and 1,054 GitHub), I ranked the file that was later fixed against every other C file in php-src at the parent commit, using the highest function score in each file.
+
+| Signal | Median percentile of the fixed file | Fixed file in top 10% | Size-matched median |
+|---|---|---|---|
+| Activity (highest function activity risk) | 7.6 | 56% | 21.4 |
+| Structure (highest function complexity) | 16.4 | 33% | 45.9 |
+| Touches in the last year | 9.8 | 50% | 24.7 |
+| File size (lines) | 13.4 | 42% | n/a |
+
+Fifty is chance and lower is riskier. Activity ranked the fixed file as riskier than structure in 725 commits against 405. The GitHub set drives that (687 against 361). In the 83 CVE fixes the two are level (38 against 44 for structure), which is too few commits to separate them. By era it holds in 2022 to 2023 and 2024 to 2026, and 2013 to 2021 has too few commits (29) to say. The size-matched column compares each fixed file with files of similar length. Once size is controlled, file-level complexity falls to near chance (a median of 45.9), while activity keeps most of its edge.
+
+So two things are true at once:
+
+- Which file gets the next fix is mostly where people are already working. A file's recent activity ranks it far better than complexity does, and complexity at the file level mostly reflects that big files have more functions.
+- Which function in that file gets the fix is more complex than its neighbors.
+
+By category the picture varies. The JIT and opcache fixes land in files that are at the top by both measures (median top 1%). In the DOM and SPL extensions, activity beats structure by a wide margin (top 5% versus top 32% for DOM). The category samples are small, so I'd treat these as leads.
+
+## Back to the parser
+
+The multipart parser fits both results. `main/rfc1867.c` ranks 129th of 1,574 files by total activity risk today, while its main function is the 74th most complex of 27,738 in the repo. A quiet file will rank well down an activity-based list, and by that measure it is unremarkable. Inside the file, complexity points at exactly one function.
+
+The practical reading is a two-step use of the tool:
+
+1. Use activity to choose which files to open this week.
+2. Inside the file, use complexity to choose the function to read first.
+
+Neither step catches a quiet, complex, untrusted-input handler in a file nobody is touching. That one only surfaces if you read the complexity column on its own, which is a reason to keep it visible instead of collapsing everything into a single score.
+
+## What this does not show
+
+- It measures where fixes landed. It does not show which unfixed functions hide bugs, and I did not test prediction.
+- Active files attract bug fixes for ordinary reasons (they are being worked on). Activity ranking a fixed file highly is not the same as activity predicting an unknown bug.
+- The fix commits cluster in time and repeat in the same files, so the p-values in the underlying tests overstate independence.
+- I counted only fixes touching 1 to 4 C files with a bug label or CVE reference, which favors focused fixes.
+- The php2shell patch itself touched about 295 functions across the allocator, hash table, string and SAPI layers. The root cause was a design assumption (bailing out with `longjmp` through code not written for it). That is a cross-cutting property, and no function-level metric sees it.
+- F160: activity terms matter more than complexity when ranking files, which matches Test 2.
+
+## Where to start
+
+1. Read `SAPI_POST_HANDLER_FUNC` in `main/rfc1867.c` with the advisory open, and check each header, file-control and nested-name limit against the limits the patch relies on.
+2. Walk `php_error_cb` and `zend_error_zstr_at` for state they publish that a later request could read before `RINIT` resets it.
+3. When you triage in your own repo, rank files by activity first, then read the most complex function in each.
+4. Reproduce: `git checkout 80dd1a3`, then `hotspots analyze . --mode snapshot --force`. The history runs use the same command at each sampled commit.
