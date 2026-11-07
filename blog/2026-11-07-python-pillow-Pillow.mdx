@@ -1,0 +1,126 @@
+---
+title: "Pillow's _imaging.c carries the highest activity risk — 3 functions to address first"
+titleSeo: "Pillow code health: _imaging.c and Image.py lead the refactoring priority list"
+description: "Three of Pillow's five highest-risk functions sit in src/_imaging.c, with the other two in src/PIL/Image.py, and all five are complex code that is being changed right now."
+introContent: "Three of Pillow's top five risks live in a single C file, _imaging.c, and all five were last modified today. I walk through why that concentration matters and where I would start reviewing."
+pubDate: 2026-11-07
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: true
+repo: "python-pillow/Pillow"
+commit: "b2c077b23377ec5531f4668a4f26c225e752e8b6"
+language: "python"
+hotspots_version: "3.4.0"
+analyzed_at: "2026-11-07T21:39:13Z"
+clone_depth: 1493
+topRisk: 3.61
+topFunction: "convert"
+topFile: "src/PIL/Image.py"
+qaSection:
+  - question: "What makes the cyclomatic complexity of `convert` a problem in Pillow?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a place a bug can hide and a case a test needs to cover. `convert` in src/PIL/Image.py has a cyclomatic complexity of 60, with a nesting depth of 7 and a fan-out of 45, and it was touched 97 times in the last year. At that size, a developer changing one conversion rule has to reason about how it interacts with palette defaults, transparency handling, matrix conversions and dithering, so the chance of an unintended side effect on another path is high. A value of 30 or more is already a strong signal; 60 means the function is acting as several functions in one."
+  - question: "How do I reduce cyclomatic complexity in python?"
+    answer: "The main technique is extract-method combined with decompose-conditional: pull each distinct branch family into a named function and leave the original as a thin dispatcher. As a rule of thumb, a value above 15 warrants splitting and above 30 warrants immediate attention. For `convert`, a concrete first step is to move the post-conversion transparency handling into its own private method, which removes a nested helper and a block of conditionals in one cut. Repeating that for the matrix path and the palette-default path should bring the top-level method well under half its current size."
+  - question: "Is Pillow actively maintained?"
+    answer: "The data says yes. All five top hotspots are in the active tier and were last changed 0 days before the analysis, and `convert` and `get_ifd` live in a file with 97 touches in the last year and 18 distinct authors in the last 90 days. The `_imaging.c` functions sit in a file with 72 touches in the last year and 9 distinct authors in the last 90 days. By contrast, the quiet critical functions such as `grab` and `grabclipboard` (13 touches in the last year, 39 days since last change) and `ImagingJpegDecode` (9 touches, 32 days) are changing far less often. Active development and structural debt are not mutually exclusive, and here the debt is concentrated in code that is being changed most often."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the commit I analyzed, b2c077b. Then run `hotspots analyze . --mode snapshot --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. Recent change activity raises the score, because code that is changing carries more near-term regression risk than dormant code. This helps teams spend refactoring effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+Three of the five highest-risk functions in Pillow live in one file, src/_imaging.c: `_putdata_impl`, `getink` and `_prepare_lut_table`. The other two, `convert` and `get_ifd`, are in src/PIL/Image.py. All five are in the 'active' tier with 0 days since last change, which makes them live regression risks rather than backlog items. I analyzed 2,453 functions in Pillow, 364 of them in the critical band; the top function, `convert`, has an activity-weighted risk score of 3.61 and 97 touches in the last year, and the three `_imaging.c` functions follow at 3.55, 3.52 and 3.48. I would start with `_putdata_impl`, because it pairs high structural complexity with a file that has 72 touches in the last year and 9 distinct authors in the last 90 days.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `convert` | src/PIL/Image.py | 3.6 | 60 | 7 | 45 |
+| `_putdata_impl` | src/_imaging.c | 3.5 | 38 | 5 | 20 |
+| `getink` | src/_imaging.c | 3.5 | 31 | 5 | 13 |
+| `_prepare_lut_table` | src/_imaging.c | 3.5 | 22 | 5 | 10 |
+| `get_ifd` | src/PIL/Image.py | 3.5 | 29 | 7 | 19 |
+
+<BandChart active='1913' quiet='540' />
+
+Most of Pillow is in the active tier: 1,913 of 2,453 functions, against 540 in the quiet tier. That makes the band, not the tier, the more useful filter here. Within the 364 critical functions, the top five all share the same profile: active tier, changed today, high complexity.
+
+The five hotspots split into two groups. The first is a cluster in `_imaging.c`, the C extension layer that bridges Python objects and Pillow's internal image structures. The second is a pair of Python methods in `Image.py`, the core of the public API. I'll take them in order of how I would approach them, starting with the file that shows up three times.
+
+### `convert` — Image.py
+
+<FunctionCard fn='convert' file='src/PIL/Image.py' risk='3.61' band='critical' cc='60' nd='7' fo='45' touches='97' />
+
+`convert` has the highest activity-weighted risk score in the repo at 3.61, and the largest numbers on every structural axis: cyclomatic complexity 60, nesting depth 7, fan-out 45. It has been touched 97 times in the last year and was last changed today. I rank it below `_putdata_impl` only because of where I would spend review time first; on the numbers alone it leads.
+
+The docstring tells most of the story. The method handles palette-to-RGB defaults, transparency propagation, matrix conversions limited to two modes, dithering rules that differ by source and target mode, a special route through quantize for RGBA-to-palette, and alpha handling for the PA mode. The excerpt also shows a nested helper defined inside a branch. Every documented rule is a branch, and a fan-out of 45 means a change here can reach a very wide set of callees. In Python, where those calls resolve at runtime, the real coupling is likely wider than the number suggests.
+
+The file-level history is calmer than the `_imaging.c` cluster: a bug-fix rate of about 17% across 108 commits, no reverts, no bug-linked commits, 18 distinct authors in the last 90 days, and a pull-request review comment density of about 2.6. That reads as heavy, steady change by many hands rather than repeated corrective work. The 18 authors are the part I would watch, since a function this branchy is hard to hold in one head.
+
+<MetricBar label='Fan-out' value='45' threshold='15' max='50' />
+
+My recommendation: break `convert` into a dispatch on conversion kind. Matrix conversion, palette-source defaults, and the transparency fix-ups each become their own private function, and the public method becomes a small router. The transparency handling after conversion looks like the best first extraction because it carries its own nested helper.
+
+### `_putdata_impl` — _imaging.c
+
+<FunctionCard fn='_putdata_impl' file='src/_imaging.c' risk='3.55' band='critical' cc='38' nd='5' fo='20' touches='72' />
+
+I would start with `_putdata_impl` because it has a cyclomatic complexity of 38, a fan-out of 20, and it lives in a file with 72 touches in the last year and a change today. The name and the excerpt tell me it loads a flat sequence of pixel values into an image. The code branches on whether the image is 8-bit or multi-band, whether the input is a bytes object or a general sequence, and whether scale and offset are the defaults. Each combination has its own copy loop. It also checks input size, rejects nested sequences, and handles reference counting on a fast-sequence wrapper.
+
+That shape is a live regression risk. When many input-type and image-type combinations each own a loop, every one of them is a separate path that needs a test, and an early return that misses a cleanup call is easy to introduce. The file's history is worth noting too: a bug-fix rate of 32% across 75 commits and a pull-request review comment density of 12.5, the highest in this top five. Neither number proves this function is defective, since both are file-level signals, but they say this file draws scrutiny. There are no recorded reverts and no bug-linked commits.
+
+<MetricBar label='Cyclomatic Complexity' value='38' threshold='10' max='60' />
+
+My recommendation: split by input kind. A bytes-input path and a general-sequence path, each with its own helper for the scaled and unscaled cases, would take the top-level function from 38 paths down to a dispatcher plus small, individually testable units. I would also pull the repeated item-extraction macro into a static helper so the cleanup behavior lives in one place.
+
+### `getink` — _imaging.c
+
+<FunctionCard fn='getink' file='src/_imaging.c' risk='3.52' band='critical' cc='31' nd='5' fo='13' touches='72' />
+
+`getink` converts a Python color argument into a four-byte ink buffer for a given image. The excerpt shows a switch on image type, nested checks on band count, and a repeated pattern of validating tuple size, setting a TypeError and returning NULL. With a cyclomatic complexity of 31 and a nesting depth of 5, most of that complexity comes from the cross product of pixel type, band count and whether the color arrived as an integer or a tuple.
+
+The repetition is the signal. Several error branches construct similar messages for similar failures, which usually means the same validation logic has been written more than once. The file-level history is the same as for its neighbors: 72 touches in the last year, a 32% bug-fix rate, 9 distinct authors in the last 90 days.
+
+My recommendation: separate color normalization from ink packing. A small function that turns the Python argument into a normalized tuple of channel values, followed by a per-type packer, would collapse the validation duplication and give the packing logic a much smaller surface to test.
+
+### `_prepare_lut_table` — _imaging.c
+
+<FunctionCard fn='_prepare_lut_table' file='src/_imaging.c' risk='3.48' band='critical' cc='22' nd='5' fo='10' touches='72' />
+
+This is the smallest of the three by metrics: cyclomatic complexity 22, fan-out 10. It prepares a color lookup table for later use. From the excerpt, it tries the buffer protocol first with a nested format check, falls back to a list-conversion helper, allocates a result array, and then converts each element in a loop that branches on the source data type. It also manages two different cleanup paths depending on how the table data was obtained.
+
+The dual ownership is what I would review first. A buffer that must be released versus heap data that must be freed means every early exit has to pick the right cleanup, and that is exactly the kind of logic where a change made for one input type can quietly break the other. The nesting depth of 5 sits mostly in the buffer-protocol probing.
+
+My recommendation: extract the buffer-probing block into a function that returns the data pointer and type, and move the per-element conversion into its own helper. That leaves a short function whose only job is ownership and allocation, which is much easier to verify by reading.
+
+### `get_ifd` — Image.py
+
+<FunctionCard fn='get_ifd' file='src/PIL/Image.py' risk='3.45' band='critical' cc='29' nd='7' fo='19' touches='97' />
+
+`get_ifd` reads EXIF image file directories on demand. The excerpt shows branches for the IFD1 case, the Exif and GPS cases, and the Interop and MakerNote cases, and inside MakerNote there is manufacturer-specific parsing, with a FUJIFILM path and a Nintendo path, each with its own struct-unpacking loop and error handling. A nesting depth of 7 comes from that stacking of tag dispatch, vendor dispatch, loop, and per-entry try blocks.
+
+The design issue is that vendor-specific binary parsing sits inside a general-purpose directory accessor. Adding another manufacturer means growing the same function, and the two vendor paths already duplicate the pattern of unpacking entries and validating sizes. The method shares its file-level history with `convert`: 97 touches in the last year, a bug-fix rate of about 17%, no reverts.
+
+My recommendation: move each MakerNote parser into its own function keyed by vendor, and leave `get_ifd` as a dispatcher over tag kind. That alone should take the nesting depth from 7 to around 3 and make each vendor parser testable against a fixture without going through the directory logic.
+
+## Where to start
+
+I would take the `_imaging.c` cluster first, as one piece of work rather than three. The three functions share a file with 72 touches in the last year, a 32% bug-fix rate, and the highest review comment density in this set, and they share a refactoring theme: input-type dispatch tangled with cleanup. Splitting them along the same lines would also shrink the file's surface for the next contributor. Start with `_putdata_impl`, since it has the highest complexity of the three.
+
+Then `convert`, where the extraction of transparency handling is the cheapest first cut. `get_ifd` can follow, with the MakerNote parsers as the natural seam.
+
+For contrast, look at the quiet critical functions. `grab` and `grabclipboard` in ImageGrab.py (39 days since last change), `ImagingNewDIB` (44 days), `ImagingBlend` (52 days) and `ImagingJpegDecode` (32 days) are structural debt with high blast radius when next touched, but they are not changing now. The five above are both complex and in motion, which is why they come first.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/python-pillow/Pillow
+cd Pillow
+git checkout b2c077b23377ec5531f4668a4f26c225e752e8b6
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
