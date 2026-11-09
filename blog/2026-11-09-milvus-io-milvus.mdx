@@ -1,0 +1,127 @@
+---
+title: "Milvus's ChunkedSegmentSealedImpl.cpp carries the highest activity risk"
+titleSeo: "milvus code health: ChunkedSegmentSealedImpl.cpp leads the refactoring priority list"
+description: "Four of the five highest-risk functions in milvus live in one C++ file, ChunkedSegmentSealedImpl.cpp, all with 201 touches in the last year and 2 days since last change, while the fifth is a 118-complexity Go function in the proxy layer."
+introContent: "Four of the five riskiest functions in milvus sit in a single C++ file, ChunkedSegmentSealedImpl.cpp, and all four were changed two days before this snapshot. The fifth is a Go function in the proxy with a cyclomatic complexity of 118."
+pubDate: 2026-11-09
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: false
+repo: "milvus-io/milvus"
+commit: "c7d691d502352180f389bc0d4cf2813002d2ae2f"
+language: "go"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-09T02:29:25Z"
+clone_depth: 2615
+topRisk: 3.82
+topFunction: "ArrowToDataArray"
+topFile: "internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp"
+qaSection:
+  - question: "What makes the fan-out of ArrowToDataArray a problem in milvus?"
+    answer: "Fan-out is the count of distinct functions a function calls directly. `ArrowToDataArray` calls 125 of them, which is far beyond the point where a function is easy to hold in your head: values of 15 or more are already a strong coupling signal. High fan-out makes the function hard to test in isolation, because its behavior depends on many collaborators, and it means a change to any one of them can have unexpected effects here. In milvus, the function also has a cyclomatic complexity of 83 and sits in a file touched 201 times in the last year, so the coupling and the churn compound each other."
+  - question: "How do I reduce cyclomatic complexity in go?"
+    answer: "The standard technique is extract-method combined with decompose-conditional: pull each distinct validation or branching concern into its own function with a clear name. A cyclomatic complexity above 15 is worth splitting, and above 30 deserves immediate attention. The clearest example in this analysis is `checkAndFlattenStructFieldData` in `internal/proxy/util.go`, which has a cyclomatic complexity of 118 and many explicit error-return branches. A concrete first step is to move the sub-field presence check and the validity-mask check into separate validator functions, which should cut the original function's complexity by well over half and give each check its own table-driven test."
+  - question: "Is milvus actively maintained?"
+    answer: "Yes, based on the top functions in this snapshot. All five are in the active tier and were last changed 2 days before the analysis. The four functions in `ChunkedSegmentSealedImpl.cpp` share 201 touches in the last year and 17 distinct authors in the last 90 days, while `checkAndFlattenStructFieldData` was touched 83 times with 14 distinct authors. For contrast, the quiet-tier `EstimateSegmentLoadingResource` was touched once in the last year and last changed 41 days ago. Active development and high structural debt are not mutually exclusive, and here the heavy activity is exactly why those complex functions rank so high."
+  - question: "How do I reproduce this analysis?"
+    answer: "The analysis uses the hotspots CLI, available on GitHub, run against milvus commit c7d691d. Check out that commit with `git checkout c7d691d`, then run `hotspots analyze . --mode snapshot --force`. The same command works on any local git repository without extra configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the file has changed, so functions that are both hard to understand and in changing code score highest. In this snapshot, the quiet-tier functions rank below the active ones, since less recent change means lower near-term regression risk. That prioritization points refactoring effort at the code where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+Four of the top five hotspots in milvus live in one file, `internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp`, and that concentration matters more than any single score: anyone touching the sealed-segment read, retrieve, or reopen paths is working inside the same 201-commit, 17-author churn zone. The top function, `ArrowToDataArray`, has an activity-weighted risk score of 3.82, a cyclomatic complexity of 83, and a fan-out of 125, and it is in active code that was last changed 2 days ago, so this is live regression risk rather than a cleanup backlog item. Across the 46,121 functions in this analysis of milvus (a vector database), 6,406 land in the critical band, so the top five are a very small slice of a large critical population.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `ArrowToDataArray` | internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp | 3.8 | 83 | 5 | 125 |
+| `TryTakeForRetrieve` | internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp | 3.8 | 51 | 5 | 84 |
+| `PrepareLoadDiffForReopen` | internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp | 3.8 | 39 | 6 | 73 |
+| `get_raw_data_from_state` | internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp | 3.8 | 43 | 4 | 106 |
+| `checkAndFlattenStructFieldData` | internal/proxy/util.go | 3.7 | 118 | 7 | 59 |
+
+I am going to treat this as a story about one file first and one outlier second. The file-level numbers are shared by four functions, which is why they look so similar in the table, and the outlier is a Go function in the proxy layer.
+
+<BandChart active='35306' quiet='10815' />
+
+Most of the repository is in the active tier (35,306 of 46,121 functions), so 'active' alone does not separate these five from the rest. What separates them is the combination of critical-band complexity with a file that was touched 201 times in the last year.
+
+## The file: ChunkedSegmentSealedImpl.cpp
+
+The four functions below share the same file-level history. The file has 201 touches in the last year, a bug-fix rate of 34%, 17 distinct authors in the last 90 days, no reverts, and no bug-linked commits recorded. I read that as heavy, broadly shared ownership with a meaningful share of fix-type commits, not as evidence that any one function is defective. The file-level numbers apply to all four equally, so the function-level metrics are what let me rank them.
+
+### `ArrowToDataArray` — ChunkedSegmentSealedImpl.cpp
+
+<FunctionCard fn='ArrowToDataArray' file='internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp' risk='3.82' band='critical' cc='83' nd='5' fo='125' touches='201' />
+
+I would start with `ArrowToDataArray` because it has the highest activity-weighted risk score in the repository (3.82) and the highest fan-out among the five (125). From the excerpt, it converts Arrow arrays into the protobuf `DataArray` output and is built around a large switch over the field's data type, with a near-identical case block for BOOL, INT8, INT16, INT32, INT64, FLOAT, DOUBLE and more, plus a TEXT case with a conditional path for large-object references.
+
+<MetricBar label='Fan-out' value='125' threshold='15' max='130' />
+
+A cyclomatic complexity of 83 here is mostly a function of how many data types the switch covers, and the case blocks follow a repeated shape: cast the array, pick the right output container, loop over the result mapping. That repetition is the opportunity. My recommendation is to extract one helper per data-type family (or a small templated helper for the plain numeric cases) so the switch becomes a dispatch table of one-line calls. Adding a new data type should mean adding one case, not copying a loop. Given 201 touches in the last year, this is the cheapest complexity reduction on the list.
+
+### `TryTakeForRetrieve` — ChunkedSegmentSealedImpl.cpp
+
+<FunctionCard fn='TryTakeForRetrieve' file='internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp' risk='3.81' band='critical' cc='51' nd='5' fo='84' touches='201' />
+
+`TryTakeForRetrieve` has a cyclomatic complexity of 51, a nesting depth of 5, and a fan-out of 84, with an activity-weighted risk score of 3.81. The excerpt shows a function that decides whether a 'take' path can be used for output and returns false from several early guards: empty size, missing snapshot support, disallowed plan, no eligible fields, and a configuration that rejects remote vector output. It then builds the column lists, constructs a take context, and executes the take.
+
+The many early-return guards are a test-coverage burden, since each one is a separate case that needs a test proving the fallback behaves correctly. I would split the function into an eligibility check (the guards), a column-selection step (the loop over plan fields that handles system fields, primary-key-only mode, and external collections), and the execution step. The column-selection loop in particular has several conditionals that are easy to get subtly wrong when external-collection behavior changes, and it is the part I would pull out first and cover with table-driven tests.
+
+### `PrepareLoadDiffForReopen` — ChunkedSegmentSealedImpl.cpp
+
+<FunctionCard fn='PrepareLoadDiffForReopen' file='internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp' risk='3.76' band='critical' cc='39' nd='6' fo='73' touches='201' />
+
+`PrepareLoadDiffForReopen` has the deepest nesting of the four C++ functions at 6, with a cyclomatic complexity of 39 and a fan-out of 73. From the excerpt, it applies a load diff in sequence: indexes to load, indexes to replace, fields to reload, and then either an external-manifest load or a column-group branch that builds a reader, optionally sets a key retriever when a cipher plugin is present, and commits runtime state through a committer.
+
+What stands out to me is the repeated cancellation check between stages. That is a sensible pattern for a long operation, but it means the function is really an orchestrator of several independent stages. The nesting of 6 comes mostly from the column-group branch, which does reader construction, plugin handling, and state commit inline. I would extract that branch into its own function (for example, a column-group reopen step that returns the reader and the groups to load) and leave the top-level function as a flat list of stages. That brings the nesting depth down without changing behavior.
+
+### `get_raw_data_from_state` — ChunkedSegmentSealedImpl.cpp
+
+<FunctionCard fn='get_raw_data_from_state' file='internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp' risk='3.76' band='critical' cc='43' nd='4' fo='106' touches='201' />
+
+`get_raw_data_from_state` has a cyclomatic complexity of 43, a nesting depth of 4, and a fan-out of 106, with an activity-weighted risk score of 3.76. It reads raw column data for a set of segment offsets, with special handling for nullable vectors, native list arrays, and validity tracking, followed by a type switch that includes VARCHAR/STRING and TEXT cases (the TEXT case branches on external versus internal storage representations).
+
+The fan-out of 106 is the number I would watch here. Combined with a type switch and several special cases for nullable and native-list columns, this function is coupled to a lot of surrounding machinery, so a change to any of those collaborators can surface here. It shares its type-dispatch shape with `ArrowToDataArray`, which suggests the two functions may benefit from a shared per-type handler rather than two parallel switches. I would confirm that by comparing the case lists side by side before refactoring, since I am inferring the overlap from the excerpts and names only.
+
+## The outlier: proxy validation in Go
+
+### `checkAndFlattenStructFieldData` — util.go
+
+<FunctionCard fn='checkAndFlattenStructFieldData' file='internal/proxy/util.go' risk='3.74' band='critical' cc='118' nd='7' fo='59' touches='83' />
+
+This is the one function on the list outside the C++ core, and it has the highest cyclomatic complexity of the five by a wide margin: 118, with a nesting depth of 7 and a fan-out of 59. Its activity-weighted risk score is 3.74, it was touched 83 times in the last year, and it was last changed 2 days ago. The file-level history shows a bug-fix rate of 34% across 83 commits, with 14 distinct authors in the last 90 days, and no reverts or bug-linked commits recorded.
+
+<MetricBar label='Cyclomatic Complexity' value='118' threshold='30' max='130' />
+
+From the excerpt, this is a validation and normalization routine for insert messages that contain struct-array fields. It builds lookup maps from the schema, walks the insert's field data, and returns a parameter-invalid error from many branches: unknown field names, wrong field type, sub-field count mismatch, inconsistent legacy versus field-specific validity data, a struct that claims valid rows with no payload, partial presence of sub-field data, and mismatched validity masks for nullable structs. In Go terms, that is a long chain of explicit error-return branches, and every one of them is a separate test case. A cyclomatic complexity of 118 is well into the extreme range.
+
+My recommendation is to split it by validation concern rather than by line count: one function that resolves a field to its struct schema, one that checks sub-field presence consistency, one that checks validity-mask agreement for nullable structs, and one that does the actual flattening. Each of those can then be tested with a small table of malformed inputs. The comment in the excerpt about sharing one code path for an omitted struct and an empty struct is a good invariant to pin with a test before moving any code.
+
+## Where to start
+
+If I had one sprint, I would split the work along these lines:
+
+1. `checkAndFlattenStructFieldData` first, because a cyclomatic complexity of 118 and nesting of 7 is the most extreme structural profile on the list, and its many error branches decompose cleanly into testable validators.
+2. `ArrowToDataArray` second, because its repetitive per-type case blocks are the lowest-risk extraction and it carries the highest activity-weighted risk score at 3.82.
+3. A shared type-dispatch helper across `ArrowToDataArray` and `get_raw_data_from_state`, once I have confirmed the overlap in their case lists.
+4. `PrepareLoadDiffForReopen` and `TryTakeForRetrieve` after that, extracting the column-group branch and the eligibility guards respectively.
+
+Because four of five are in the same file, I would also agree a short review convention for `ChunkedSegmentSealedImpl.cpp`: with 17 distinct authors in the last 90 days, a shared checklist for changes to the type switches is cheaper than discovering a missed case in one of the parallel functions.
+
+Quiet-tier functions with high complexity are not priorities for active work, since they carry structural debt rather than live regression risk.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/milvus-io/milvus
+cd milvus
+git checkout c7d691d502352180f389bc0d4cf2813002d2ae2f
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
