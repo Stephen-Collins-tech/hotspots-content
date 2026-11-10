@@ -1,0 +1,122 @@
+---
+title: "Chart.js's scale layer carries the highest activity risk — 5 functions to address first"
+titleSeo: "Chart.js code health: scale layout and canvas helpers lead the refactoring priority list"
+description: "Two functions in src/core/core.scale.js, untouched for 340 days, both have nesting depth 8 and rank among Chart.js's top five by risk, alongside a canvas legend helper with cyclomatic complexity 46."
+introContent: "The riskiest function in Chart.js hasn't been changed in 340 days, and it has cyclomatic complexity 48 and nesting depth 8. I would look at it first the next time anyone touches axis label layout."
+pubDate: 2026-11-10
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: true
+repo: "chartjs/Chart.js"
+commit: "71d44219e79e3ac41e6f9dc907022eebf574868d"
+language: "javascript"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-10T11:01:10Z"
+clone_depth: 20
+topRisk: 0.92
+topFunction: "_computeLabelItems"
+topFile: "src/core/core.scale.js"
+qaSection:
+  - question: "What makes the nesting depth of `_computeLabelItems` a problem in Chart.js?"
+    answer: "Nesting depth is the deepest level of control structures stacked inside one another, and a depth of 4 or more already makes code hard to reason about. `_computeLabelItems` reaches 8, alongside cyclomatic complexity 48, so a reader has to track many conditions at once to know what a given line is doing. In practice that means combinations of axis position, axis type, and alignment each need their own test, and a change in one branch is easy to get wrong in another. The function also hasn't been changed in 340 days, so anyone editing it next is likely doing so without recent context."
+  - question: "How do I reduce cyclomatic complexity in javascript?"
+    answer: "The usual technique is extract-method combined with decompose-conditional: pull each branch group into a named function and replace large switch statements with a lookup table. A cyclomatic complexity above 15 is a reasonable point to start splitting, and above 30 deserves prompt attention. A concrete first step for `drawPointLegend`, which has a cyclomatic complexity of 46, is to move each point style (triangle, rounded rectangle, rect, and so on) into its own small function and dispatch by style, which should cut the main function's complexity by more than half. For `_computeLabelItems`, I would extract the position-dependent setup from the per-tick loop."
+  - question: "Is Chart.js actively maintained?"
+    answer: "The data shows a mixed picture. 143 of 1,404 functions are in active files, and two of my top five (`fill` and `getMinMax`) were each touched twice in the last year, with `fill` last changed 38 days ago and `getMinMax` 148 days ago. The other three top functions are quiet: `_computeLabelItems`, `_computeGridLineItems`, and `drawPointLegend` were each touched once in the last year and haven't changed in 340 days. Active development and structural debt coexist here, and the debt is concentrated in code that is not currently being modified."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository, clone chartjs/Chart.js, and run `git checkout 71d4421`. Then run `hotspots analyze . --mode snapshot --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the file has changed. Functions that are both hard to understand and in changing code score highest. A very complex function that hasn't been touched in years scores lower than a moderately complex one changed every week, because the dormant one has less near-term regression risk. That ordering points refactoring effort at where bugs are most likely to be introduced now, not just where code looks complicated in the abstract."
+---
+
+The highest-risk function in Chart.js, `_computeLabelItems` in src/core/core.scale.js, hasn't been changed in 340 days, and that is the argument for looking at it: cyclomatic complexity 48, nesting depth 8, an activity-weighted risk score of 0.92, and nobody has had to reason about it in almost a year. Of the 1,404 functions I analyzed in chartjs/Chart.js at commit 71d4421, 12 are critical, and 1,261 sit in the quiet tier, so most of the risk here is structural debt waiting for the next change rather than live churn. I would start with the two scale functions and the canvas legend helper, because a developer who has to touch them cold will have very little local context to lean on.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `_computeLabelItems` | src/core/core.scale.js | 0.9 | 48 | 8 | 9 |
+| `fill` | src/plugins/plugin.filler/filler.drawing.js | 0.7 | 8 | 3 | 11 |
+| `_computeGridLineItems` | src/core/core.scale.js | 0.7 | 18 | 8 | 12 |
+| `drawPointLegend` | src/helpers/helpers.canvas.ts | 0.7 | 46 | 2 | 18 |
+| `getMinMax` | src/core/core.datasetController.js | 0.7 | 10 | 3 | 4 |
+
+<BandChart active='143' quiet='1261' />
+
+The tier split matters for how I read this list. Only 143 of 1,404 functions are in active files. Three of my five top hotspots are quiet-tier functions that have gone 340 days without a change, and the two active ones were each touched only twice in the last year, so this is a post about blast radius and overdue refactoring more than about live regression risk. The two active functions, `fill` and `getMinMax`, are covered below.
+
+### `_computeLabelItems` — core.scale.js
+
+<FunctionCard fn='_computeLabelItems' file='src/core/core.scale.js' risk='0.92' band='critical' cc='48' nd='8' fo='9' touches='1' />
+
+This is the function I would put at the top of a refactoring backlog. It has cyclomatic complexity 48, nesting depth 8, and fan-out 9, with an activity-weighted risk score of 0.92. It was touched once in the last year and hasn't been changed in 340 days.
+
+<MetricBar label='Cyclomatic Complexity' value='48' threshold='10' max='60' />
+
+From the source excerpt, the shape is clear. A long if/else chain branches on the axis position ('top', 'bottom', 'left', 'right') and then on axis type ('x', 'y') with nested 'center' and object-position cases. After that, a per-tick loop does more branching on horizontal versus vertical layout and text alignment. Every combination of position, axis, alignment, and rotation is a path that needs a test, and the nesting depth of 8 means a reader has to hold a lot of conditions in their head at once.
+
+The file-level history gives no defect signal: one commit total, no bug-linked commits, no reverts, a bug-fix rate of 0%, and no distinct authors in the last 90 days. That reads as maintainability debt rather than a known problem area. The no-owner detail is the part I would care about, though. No one has committed to this file in the last 90 days, so I would not assume the mental model is fresh.
+
+My recommendation: extract the position-dependent setup (the part that computes the starting coordinate and text alignment) into a helper that returns those values, and move the per-tick loop body into its own function. That splits the function at the point where the source already shows two distinct phases, and each half can get its own test table.
+
+### `fill` — filler.drawing.js
+
+<FunctionCard fn='fill' file='src/plugins/plugin.filler/filler.drawing.js' risk='0.74' band='high' cc='8' nd='3' fo='11' touches='2' />
+
+`fill` is the odd one out in this list. Its cyclomatic complexity is only 8 and nesting depth 3, so it is not hard to follow in isolation. What puts it in the high band is the combination of fan-out 11 and activity: it was touched twice in the last year, most recently 38 days ago, and it has one distinct author in the last 90 days. This is the only function in my top five that is both nontrivial and in a file that is changing now.
+
+The source shows a loop over segments that saves the canvas state, sets a fill style, clips bounds, builds paths for the line and (when the fill target isn't a shape) the target, then fills with either an even-odd or non-zero rule. The fan-out comes from that sequence of canvas and geometry calls. The risk is coupling: a change to path-segment behavior or clipping elsewhere can alter what gets painted here, and canvas output is awkward to verify without visual tests.
+
+There are no historical defect signals on the file (no bug-linked commits, no reverts, a 0% bug-fix rate), so I would frame this as a watch item rather than a refactoring priority. If anything is done, I would pull the loop body into its own function so the per-segment drawing is separately testable. I would not restructure it beyond that.
+
+### `_computeGridLineItems` — core.scale.js
+
+<FunctionCard fn='_computeGridLineItems' file='src/core/core.scale.js' risk='0.73' band='critical' cc='18' nd='8' fo='12' touches='1' />
+
+This is the sibling of `_computeLabelItems` in the same file, and it has the same nesting depth of 8 with cyclomatic complexity 18 and fan-out 12. It has also gone 340 days without a change, and the file-level history is the same: one commit, no bug-linked commits, no reverts.
+
+The excerpt shows the same structural move: a branch over position ('top', 'bottom', 'left', 'right') and axis ('x', 'y', with 'center' and object-position variants), each setting a different group of coordinate variables, followed by a loop over ticks. The two functions have the same skeleton, which suggests the position-handling logic is duplicated between them. That is a refactoring opportunity and a risk at once: a fix to one position case that doesn't reach the other leaves the two disagreeing.
+
+My recommendation is to do this one together with `_computeLabelItems`. Extract the shared position resolution so that both functions consume the same computed geometry instead of each re-deriving it. Changing one without the other is the likelier way to introduce an inconsistency.
+
+### `drawPointLegend` — helpers.canvas.ts
+
+<FunctionCard fn='drawPointLegend' file='src/helpers/helpers.canvas.ts' risk='0.71' band='critical' cc='46' nd='2' fo='18' touches='1' />
+
+`drawPointLegend` has a different profile from the scale functions: cyclomatic complexity 46 but nesting depth of only 2, and fan-out of 18, the highest of anything in my top five. It hasn't been changed in 340 days.
+
+<MetricBar label='Fan-out' value='18' threshold='15' max='25' />
+
+The excerpt shows the cause. It is a large switch over point style ('triangle', 'rectRounded', 'rect', 'rectRot', and a default that handles circles and ellipses), plus an early branch for image and canvas styles. Each case computes its own trigonometry and issues its own sequence of canvas calls. Flat is the right word: shallow nesting means each case is readable on its own, but the function carries every shape in one body, and the cyclomatic complexity of 46 comes from that breadth. The comments in the excerpt also reference past rendering issues for the rounded-rectangle case, which suggests that case in particular has been tuned for visual output and is sensitive to change.
+
+This is the only function in my top five whose file-level signals show any review attention: the pull-request review comment density on the file is 1.0. I would not read that as a defect signal, but it is a small hint that reviewers have had something to say here.
+
+My recommendation: split the switch into one small function per point style, dispatched through a lookup keyed by style. The shallow nesting makes this a low-risk extract-method job, and each shape function becomes testable on its own. I would start with the rounded-rectangle case, since that is where the comments point to prior tuning.
+
+### `getMinMax` — core.datasetController.js
+
+<FunctionCard fn='getMinMax' file='src/core/core.datasetController.js' risk='0.69' band='critical' cc='10' nd='3' fo='4' touches='2' />
+
+`getMinMax` is critical-band and active-tier, but its numbers are modest: cyclomatic complexity 10, nesting depth 3, fan-out 4. It was touched twice in the last year, most recently 148 days ago, and has no distinct authors in the last 90 days. Its place in the ranking comes from sitting in an active file rather than from raw complexity.
+
+The one external signal worth noting is a bug-fix rate of 50% across the file's 2 commits, meaning one of the two commits was tagged as a bug fix. That is a small sample and I would not lean on it, but it is the only non-zero bug-fix signal in my top five. From the source, the function scans parsed data for a min and max, skips non-finite or out-of-bounds values through a nested helper, and has a separate path for sorted data that scans from both ends and stops early. The sorted/unsorted split and the early breaks are where edge cases tend to hide: empty data, all values skipped, a single value.
+
+My recommendation is cheap: write tests for those boundary cases (empty, all skipped, sorted with one valid value) before anyone edits it again. I would not refactor it. The function is small enough that tests are the better investment.
+
+## Where to start
+
+I would start with `_computeLabelItems` and `_computeGridLineItems` together. They share a file, a nesting depth of 8, and the same 340 days of dormancy, and they appear to share a skeleton, so one extraction of the position logic pays off twice. After that, I would take `drawPointLegend` for its fan-out of 18 and the straightforward per-style split. `fill` and `getMinMax` are the two functions in files that are changing now, so for those I would add tests rather than restructure.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/chartjs/Chart.js
+cd Chart.js
+git checkout 71d44219e79e3ac41e6f9dc907022eebf574868d
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
