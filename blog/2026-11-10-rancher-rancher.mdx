@@ -1,0 +1,88 @@
+---
+title: "Rancher's settings module carries the highest activity risk — 5 functions to address first"
+titleSeo: "rancher code health: pkg/settings/setting.go and kubeconfig Create lead refactoring priority"
+description: "Four of the five highest-risk functions in rancher/rancher sit in pkg/settings/setting.go, while the one genuinely complex function, Create in the ext kubeconfig store, has a cyclomatic complexity of 128."
+introContent: "Four of the top five hotspots in rancher/rancher live in one file, pkg/settings/setting.go, and none of them is complicated on its own. The real structural problem is a single kubeconfig store function with a cyclomatic complexity of 128."
+pubDate: 2026-11-10
+tags: ["oss", "go", "refactoring", "code-health"]
+draft: true
+repo: "rancher/rancher"
+commit: "e0ecb66cd156f382dc462b77096d8bb19a3f2286"
+language: "go"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-10T10:57:30Z"
+clone_depth: 1236
+topRisk: 2.75
+topFunction: "GetMachineProvisionImagePullPolicy"
+topFile: "pkg/settings/setting.go"
+qaSection:
+  - question: "What makes a cyclomatic complexity of 128 in Create a problem in rancher?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a potential bug surface and a test case you need to write. A value of 128 is well past the 30 I treat as high and past the 100 I treat as extreme. In `Create` in pkg/ext/stores/kubeconfig/store.go, the paths come from many sequential validation and error-return steps plus a multi-case TTL switch, so reasoning about one request means tracking a very large number of outcomes. Combined with a fan-out of 62, a change in one step can interact with dependencies far from where the edit was made."
+  - question: "How do I reduce cyclomatic complexity in go?"
+    answer: "Use extract-method to move cohesive blocks into named helpers, and decompose-conditional for large switch statements. A complexity above 15 warrants splitting, and above 30 warrants immediate attention. A good first step for `Create` is to lift the TTL calculation and validation switch into its own function that takes the requested TTL, the default, and the maximum and returns a value or an error. That function has no Kubernetes dependencies, so it can be tested in isolation, and the extraction alone should cut a meaningful share of the branching from `Create`."
+  - question: "Is rancher actively maintained?"
+    answer: "The data says yes. The settings file in pkg/settings/setting.go was touched 80 times in the last year, most recently 7 days ago, with 14 distinct authors in the last 90 days. The kubeconfig store with `Create` was touched 22 times in the last year, most recently 11 days ago. Of 6,290 functions analyzed, 3,536 are in the active tier and 2,754 are quiet. Quiet critical functions such as `reconcileRotate` (1 touch in the last year, 46 days since last change) show the other side: active development and structural debt coexist, and 1,703 critical-band functions show that the codebase carries a lot of the latter."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from GitHub and check out the commit I analyzed, e0ecb66, with `git checkout e0ecb66`. Then run `hotspots analyze . --mode snapshot --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the file has changed, so functions that are both hard to understand and in changing code score highest. A function with a cyclomatic complexity of 80 that has not been touched in two years scores much lower than one with a complexity of 20 touched every week, because the dormant one has lower near-term regression risk. This is why simple functions in pkg/settings/setting.go rank beside a 128-path function: the file's 80 touches in the last year lift everything in it. It helps teams focus effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+Four of the top five hotspots in rancher/rancher sit in a single file, pkg/settings/setting.go, which was touched 80 times in the last year, most recently 7 days ago, by 14 distinct authors in the last 90 days. That is a whole module under constant change, not one function to fix, and anyone editing it is working in a file under constant change. The repository has 6,290 functions, 1,703 of them in the critical band, and the fifth hotspot, `Create` in pkg/ext/stores/kubeconfig/store.go, is where the structural risk actually concentrates: a cyclomatic complexity of 128 and fan-out of 62 in code touched 22 times in the last year.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `GetMachineProvisionImagePullPolicy` | pkg/settings/setting.go | 2.8 | 8 | 1 | 3 |
+| `Create` | pkg/ext/stores/kubeconfig/store.go | 2.7 | 128 | 5 | 62 |
+| `init` | pkg/settings/setting.go | 2.7 | 9 | 2 | 1 |
+| `GetQuantityAsInt64` | pkg/settings/setting.go | 2.7 | 5 | 1 | 4 |
+| `GetDuration` | pkg/settings/setting.go | 2.7 | 5 | 1 | 3 |
+
+<BandChart active='3536' quiet='2754' />
+
+The ranking tells two different stories, and I want to separate them. The settings file scores high because it is busy: every function in it inherits the same file-level activity, so small helpers rank beside a 128-path function. The kubeconfig store scores high because it is both complex and changing. I would treat them as different kinds of work.
+
+### `GetMachineProvisionImagePullPolicy` — setting.go
+
+<FunctionCard fn='GetMachineProvisionImagePullPolicy' file='pkg/settings/setting.go' risk='2.75' band='high' cc='8' nd='1' fo='3' touches='80' />
+
+This is the top-ranked function in the list, with an activity-weighted risk score of 2.75, and its structure is modest: cyclomatic complexity of 8, nesting depth of 1, fan-out of 3. From the source excerpt, it reads a setting, switches over the Kubernetes pull policy values, and falls back to Always with a logged warning when the value does not parse. That is a flat switch with a default branch, which is about as readable as branching gets. The risk here comes from the file's activity, not from the function's shape: 80 touches in the last year, last changed 7 days ago, and a bug-fix rate of 8.75% across the file's 80 commits, with no bug-linked commits and no reverts recorded. It is an active function in the high band, so it bears watching rather than refactoring. I would not refactor it. I would put a table-driven test around the three valid values and the fallback so that the next edit to the file cannot silently change the default.
+
+**`GetQuantityAsInt64` and `GetDuration` — setting.go**
+
+<FunctionCard fn='GetQuantityAsInt64' file='pkg/settings/setting.go' risk='2.7' band='high' cc='5' nd='1' fo='4' touches='80' />
+
+<FunctionCard fn='GetDuration' file='pkg/settings/setting.go' risk='2.69' band='high' cc='5' nd='1' fo='3' touches='80' />
+
+I am grouping these because they share a pattern: each reads a setting's string value, parses it into a typed result, and handles the parse failure. `GetDuration` logs the error, then retries with the setting's default, and returns zero if the default also fails. `GetQuantityAsInt64` wraps a Kubernetes quantity parse error and returns the caller-supplied fallback if the quantity does not fit in an int64. Both have a cyclomatic complexity of 5 and nesting depth of 1, so they are easy to read. The two functions handle failure differently, though: one swallows it into a log line and a zero value, the other returns an error to the caller. In a file where 14 distinct authors have committed in the last 90 days, that inconsistency is the kind of thing that drifts. My recommendation is to settle on one convention for typed getters, document it at the top of the file, and cover each getter with a malformed-value test.
+
+### `Create` — kubeconfig/store.go
+
+<FunctionCard fn='Create' file='pkg/ext/stores/kubeconfig/store.go' risk='2.71' band='critical' cc='128' nd='5' fo='62' touches='22' />
+
+<MetricBar label='Cyclomatic Complexity' value='128' threshold='30' max='140' />
+
+<MetricBar label='Fan-out' value='62' threshold='15' max='70' />
+
+This is the function I would start with. Its cyclomatic complexity of 128 is far past the 100 mark I treat as extreme, its fan-out of 62 means it calls 62 distinct functions, and the file was touched 22 times in the last year, most recently 11 days ago. It is an active, critical-band function. The source excerpt shows why the path count is so high: the function resolves the calling user, rejects non-Rancher users, requires a request token ID and fetches the token, type-asserts the object to a kubeconfig, runs create validation, checks cluster uniqueness, and then works through default and maximum token TTL handling in a switch before moving on to server URL parsing. Each of those steps has its own error return, so the Go convention of explicit error branching multiplies the path count. The file's history gives this some weight: a bug-fix rate of 31.82% across 22 commits and one recorded revert. Those are file-level signals and do not prove a defect in `Create`, but combined with the complexity they move it to the front of the review queue. My concrete recommendation is extract-method along the seams already visible in the code: pull authentication and token resolution into one helper, TTL computation and validation into another, and the remaining kubeconfig assembly into a third. The TTL switch is the cleanest first cut because it takes plain values and returns a value or a bad-request error, so it can be unit-tested without any Kubernetes plumbing. That single extraction would remove a visible chunk of the branching.
+
+## Where to start
+
+I would start with `Create` in pkg/ext/stores/kubeconfig/store.go: split out the TTL logic first, then the authentication steps. For setting.go, I would not refactor anything. Instead I would add malformed-input tests for the typed getters, log the silent failure path in `init`, and agree on one error-handling convention across the getters, because the risk there comes from how many people are editing the file, not from how hard any single function is to read.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/rancher/rancher
+cd rancher
+git checkout e0ecb66cd156f382dc462b77096d8bb19a3f2286
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
