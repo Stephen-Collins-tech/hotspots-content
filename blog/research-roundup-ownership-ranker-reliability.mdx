@@ -1,0 +1,129 @@
+---
+title: "What a Year of Checking Our Own Formulas Turned Up"
+category: "research-findings"
+description: "Four more research results, all already shipped: two terms cut from the live risk score for not earning their weight, a clean ownership-concentration signal, a trained-ranker safety net, and a cold-start fallback for sparse-history repos."
+pubDate: 2026-11-12
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+draft: false
+introContent: "Four more research results, all already shipped: two terms cut from the live risk score for not earning their weight, a clean ownership-concentration signal, a trained-ranker safety net, and a cold-start fallback for sparse-history repos."
+---
+
+Last time, I wrote about `file_risk_score` failing to calibrate as a probability but still
+holding up as a relative, diff-scoped signal. That post ended with a flag on `hotspots diff`.
+This one is a roundup of four more research results that already shipped quietly over the
+past several months — none of them big enough on their own for a full post, but all of them
+worth stating plainly, because together they say something about how this tool gets built:
+every formula in it is checked against real outcomes on real repos, on a schedule, including
+after it ships. Sometimes that check says "cut it."
+
+All four are written up in full, with the actual numbers, in
+[hotspots-public-research](https://github.com/Stephen-Collins-tech/hotspots-public-research) —
+this post is the short version.
+
+---
+
+## Two terms got cut from the live score
+
+The activity-risk formula that `hotspots analyze` reports isn't static. It gets re-measured,
+and terms that don't earn their weight get removed — even after they ship. Two more came out
+this round, for two different reasons.
+
+The first, `depth_score`, measures how deep a function sits in the call graph. It sounded
+reasonable. It wasn't pulling its weight: across six tested repos, it was populated for
+somewhere between half a percent and twenty percent of functions, and its average
+contribution to the formula's overall ranking quality was *negative* — a net drag, not a
+contributor. The root cause traces straight to the call-graph walk itself: it starts from a
+small set of name-matched "entry points" (functions like `main`, `run`, request handlers),
+and most functions in most repos simply aren't reachable from that narrow root set. This is
+the third term removed for exactly this reason — two others (fan-in, strongly-connected
+components) were already zeroed out earlier for the same structural-sparsity problem. At this
+point it looks like a pattern, not a fluke.
+
+The second, `convention_bug_fix_count`, is more interesting, because the problem wasn't
+weakness — it was a quiet correctness bug. This feature counts how many times a function has
+been touched by a commit that looks like a bug fix, and it's meant to flag ongoing risk. When
+I actually swept it through the trained ranker's feature space, it turned out to **ratchet**:
+in both model classes the ranker uses, increasing this feature's value essentially never
+decreased the predicted score. A function touched by one fix commit, years ago, stays flagged
+as elevated risk forever, no matter what else about it changes. That's not a risk signal, it's
+a scar that never fades. Removed from the feature set entirely.
+
+## Ownership concentration is one of the cleanest signals in the whole project
+
+`hotspots coordinate` already reported how concentrated a file's authorship is. The open
+question was whether that concentration — one dominant author vs. several, vs. no clear owner
+at all — could be classified reliably, and whether it predicted anything useful on its own.
+
+The "one dominant author" case turned out to be a clean, zero-tuning-needed classifier: it
+matched an independent cross-check with 100 percent accuracy, on every repo tested, across
+every threshold swept. The "no clear owner" case did not — accuracy ranged all the way down to
+under 6 percent on one repo. Tracing that down to a cause (not just noticing the number was
+bad) turned up a real bug in how author identity gets counted: a maintainer who committed under
+two different email addresses over the years looks, to an email-keyed metric, like five or six
+different people wrote the file. A genuinely single-owner file gets misclassified as
+ownerless. That's a real limitation in the underlying signal, not an artifact of this one test
+— so the "no clear owner" case shipped as deliberately unimplemented, not shipped-and-hoped.
+
+The concentration classifier that *did* work turned out to be a strong, direct predictor of
+something practical: how often a file sees cross-author collisions in its own history. Files
+with one dominant author collide at roughly one to eleven percent the rate of otherwise
+similar files with no dominant author — a thirty-to-sixty-percentage-point gap, consistent
+across eight different public repos. `hotspots coordinate` now uses this to soften its
+serialize-this-work recommendation when every file in a change set is concentrated.
+
+## Making the trained ranker fail safely instead of failing silently
+
+The most uncomfortable thing I found in this stretch of work: a tabular ranker can look
+basically fine by one measure (overall rank correlation) while being completely useless by
+the measure that actually matters — precision in the top handful of results, which is what a
+person actually looks at. On one real repo, every ranker tested put zero real future bugs in
+its top ten predictions, worse than if you'd picked at random. The reason was almost poetic:
+the highest-churn, highest-complexity, most-recently-touched code on that repo was its most
+heavily-exercised, most carefully-maintained core — and the actual bugs lived in quieter,
+peripheral code that none of the usual signals were pointed at.
+
+Rank correlation would never have caught this. A gate that specifically checks precision at
+the *top* of a ranker's own output does catch it, reliably, with no false positives on the
+repos where the ranker already works — and when it fires, it falls back to a cheap classifier
+that recovers the lost precision. There's also a cheaper, upstream version of the same idea:
+a quick pre-training check that predicts, before you spend the time training a repo-specific
+model at all, whether it's going to be worth it. That screener matched the real outcome on
+every repo in its known-answer set.
+
+And in the same vein — sometimes the right move is to never add a feature in the first place.
+A coupling metric (how many other files tend to change alongside this one) looked useful in
+isolation, but its sign flips depending on how a given repo tends to batch its commits: in
+repos with large, sweeping commits, high coupling just means "touched by big commits," not
+"genuinely risky." Thirteen repos, one statistically significant but repo-dependent sign-flip,
+no clean universal threshold. It never made it into the trained ranker's default feature set,
+and checking why confirmed that was the right call.
+
+## A fallback for repos with thin history
+
+The last piece: what do you do with a repo that doesn't have enough history yet for any of
+this to work well? Two things turned out to matter. First, a single cheap number — the Gini
+coefficient of how concentrated a repo's commits are across its files — tracks pretty well
+how hard that repo is for a history-light model to rank (a 0.73 correlation across eleven
+public repos). A repo where commits spread evenly across everything is a repo where a
+pooled model struggles to tell risky files from ordinary ones.
+
+Second, and more useful in practice: on exactly those hard, evenly-spread repos, a
+label-free anomaly detector running on cheap activity features — commit count, author count,
+burst patterns, recency — still finds something real. On several low-Gini repos it hit
+perfect or near-perfect precision in its top ten, up to a nineteen-times lift over the repo's
+own base rate, using no labels at all. On repos where the normal pooled model already works
+fine, the same technique adds nothing — which is exactly what you'd want from a fallback: it
+helps where the primary approach is weak, and gets out of the way where it isn't.
+
+---
+
+Four results, four shipped changes, two of them removals. None of this is the kind of thing
+that makes for a dramatic headline on its own. Together, though, it's the actual process: the
+formula gets checked against real repos on a schedule, the checks sometimes say "this term is
+dead weight" or "this feature has a hidden bug," and the tool changes because of it. That's
+the whole point of keeping the research repo public — so the claim "we checked" isn't just
+something to take on faith.
