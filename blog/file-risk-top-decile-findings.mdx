@@ -1,0 +1,86 @@
+---
+title: "A Risk Score That Couldn't Calibrate, But Could Still Point"
+category: "research-findings"
+description: "file_risk_score never mapped cleanly onto a probability. Six experiments later, I found the part of it that was never broken: which files in a diff land in its own top decile — and shipped a flag for exactly that."
+pubDate: 2026-11-11
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "research"
+  - "code-health"
+draft: false
+introContent: "file_risk_score never mapped cleanly onto a probability. Six experiments later, I found the part of it that was never broken: which files in a diff land in its own top decile — and shipped a flag for exactly that."
+---
+
+`file_risk_score` has been in hotspots for a while — a composite of max complexity, average complexity, and function count, rolled up per file. I'd always treated it the way most scores like this get treated: higher number, riskier file, done. I never actually checked whether the number itself meant anything.
+
+So I checked. It mostly doesn't. But something inside it does, and that something is now a real flag on `hotspots diff`.
+
+---
+
+## The calibration check that failed
+
+The test was simple to state: if `file_risk_score` is a real probability-shaped signal, then files pooled by score should separate cleanly into reliability bins — low scores mostly clean, high scores mostly risky, smoothly in between. I built that reliability curve against real fix history and measured the correlation.
+
+Pooled ρ came out at 0.515. I'd pre-registered ρ≥0.8 as the bar for "this calibrates." It didn't come close.
+
+That's the kind of result that could end the story — "the score doesn't work, stop using it" — except the curve wasn't flat. It had a shape: a pronounced U, and almost all of that U was coming from one end. Files in roughly the top 10% of the pooled distribution had a fix rate wildly out of proportion to the rest. The bottom decile had a smaller version of the same effect, but it didn't survive a basic check (excluding trivial two-file diffs made it disappear). The top decile did survive that check, and survived it hard — p < 1e-15.
+
+So the real question stopped being "does `file_risk_score` calibrate" (no) and became "is that top-decile bump real, or is it an artifact of exactly where I drew the line at the 90th percentile."
+
+## Does the line move, or does it break
+
+The 90th percentile was a byproduct of how I'd binned the data — ten equal-width bins, nothing principled about that specific cut. Before trusting "top decile" as a meaningful threshold rather than a coincidence of binning, I swept it: top 20%, 15%, 10%, 5%, on the full pool and on a subset with trivial diffs excluded.
+
+| Cutoff | Flagged fix rate | Base rate | Odds ratio | p |
+|---|---:|---:|---:|---:|
+| top 20% | 0.221 | 0.109 | 3.56 | 2.9e-13 |
+| top 15% | 0.255 | 0.109 | 4.37 | 1.2e-16 |
+| top 10% | 0.303 | 0.109 | 5.57 | 1.5e-20 |
+| top 5% | 0.363 | 0.109 | 7.08 | 2.6e-23 |
+
+All eight combinations (four cutoffs × two pools) cleared my pre-registered bar of p<0.001 and odds≥3.0. More than that — the effect got *stronger* as I tightened the cutoff, not weaker. That's the opposite of what an artifact usually looks like. An artifact of one bin boundary shows up at that boundary and fades on either side of it. This sharpened monotonically across a 4x range of cutoff widths.
+
+I also went back and ablated each ingredient of the formula — max complexity, average complexity, the function-count term — pulling each one out individually. None of them was dead weight. Each one independently weakened the signal when removed, which ruled out the easy explanation that one term was secretly doing all the work while the others rode along for free.
+
+## The part I hadn't actually tested yet
+
+Here's the uncomfortable thing about all of the above: every single check, including the "held-out" train/test split I'd run earlier in this line, was still drawing from the same 25-repo pool I'd originally mined. A held-out split of one pool is not the same as a repo the method has never seen. I'd validated robustness to *where the threshold sits*. I had not validated robustness to *what data it's run against*.
+
+So I picked five repos that had never been part of any prior check in this line — one each in Rust, Go, TypeScript, Java, and Python, chosen mainly for being fast enough to analyze and not for any property of their risk scores — and mined fresh fix-commit instances from scratch. 65 usable instances, 1,173 scoreable file-pairs, same top-decile test, same bar, not loosened for the occasion.
+
+It replicated. Pooled odds ratio 6.68, p=2.5e-9. Every one of the five repos pointed the same direction individually (odds 3.81–6.53x), though none cleared significance alone — exactly what you'd expect when a real effect gets spread across five small samples instead of one big pool, not a reason to doubt it.
+
+Then I reran the full cutoff sweep on that same out-of-sample data, and compared head-to-head against the obvious cheap alternative: just counting lines changed.
+
+| Cutoff | `file_risk_score` odds (p) | Lines-changed odds (p) |
+|---|---|---|
+| top 20% | 3.94 (5.6e-6) | 1.21 (0.54) |
+| top 15% | 5.04 (9.7e-8) | 1.54 (0.17) |
+| top 10% | 6.68 (2.5e-9) | 2.35 (8.9e-3) |
+| top 5% | 10.02 (1.8e-11) | **4.22 (4.3e-5)** |
+
+Same monotonic shape as the in-pool sweep, all four cutoffs clearing the bar, `file_risk_score` winning the direct comparison at every single cutoff. I want to flag the bolded cell honestly rather than smooth it over: at the single tightest cutoff, the lines-changed baseline *also* cleared the bar on this particular out-of-sample set — something it never did anywhere in the original pool. That nudges my claim from "size always fails" to the more precise "`file_risk_score` beats size head-to-head everywhere I tested, in-pool and out-of-sample" — true, just less sweeping than I'd have liked to write.
+
+## What shipped
+
+The raw score still doesn't calibrate, and I'm not pretending otherwise anywhere in the output. What I shipped instead is narrower and better-earned: `hotspots diff` now ranks each changed file's `file_risk_score` against only the *other files in that same diff* — not the whole repo — and flags the ones landing at or above the 90th percentile of that diff-local ranking.
+
+```json
+{
+  "file": "src/parser/tokenizer.rs",
+  "file_risk_score": 7.8,
+  "file_risk_diff_percentile": 0.94,
+  "file_risk_top_decile": true
+}
+```
+
+A file with no `file_risk_score` at all — deleted, or a type `hotspots` can't score — is excluded from the ranking population entirely rather than defaulting to a score that would look deceptively low. And a diff that only touches one scoreable file gets no flag at all: there's no "relative" in a population of one.
+
+## What I'm not claiming
+
+The absolute score is still not a probability, and I'd be doing exactly the thing I just spent six experiments disproving if I shipped it as one. "Top decile within this diff" is a relative statement about the files you happened to touch together, not an absolute judgment about any one file in isolation — the same file could land in the top decile of a small, otherwise-clean diff and nowhere near it in a diff that also touches three genuinely gnarlier files. And five out-of-sample repos, chosen for being quick to analyze rather than randomly sampled, is real replication but not an exhaustive one — I'd treat a sixth or seventh repo landing outside this range as informative, not as a contradiction.
+
+---
+
+*Full writeup, the complete per-cutoff tables, and a reproduction script that runs the live flag against a repo of your choosing: [the public finding page](https://github.com/Stephen-Collins-tech/hotspots-public-research/blob/main/docs/findings/F257-F262-top-decile-flag.md).*
