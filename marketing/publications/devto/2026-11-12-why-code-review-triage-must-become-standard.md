@@ -16,7 +16,7 @@ Naming that gap again isn't useful at this point. What's worth looking at is wha
 
 Scan the "AI code review is broken, here's the fix" posts and a pattern shows up fast. The defect-rate numbers (1.7x more issues in AI-assisted PRs, 91% longer review time, pick your multiplier) are almost always a vendor's blog measuring its own product, or a secondary post citing a figure that doesn't trace back to a primary source with a stated method. The proposed fixes — risk-based routing, AI pre-triage, flag the exceptions — are the right shape. But "risk-based routing" is not itself a method. It's a sentence. Someone still has to say, concretely, which changes count as risky, test whether that rule actually predicts anything, and show the test.
 
-That's the gap hotspots was built to close, and it's a narrower claim than "we fixed code review" — which is exactly why it's checkable.
+That's the gap [hotspots](https://hotspots.dev) was built to close, and it's a narrower claim than "we fixed code review" — which is exactly why it's checkable.
 
 ## One rule, pre-registered, tested against real outcomes
 

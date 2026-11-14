@@ -14,7 +14,7 @@ Scan the "AI code review is broken, here's the fix" posts and a pattern shows up
 
 ## One rule, pre-registered, tested against real outcomes
 
-`file_risk_score` — Hotspots' per-file complexity-and-churn composite — started as the kind of number every static-analysis tool ships: higher score, riskier file, trust it. I tested whether it behaved like a probability of a future bug fix, against a 0.8 correlation bar set *before* running the test. It scored 0.515 — failed, as a standalone probability claim.
+`file_risk_score` — [Hotspots'](https://hotspots.dev) per-file complexity-and-churn composite — started as the kind of number every static-analysis tool ships: higher score, riskier file, trust it. I tested whether it behaved like a probability of a future bug fix, against a 0.8 correlation bar set *before* running the test. It scored 0.515 — failed, as a standalone probability claim.
 
 What survived was narrower: files in the riskiest 10% of a diff's own files were 6-7x more likely to need a later fix than the rest. That held across four attempts to break it (moving the cutoff, removing each formula term, beating a lines-changed baseline), then replicated on five repos in five languages that had never been part of any prior test. [The full methodology and a reproduction script are public](https://github.com/Stephen-Collins-tech/hotspots-public-research) — including the failed calibration test.
 
