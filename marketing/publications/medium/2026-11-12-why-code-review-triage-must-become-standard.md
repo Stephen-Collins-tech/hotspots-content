@@ -8,7 +8,7 @@ The part everyone skips: showing the test
 
 Scan the "AI code review is broken, here's the fix" posts and a pattern shows up fast. The defect-rate numbers (1.7x more issues in AI-assisted PRs, 91% longer review time, pick your multiplier) are almost always a vendor's blog measuring its own product, or a secondary post citing a figure that doesn't trace back to a primary source with a stated method. The proposed fixes — risk-based routing, AI pre-triage, flag the exceptions — are the right shape. But "risk-based routing" is not itself a method. It's a sentence. Someone still has to say, concretely, which changes count as risky, test whether that rule actually predicts anything, and show the test.
 
-That's the gap Hotspots (hotspots.dev) was built to close, and it's a narrower claim than "we fixed code review" — which is exactly why it's checkable.
+That's the gap Hotspots (hotspots.dev) was built to close — and no, this isn't a lead-up to a pricing page. It's a free CLI. Point it at a repo and it tells you which files to worry about.
 
 One rule, pre-registered, tested against real outcomes
 
@@ -18,12 +18,12 @@ What survived was narrower: files landing in the riskiest 10% of a diff's own fi
 
 That's now a real flag: hotspots diff ranks the files you're actually touching and tells you which ones sit in that top decile, so "review this one harder" is a specific, reproducible claim instead of a gut call.
 
-Why the checkability is the point
+Go break it yourself
 
-A risk-ranking pitch that can't be rerun on your own repo is a claim, not a result — and in a space where every vendor is making roughly the same pitch, the claim itself has stopped being the differentiator. Hotspots is free, open-source, and the number behind its one headline claim is something you can go break yourself, on your own codebase, right now. The formula gets re-tested on a schedule, and pieces get removed when the evidence stops supporting them — that's what makes "standard practice" mean something here, instead of being one more unverifiable line in a sales deck.
+A risk-ranking pitch you can't rerun on your own repo is a claim, not a result. So don't take my word for it — the methodology and reproduction script are public, the CLI is free and open-source, and it runs locally in under a minute with nothing leaving your machine. No account, no sales call, no "contact us for pricing." Go run it on your own repo and try to break the claim.
 
 CLI: https://hotspots.dev
-Research behind the claims: https://github.com/Stephen-Collins-tech/hotspots-public-research
+Finding (F257-F262): https://github.com/Stephen-Collins-tech/hotspots-public-research/blob/main/docs/findings/F257-F262-top-decile-flag.md
 
 ---
 PUBLISHING NOTE (remove before posting): after pasting into Medium's editor, open Story settings → set the canonical link to https://stephencollins.tech/posts/why-code-review-triage-must-become-standard/ (or use Medium's "Import a story" tool with that URL instead of pasting, which sets it automatically).
