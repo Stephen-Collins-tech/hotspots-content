@@ -26,7 +26,7 @@ Happy to get picked apart on the methodology — the full writeup, every cutoff
 table, and a script to reproduce the result against any repo you choose are
 public: https://github.com/Stephen-Collins-tech/hotspots-public-research
 
-The CLI itself is free/OSS: https://github.com/Stephen-Collins-tech/hotspots
+The CLI itself is free/OSS: https://hotspots.dev
 
 ---
 PUBLISHING NOTE (remove before posting): submit via https://news.ycombinator.com/submit.

@@ -26,7 +26,7 @@ The point of writing this up in this much detail — including the calibration t
 
 Full writeup: https://stephencollins.tech/posts/hotspots-top-decile-risk-flag/
 Research repo: https://github.com/Stephen-Collins-tech/hotspots-public-research
-CLI: https://github.com/Stephen-Collins-tech/hotspots
+CLI: https://hotspots.dev
 
 ---
 PUBLISHING NOTE (remove before posting): after pasting into Medium's editor, open Story settings → set the canonical link to https://stephencollins.tech/posts/hotspots-top-decile-risk-flag/ (or use Medium's "Import a story" tool with that URL instead of pasting, which sets it automatically).

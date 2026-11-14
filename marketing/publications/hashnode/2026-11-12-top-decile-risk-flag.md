@@ -29,7 +29,7 @@ But the failure wasn't flat — files in roughly the riskiest 10% of the distrib
 
 The full methodology, every cutoff table, and a reproduction script you can run against any repo are public at [hotspots-public-research](https://github.com/Stephen-Collins-tech/hotspots-public-research), including the findings that didn't survive and the features removed after shipping once the evidence stopped supporting them.
 
-[CLI →](https://github.com/Stephen-Collins-tech/hotspots) · [Full writeup →](https://stephencollins.tech/posts/hotspots-top-decile-risk-flag/)
+[CLI →](https://hotspots.dev) · [Full writeup →](https://stephencollins.tech/posts/hotspots-top-decile-risk-flag/)
 
 ---
 PUBLISHING NOTE (remove before posting): Hashnode's editor has a "canonical URL" field under post settings — set it to https://stephencollins.tech/posts/hotspots-top-decile-risk-flag/ before publishing.
