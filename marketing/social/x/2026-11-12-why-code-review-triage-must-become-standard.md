@@ -15,6 +15,6 @@ The fix isn't "review harder." It's aimed review — ranking which changes actua
 
 6/
 Full argument, and the evidence-backed tool built around this (free, OSS, every claim reproducible): https://stephencollins.tech/posts/why-code-review-triage-must-become-standard/
-https://github.com/Stephen-Collins-tech/hotspots
+https://hotspots.dev
 
 #devtools #ai

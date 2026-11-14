@@ -36,7 +36,7 @@ If something like this doesn't become a normal part of how teams review AI-assis
 
 Hotspots is free, open-source, and every claim behind it is published and reproducible. That's the floor, not the ambition — the ambition is that risk-based review triage, checked in public rather than asserted in a sales deck, becomes the obvious default the way linting and CI did. The cost of not doing that isn't abstract. It's already showing up as a 30% number where the honest expectation was closer to 741%, and it will keep showing up, more expensively, in whichever team decides the gap is someone else's problem.
 
-CLI: https://github.com/Stephen-Collins-tech/hotspots
+CLI: https://hotspots.dev
 Research behind the claims: https://github.com/Stephen-Collins-tech/hotspots-public-research
 
 ---

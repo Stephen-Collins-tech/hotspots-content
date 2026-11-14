@@ -30,7 +30,7 @@ Both are already happening, in different teams, right now.
 
 Some code sits in stable, low-complexity paths where a quick pass is genuinely sufficient. Some touches the handful of functions where a mistake is expensive, in code that's already complex and under heavy, frequent change. Treating those identically is how a team ends up drowning or skimming.
 
-This is the argument for risk-based triage as a standard part of code review — a structural necessity, not a nice-to-have, once code volume has decoupled from human review capacity. That's the job [Hotspots](https://github.com/Stephen-Collins-tech/hotspots) is built to do: score every function by structural complexity, weight it by recent/frequent change, and flag which of the files you're already touching deserve the closest look.
+This is the argument for risk-based triage as a standard part of code review — a structural necessity, not a nice-to-have, once code volume has decoupled from human review capacity. That's the job [Hotspots](https://hotspots.dev) is built to do: score every function by structural complexity, weight it by recent/frequent change, and flag which of the files you're already touching deserve the closest look.
 
 This isn't a claim made on faith — it's the same project that publishes its own calibration failures, rewriting a risk score that didn't hold up into a narrower claim that replicated 6-7x on repos the method had never seen, before shipping it. The formula gets re-measured on a schedule; terms get removed when the evidence stops supporting them.
 
@@ -38,7 +38,7 @@ This isn't a claim made on faith — it's the same project that publishes its ow
 
 If risk-ranked review triage, backed by evidence instead of intuition, doesn't become standard practice, the industry doesn't settle into a stable equilibrium — it keeps eating the cost of the volume/capacity gap in one of the two failure modes above, at a growing scale as code generation keeps getting cheaper.
 
-[CLI →](https://github.com/Stephen-Collins-tech/hotspots) · [Research behind the claims →](https://github.com/Stephen-Collins-tech/hotspots-public-research)
+[CLI →](https://hotspots.dev) · [Research behind the claims →](https://github.com/Stephen-Collins-tech/hotspots-public-research)
 
 ---
 PUBLISHING NOTE (remove before posting): Hashnode's editor has a "canonical URL" field under post settings — set it to https://stephencollins.tech/posts/why-code-review-triage-must-become-standard/ before publishing.

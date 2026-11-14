@@ -16,7 +16,7 @@ review quietly turns into skimming and risk accumulates invisibly. The fix
 isn't "review harder," it's aimed review — ranking which changes actually
 need the slow read. That's the whole premise behind the tool I maintain
 (hotspots, free/OSS), and I'd rather argue for the practice in general than
-just pitch the tool: https://github.com/Stephen-Collins-tech/hotspots
+just pitch the tool: https://hotspots.dev
 
 Curious whether others are seeing the 30%-not-741% gap play out the same way
 on their own teams.

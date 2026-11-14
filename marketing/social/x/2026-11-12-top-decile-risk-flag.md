@@ -16,6 +16,6 @@ What shipped: hotspots diff now flags a file only if it's in the top 10% of risk
 6/
 Full methodology, every cutoff table, reproduction script: https://github.com/Stephen-Collins-tech/hotspots-public-research
 Full writeup: https://stephencollins.tech/posts/hotspots-top-decile-risk-flag/
-CLI (free/OSS): https://github.com/Stephen-Collins-tech/hotspots
+CLI (free/OSS): https://hotspots.dev
 
 #devtools #opensource
