@@ -1,0 +1,106 @@
+---
+title: "Shoelace's keyboard handlers carry high activity risk — 4 functions to address first"
+titleSeo: "shoelace code health: keyboard handlers and popup positioning lead refactoring priority"
+description: "Four critical-band functions in shoelace are keyboard or positioning handlers (tree, tab group, docs search, popup), all structurally critical and none touched in 83 days."
+introContent: "Shoelace has 13 critical-band functions, and the ones I examined most closely are not being worked on right now. I found keyboard-navigation handlers in the tree and tab-group components with nesting as deep as 9 levels, both dormant for 83 days."
+pubDate: 2026-11-14
+tags: ["oss", "typescript", "refactoring", "code-health"]
+draft: true
+repo: "shoelace-style/shoelace"
+commit: "25bd8ec776609670a932f21390be59a495df497d"
+language: "typescript"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-14T10:02:49Z"
+clone_depth: 12
+topRisk: 1.66
+topFunction: "<anonymous>"
+topFile: "docs/_utilities/markdown.cjs"
+qaSection:
+  - question: "What makes the nesting depth of 9 in the tree's handleKeyDown a problem in shoelace?"
+    answer: "Nesting depth is the deepest level of nested control structures inside a function, and values of 4 or more already make code hard to reason about. The tree component's 'handleKeyDown' reaches 9, alongside a cyclomatic complexity of 28 and a fan-out of 8. Every extra level means a reader has to carry more conditions in their head to know which state they are in, and each path through the function is a case that needs a test. With key, writing direction, disabled state, leaf state, lazy loading, and expanded state all interacting, small edits are easy to get subtly wrong."
+  - question: "How do I reduce cyclomatic complexity in typescript?"
+    answer: "Use extract-method and decompose-conditional: pull each branch family into a small named function and let the original function dispatch. As a rule of thumb, I would plan a split when complexity passes 15 and treat anything near 30 as needing attention before the next change. A concrete first step for the tab group's 'handleKeyDown' (complexity 22) is a single helper that decides which key means backward or forward for the current placement and writing direction. That removes a duplicated condition family and should cut the function's paths by a meaningful fraction."
+  - question: "Is shoelace actively maintained?"
+    answer: "The data shows only one of 846 functions in the active tier, and it is a docs utility touched 3 times in the last year and changed today. The critical component handlers I analyzed were each touched twice in the last year and hadn't been changed in 83 days. That tells me this snapshot is quiet, not that the project is abandoned: I only have this one commit's view and no release or issue data. Quiet code with high structural complexity is not a contradiction; it simply means the debt is waiting for the next feature."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and analyze commit 25bd8ec. Run `git checkout 25bd8ec`, then `hotspots analyze . --mode snapshot --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. A very complex function that hasn't been touched in two years scores lower than a moderately complex one touched every week, because the dormant one has lower near-term regression risk. It is a prioritization aid, not a defect measure. In shoelace it also shows a limit: a trivial recently changed function can outrank dormant critical ones, so I read the band and tier next to the score."
+---
+
+Of the 846 functions I analyzed in shoelace, 13 sit in the critical band, and 845 of 846 are in the quiet tier, so this is quiet code rather than a live fire. The top critical functions are 'handleKeyDown' in the tree component (cyclomatic complexity 28, nesting depth 9) and in the tab group (complexity 22, nesting depth 6), plus 'reposition' in the popup component (complexity 28, fan-out 12), and none has changed in 83 days. That combination means the next push into any of them lands on dense, branch-heavy code, so I would start with the tree handler before anyone adds a feature there.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `<anonymous>` | docs/_utilities/markdown.cjs | 1.7 | 1 | — | 2 |
+| `handleKeyDown` | src/components/tree/tree.component.ts | 1.5 | 28 | 9 | 8 |
+| `handleKeyDown` | src/components/tab-group/tab-group.component.ts | 1.4 | 22 | 6 | 5 |
+| `handleKeyDown` | docs/assets/scripts/search.js | 1.3 | 13 | 2 | 12 |
+| `reposition` | src/components/popup/popup.component.ts | 1.3 | 28 | 4 | 12 |
+
+<BandChart active='1' quiet='845' />
+
+One function in the entire repository is in the active tier, and it is the lowest-risk entry in my top five: an anonymous renderer in a docs build utility. Everything that matters structurally is quiet. That changes how I read this list. I am not describing code under churn; I am describing debt that is waiting for its next change. The recurring pattern is that interactive component behavior (keyboard navigation and floating-element positioning) concentrates the branching.
+
+### `handleKeyDown` — tree.component.ts
+
+<FunctionCard fn='handleKeyDown' file='src/components/tree/tree.component.ts' risk='1.45' band='critical' cc='28' nd='9' fo='8' touches='2' />
+
+This is where I would start. It handles keyboard navigation for the tree, and the excerpt shows a long if/else-if chain keyed on the pressed key (arrows, Home, End, Enter, Space), with additional conditions layered on top for left-to-right versus right-to-left direction, disabled items, leaf nodes, lazy loading, and expanded state. Its activity-weighted risk score is 1.45, with cyclomatic complexity 28, nesting depth 9, and fan-out 8. A nesting depth of 9 is well past the point where I can hold the control flow in my head, and it is the deepest in my top five by a wide margin.
+
+<MetricBar label='Nesting Depth' value='9' threshold='4' max='12' />
+
+It was touched twice in the last year and hasn't been changed in 83 days, so it is structural debt rather than live churn. The file-level history is also quiet: no bug-linked commits, no reverts, and a single commit recorded in the enrichment data. I read that as maintainability debt, not a defect signal. The risk is forward-looking. Directional logic that branches on writing direction multiplies the test cases, and any new key binding (type-ahead, for example) has to be threaded through a function that already has 28 paths.
+
+My recommendation: split the function by key family. Extract vertical movement, horizontal expand/collapse (with the left-to-right and right-to-left mapping resolved once up front into 'expand key' and 'collapse key'), and selection into separate small methods, and let 'handleKeyDown' only dispatch. The inline helpers for focusing and toggling are already the right shape for being promoted to private methods.
+
+### `handleKeyDown` — tab-group.component.ts
+
+<FunctionCard fn='handleKeyDown' file='src/components/tab-group/tab-group.component.ts' risk='1.37' band='critical' cc='22' nd='6' fo='5' touches='2' />
+
+The tab group's handler has an activity-weighted risk score of 1.37, complexity 22, nesting depth 6, and fan-out 5. From the excerpt, it first confirms the event belongs to this tab group, handles activation keys, then computes the next tab for navigation keys. The next-tab computation branches on placement (top, bottom, start, end), writing direction, and the key, with two near-duplicate conditions for backward and forward movement that each re-derive the current index.
+
+It has the same history as the tree handler: touched twice in the last year, 83 days since last change, no bug-linked commits or reverts, one commit in the enrichment data. Because the structure is the same, I treat the two as a pair. The duplicated placement-and-direction logic is the obvious first extraction: a single helper that answers 'which key means backward for this placement and direction' would remove one branch family and make both directions symmetric. After that, the tail of the function (focusing the tab, updating tab indexes, scrolling into view) can become its own method.
+
+### `handleKeyDown` — docs/assets/scripts/search.js
+
+<FunctionCard fn='handleKeyDown' file='docs/assets/scripts/search.js' risk='1.31' band='critical' cc='13' nd='2' fo='12' touches='2' />
+
+This one is a different shape. Complexity is 13 and nesting is only 2, but fan-out is 12, so the risk comes from breadth of coupling rather than depth of branching. The excerpt shows a handler for the docs search dialog: Escape closes it, and arrow keys, Home, End, and Enter move or activate a result via a switch statement, followed by a loop that updates selection attributes on every item.
+
+It lives in the documentation site's scripts, not the component library, so I rank it below the component handlers: a regression here affects the docs experience, not consumers of the components. It is also the easiest of the group to fix. The switch is already readable; the coupling comes from mixing key handling, DOM querying, and attribute updates in one body. Extracting an 'updateSelection(nextEl)' function would cut fan-out and give the selection logic a single place to be tested. It has been quiet for 83 days with two touches in the last year.
+
+### `reposition` — popup.component.ts
+
+<FunctionCard fn='reposition' file='src/components/popup/popup.component.ts' risk='1.31' band='critical' cc='28' nd='4' fo='12' touches='2' />
+
+'reposition' in the popup component has complexity 28, nesting depth 4, and fan-out 12, with an activity-weighted risk score of 1.31. The excerpt shows it assembling an ordered list of floating-positioning middleware (offset, size sync, flip, shift, auto-size), each gated by a configuration property, with cleanup of style properties in the else branches. The code's own comment notes that middleware order matters, which is exactly the kind of implicit constraint that makes a 28-path function risky to edit. It is also quiet: 83 days since its last change, two touches in the last year.
+
+Nesting is moderate here, so the high complexity comes from many sequential optional steps rather than deep conditionals. That is a more forgiving shape for refactoring: each step can become a small builder function that returns either a middleware entry or nothing, and 'reposition' becomes an ordered composition of them. Order stays visible in one place, and each option's behavior (including its cleanup branch) can be tested alone. Popup is a foundation that other floating components likely build on, so I would add characterization tests around the current output before touching it.
+
+**`<anonymous>` — docs/_utilities/markdown.cjs**
+
+<FunctionCard fn='&lt;anonymous&gt;' file='docs/_utilities/markdown.cjs' risk='1.66' band='low' cc='1' nd='0' fo='2' touches='3' />
+
+This is the only active-tier entry and it tops the table on activity-weighted risk (1.66), but I would not spend refactoring time on it. Complexity is 1, nesting is 0, and fan-out is 2; it sits in the low band. The excerpt is a small render callback for a details block in the docs markdown pipeline, plus a replacement rule that turns issue references into GitHub links. It scores highest only because it was changed today and touched 3 times in the last year. It bears watching, nothing more. The lesson is that activity weighting can promote trivial code when it is the only thing moving, which is why I read the band alongside the score.
+
+## Where to start
+
+I would start with the tree 'handleKeyDown': it has the deepest nesting I found (9) and shares the highest complexity (28) with 'reposition'. Then the tab-group handler, because the same direction-and-placement logic is duplicated inside it and a shared helper pays off immediately. 'reposition' is third, and the search handler last, since it lives in the docs. None of these has a history of bug-linked commits or reverts in the data, so I am framing this as scheduled refactoring before the next feature lands, not incident response. One more note from the context data: 'getFormattedValue' in the color picker is also critical (complexity 19, 83 days quiet), so the dormant critical set is wider than these five.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/shoelace-style/shoelace
+cd shoelace
+git checkout 25bd8ec776609670a932f21390be59a495df497d
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
