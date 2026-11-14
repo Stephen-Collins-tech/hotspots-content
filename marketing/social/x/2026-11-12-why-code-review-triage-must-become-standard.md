@@ -1,20 +1,20 @@
 1/
-AI agents pushed code generation up 741% year over year. Teams are not shipping 741% faster. The honest number is closer to 30%. That gap isn't a rounding error — it's the entire story of where software delivery actually stands right now.
+"AI broke code review" is now a consensus take — LeadDev, Semgrep, CodeRabbit, LinearB, and a dozen dev.to posts all made this case in 2026. I'm not here to make it again.
 
 2/
-Writing code was never the slow part. Reading and judging it was. A human reviewer has a roughly fixed throughput for real scrutiny — a few hundred lines/hour. That number doesn't move because an agent wrote the diff instead of a person.
+Here's what's missing from almost all of that coverage: the numbers are usually a vendor measuring its own tool, or a repost citing a figure with no primary source. "Risk-based routing" is the right-shaped fix, but it's a sentence, not a method. Nobody shows the test.
 
 3/
-So there are two ways this goes without a process change. Teams review everything and lose the whole velocity gain to the backlog. Or review quietly turns into skimming — nobody decides that on purpose, it just happens diff by diff until nothing gets real scrutiny anymore.
+So instead of another "review is broken" post, here's one specific, falsifiable rule I actually tested: a file in the riskiest 10% of its own diff is more likely to need a later fix.
 
 4/
-The second mode is the dangerous one — it doesn't announce itself. The LGTM still gets typed. What stops happening is the part where a human actually understood what they approved. Risk accumulates silently until something expensive forces the issue.
+Pre-registered the bar before running it. The raw score failed as an absolute probability (0.515 vs. an 0.8 bar) — reported that too. The narrower top-decile claim survived four attempts to break it, then replicated 6-7x on five repos the method had never seen.
 
 5/
-The fix isn't "review harder." It's aimed review — ranking which changes actually need the slow, careful read instead of treating every line the same. That's a structural necessity now that code volume has decoupled from review capacity, not a nice-to-have.
+Full methodology + a script to rerun it on any repo: public, not a vendor claim you have to take on faith. That's the actual gap in this space right now — not "is review the bottleneck" (settled), but "which triage claims can you check yourself."
 
 6/
-Full argument, and the evidence-backed tool built around this (free, OSS, every claim reproducible): https://stephencollins.tech/posts/why-code-review-triage-must-become-standard/
+Post + the reproducible result: https://stephencollins.tech/posts/why-code-review-triage-must-become-standard/
 https://hotspots.dev
 
 #devtools #ai

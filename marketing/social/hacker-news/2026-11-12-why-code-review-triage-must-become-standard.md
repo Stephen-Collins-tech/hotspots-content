@@ -1,22 +1,25 @@
-Title (71 chars): Code review is the bottleneck now, and we aren't treating it like one
+Title (65 chars): Everyone agrees AI broke code review. Who's shown their math?
 URL: https://stephencollins.tech/posts/why-code-review-triage-must-become-standard/
 
 ---
 FIRST COMMENT (post within a few minutes of submitting, not instantly):
 
-Author here. The framing I'm reacting to is Laurie Voss's talk at AIE CODE: AI
-agents pushed generated code volume up 741% year over year, but end-to-end
-delivery speed only went up about 30%. The gap is review — human review
-throughput is roughly fixed (a few hundred lines/hour of real scrutiny), and
-it doesn't move just because an agent wrote the diff.
+Author here. "AI broke code review" isn't a hot take anymore — LeadDev,
+Semgrep, CodeRabbit, LinearB, and a long shelf of dev.to posts all made this
+case in 2026. I'm not trying to make it again.
 
-My argument is that this forces one of two failure modes if nothing changes:
-teams either try to review everything and eat the whole velocity gain, or
-review quietly turns into skimming and risk accumulates invisibly. The fix
-isn't "review harder," it's aimed review — ranking which changes actually
-need the slow read. That's the whole premise behind the tool I maintain
-(hotspots, free/OSS), and I'd rather argue for the practice in general than
-just pitch the tool: https://hotspots.dev
+What I kept noticing reading that coverage: the defect/review-time numbers
+are almost always a vendor measuring its own tool, or a secondary post
+citing a figure with no primary source attached. The proposed fix
+("risk-based routing," "AI pre-triage") is the right shape, but it's a
+sentence, not a method — nobody shows the test that the rule actually
+predicts anything.
 
-Curious whether others are seeing the 30%-not-741% gap play out the same way
-on their own teams.
+So this post is about one specific, falsifiable rule I tested instead of
+asserted: a file in the riskiest 10% of its own diff turned out to be 6-7x
+more likely to need a later fix — pre-registered bar, replicated on five
+repos the method had never seen. Methodology and a reproduction script are
+public (hotspots-public-research). The tool is free/OSS: https://hotspots.dev
+
+Genuinely curious if anyone's tried to break a risk-ranking claim like this
+on their own repo — where does it fail for you?
