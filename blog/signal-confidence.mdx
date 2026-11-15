@@ -1,0 +1,44 @@
+---
+title: "A Risk Score Needs a Confidence Interval, Not Just a Number"
+category: product-releases
+description: "hotspots v3.8.0 adds signal_confidence to the JSON output — a repo-level label that tells you whether this specific repo's risk ranking has historically been more or less reliable, alongside the raw commit-hygiene rate it's derived from so nobody has to take the label on faith."
+pubDate: 2026-11-15
+author: "Stephen Collins"
+tags:
+  - "editorial"
+  - "hotspots"
+  - "release"
+draft: false
+introContent: "Every repo I analyze gets a file_risk_score with the same implied confidence, whether it's a disciplined monorepo with a decade of clean commit history or a scrappy young project where half the commits just say 'fix'. That always bothered me a little. v3.8.0 is the first attempt at fixing it."
+qaSection:
+  - question: "What is signal_confidence, exactly?"
+    answer: "A new field in the JSON summary output, \"low\" or \"high\", shipped next to file_risk_score and friends. It doesn't change any score, band, or ranking — it's a separate, descriptive label answering a different question: for this specific repo, how much should you lean on the authorship-based signals in the ranking? It's computed from conventional_prefix_rate, the fraction of a repo's last 500 commits with a Conventional-Commits-style subject line (feat:, fix(scope)!:, and so on), which ships in the same output so the label is never a black box."
+  - question: "Why commit-message hygiene, of all things?"
+    answer: "Because in my evaluation it turned out to correlate with something real: repos with more disciplined commit conventions tend to have more reliable authorship-concentration signals — the pattern where files touched by a small, consistent group of people predict future fixes better than files with scattered, inconsistent ownership. It's not a strong individual predictor. It's a population-level pattern, real on average across a lot of repos, with at least one repo in my evaluation sample sitting in the \"low\" tier by commit convention while still having one of the most reliable authorship signals I measured. Read it as a hint, not a certification."
+  - question: "Why not just silently fold this into file_risk_score?"
+    answer: "Because I tried that first, repeatedly, and it didn't work. Every attempt I made to use a repo characteristic like this one to actually move a ranking — blend it into the score, gate a signal's weight by it — failed to clear a noise floor on a fairly-designed sample. The thing that does work is much simpler: don't touch the ranking, just tell the user something true about how much to trust it. That's a lower, easier bar to clear, and it's the one this field actually clears."
+  - question: "Does this ever get stale?"
+    answer: "No — it's recomputed from the last 500 commits on every single analyze run, never cached. I checked this specifically, because commit conventions aren't a fixed property of a repo; they're something a team adopts partway through a project's life, and a cached full-history value would misdescribe current practice on exactly the repos where it matters most."
+---
+
+I keep a mental list of things that are technically correct and still misleading, and "a number with no error bar" has been near the top of it for a while. `file_risk_score` is a good example from my own tool: it's the same kind of number whether I'm pointing it at a huge, disciplined repo with years of consistent process, or a scrappy weekend project three months old. Nothing about the output tells you which situation you're in.
+
+## The gap
+
+Hotspots' ranking leans partly on authorship patterns — files touched by a small, consistent set of people tend to predict future fixes differently than files with scattered, rotating ownership. That signal is real, but how well it works turns out to depend on the repo. A team that writes disciplined, Conventional-Commits-style messages tends to have other disciplined habits too, and in my evaluation, repos like that had a measurably more reliable version of this signal than repos without that habit. A team with messy, inconsistent commit history isn't doing anything wrong, necessarily — but the signal built on top of that history is, on average, a little less trustworthy there.
+
+Up until v3.8.0, hotspots had no way to say any of that. Every repo got the same score with the same implied confidence.
+
+## What v3.8.0 actually adds
+
+Two new fields in the JSON `summary` output: `signal_confidence` (`"low"` or `"high"`), and `conventional_prefix_rate`, the raw number the label came from. I shipped them together on purpose. A label with no underlying number is something you have to take on faith; a label with the number right next to it is something you can check yourself — run `git log HEAD -n 500 --format=%s` on your own repo, count the lines that look like `feat:` or `fix(scope)!:`, and you've reproduced the exact rate hotspots used.
+
+Neither field touches `file_risk_score`, any band, or any ranking order. That was a deliberate constraint, not an oversight — it's also the thing that makes this field different from several ideas I tried and abandoned before landing on it. I spent real effort trying to use commit-message hygiene (and a few related repo characteristics) to directly adjust the ranking — blend it into the score, gate a signal's weight by it. None of it moved a ranking by more than noise, on any sample I could construct fairly. What finally worked was giving up on changing the ranking at all, and just telling the user something true about how reliable it's likely to be. That's a much easier bar, and it's the one `signal_confidence` actually clears.
+
+It's also deliberately non-sticky: recomputed fresh from the last 500 commits every single time you run `analyze`, never cached. Commit conventions are something a team picks up partway through a project, not a fixed trait — a stale cached value would be most wrong exactly on the repos where this matters most.
+
+## How to read it
+
+`"high"` means: lean on this repo's ranking a bit more than you might otherwise. `"low"` means: treat it as a rougher hint, and maybe look a little harder at files the ranking doesn't flag. Either way, it's a population-level calibration, not a certified accuracy rating for your specific repo — I found at least one repo in my own evaluation sample that landed in the "low" tier by commit convention while still having one of the most reliable authorship signals I measured anywhere. The label is a nudge in the right direction on average, not a guarantee for any one case.
+
+hotspots v3.8.0 is on npm, PyPI, crates.io, and Homebrew now.
