@@ -1,0 +1,114 @@
+---
+title: "Druid's MySQL parser carries the highest activity risk — 5 functions to address first"
+titleSeo: "alibaba/druid code health: MySqlStatementParser leads refactoring priority"
+description: "All five top-ranked hotspots in alibaba/druid sit in one file, MySqlStatementParser.java, with cyclomatic complexity up to 250 and fan-out up to 245, and every one was changed today."
+introContent: "Every one of the top five hotspots in alibaba/druid lives in a single file: MySqlStatementParser.java. The module is both structurally dense and being edited right now, which makes it a strong candidate for early attention."
+pubDate: 2026-11-17
+tags: ["oss", "java", "refactoring", "code-health"]
+draft: false
+repo: "alibaba/druid"
+commit: "fa8dc9912637a2f729eef9f55356621fec18d40e"
+language: "java"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-17T11:48:06Z"
+clone_depth: 62
+topRisk: 2.39
+topFunction: "parseInsert"
+topFile: "core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java"
+qaSection:
+  - question: "What makes the cyclomatic complexity of parseShow a problem in druid?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a potential bug surface and a required test case. A value around 10 is moderate and 30 or more is high; `parseShow` in `MySqlStatementParser.java` has a value of 250, which is extreme. It also calls 245 distinct functions, so a change to almost any helper it relies on can alter its behavior. At that size, it is very difficult to test every path or to reason about what a small edit will affect."
+  - question: "How do I reduce cyclomatic complexity in java?"
+    answer: "The main technique is extract-method, often paired with decompose-conditional or a dispatch table. A function above 15 paths deserves splitting, and above 30 deserves immediate attention. A concrete first step for `parseShow` is to move each SHOW variant, such as processlist or columns, into its own method and leave the original as a router that checks the next token and delegates. That alone can cut the top-level function's path count by well over half, and each extracted method becomes independently testable."
+  - question: "Is druid actively maintained?"
+    answer: "The data points to active development. All five top hotspots are in the active tier, each with 5 touches in the last year and 0 days since last change, and across the repo 11,719 of 27,484 functions are in the active tier. The file-level history for `MySqlStatementParser.java` shows a bug-fix rate of 80% over 5 commits, a small sample that I would not over-read. Active development and high structural debt are not mutually exclusive, and this analysis shows both."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the analyzed commit, `fa8dc99`, in a local clone of alibaba/druid. Then run `hotspots analyze . --mode snapshot --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. In general, a dormant function carries less near-term regression risk than one that is touched often. This helps teams focus refactoring effort where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+All five of the top hotspots in alibaba/druid live in one file, `MySqlStatementParser.java`, and every one of them is in the active tier with 0 days since last change and 5 touches in the last year. That concentration makes this a module-level problem, not a single-function one. The top entry, `parseInsert`, has an activity-weighted risk score of 2.39, and `parseShow` has a cyclomatic complexity of 250 with a fan-out of 245. Druid is a Java SQL parsing and database connection library. I analyzed 27,484 functions, 797 of them in the critical band, and the five worst active ones all share one file. I would start with the file as a unit, then work through the functions in the order below.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `parseInsert` | core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java | 2.4 | 44 | 7 | 101 |
+| `parseStatementListDialect` | core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java | 2.3 | 112 | 5 | 170 |
+| `parseCreateDatabase` | core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java | 2.3 | 42 | 5 | 63 |
+| `parseShow` | core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java | 2.3 | 250 | 4 | 245 |
+| `parseCreateMaterializedViewRest` | core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java | 2.2 | 17 | 5 | 56 |
+
+<BandChart active='11719' quiet='15765' />
+
+Across the repo, 11,719 functions sit in the active tier and 15,765 in the quiet tier. The five functions I am looking at are all active, and they are all in the same file, so the live-regression argument applies to the file as a whole. Each of them was touched 5 times in the last year and changed 0 days ago. The file-level history is identical across all five entries: a bug-fix rate of 80% across 5 commits, no commits linked to bugs, no reverts, and a review-comment density of 0.2. Those are file-level numbers, so they describe `MySqlStatementParser.java` and not any one function. They are supporting context, not evidence that any particular function is defective. A bug-fix rate of 80% over only 5 commits is a small sample, and I would not over-read it.
+
+There is one more thing worth saying about the file's shape. These are parser methods, and parsers tend to grow by accumulating one more keyword, one more clause, one more dialect variant. The metrics below are consistent with that: long chains of conditional checks on the next token, with very wide fan-out into helper and AST-node constructors. That shape is cheap to extend and expensive to review.
+
+### `parseInsert` — MySqlStatementParser.java
+
+<FunctionCard fn='parseInsert' file='core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java' risk='2.39' band='critical' cc='44' nd='7' fo='101' touches='5' />
+
+I would start with `parseInsert` because it has the highest activity-weighted risk score in the repo at 2.39, and it is active: 5 touches in the last year and 0 days since last change. It parses MySQL INSERT statements. From the excerpt, the opening section is a loop that checks for modifier keywords such as LOW_PRIORITY, DELAYED, HIGH_PRIORITY, IGNORE and ROLLBACK_ON_FAIL, followed by a sequence of independent optional-clause checks for hints, INTO, OVERWRITE, TABLE, line comments and FULLTEXT before it reads the table name. Every one of those is a separate branch, which is how the function reaches a cyclomatic complexity of 44 and a nesting depth of 7.
+
+<MetricBar label='Fan-out' value='101' threshold='15' max='250' />
+
+The fan-out of 101 is the number I would pay attention to. A change to any token-handling helper or AST setter could ripple into this function. A concrete first step: extract the modifier loop into something like `parseInsertModifiers` and the INTO/OVERWRITE/TABLE preamble into its own method. That removes the deepest nesting and gives each piece its own focused test cases. A nesting depth of 7 is already past the point where I consider it a strong refactoring signal.
+
+### `parseStatementListDialect` — MySqlStatementParser.java
+
+<FunctionCard fn='parseStatementListDialect' file='core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java' risk='2.33' band='critical' cc='112' nd='5' fo='170' touches='5' />
+
+`parseStatementListDialect` has an activity-weighted risk score of 2.33, a cyclomatic complexity of 112 and a fan-out of 170. The excerpt shows it behaving as a statement dispatcher: a long run of checks for PREPARE, DEALLOCATE, LOAD, REPLACE, START, SHOW, CLEAR and DISABLED, each delegating to a dedicated parse method and returning true. Some branches, like the CLEAR DDL CACHE path, carry inline parsing logic that includes a loop over job ids and its own error handling, so the dispatcher is also doing parsing work.
+
+<MetricBar label='Cyclomatic Complexity' value='112' threshold='30' max='250' />
+
+My recommendation is to separate dispatch from parsing. Move the inline branches, starting with the CLEAR DDL handling, into their own methods so the top-level function becomes a flat sequence of keyword checks. A table or map from leading keyword to handler would shrink the path count further, though that is a larger change and I would do the extract-method pass first. Because the function returns a boolean to signal whether it handled the statement, every branch is also a return path that needs a test.
+
+### `parseCreateDatabase` — MySqlStatementParser.java
+
+<FunctionCard fn='parseCreateDatabase' file='core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java' risk='2.3' band='critical' cc='42' nd='5' fo='63' touches='5' />
+
+`parseCreateDatabase` has an activity-weighted risk score of 2.3, a cyclomatic complexity of 42, a nesting depth of 5 and a fan-out of 63. The excerpt shows two separate blocks that inspect hint comments by splitting the text on whitespace and matching words: one looks for a trailing IF NOT EXISTS, the other walks the words looking for CHARACTER SET and COLLATE. Then a later loop handles the same options again as ordinary tokens (CHARACTER, CHARSET and so on).
+
+That duplication is the most useful finding here. The same logical options, character set and collation, are recognized through at least two different mechanisms: version-comment hints and regular tokens. That is a reasonable thing to support, since MySQL dumps use versioned comments, but it means a fix to how character set is parsed has to be applied in more than one place. I would extract the hint-comment parsing into a helper that returns the options it found, and keep the token-based loop as the single place that applies them to the statement. That removes the deepest nesting and the repeated word-matching logic.
+
+### `parseShow` — MySqlStatementParser.java
+
+<FunctionCard fn='parseShow' file='core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java' risk='2.29' band='critical' cc='250' nd='4' fo='245' touches='5' />
+
+`parseShow` is the most extreme function in this set by raw structure: a cyclomatic complexity of 250 and a fan-out of 245, with an activity-weighted risk score of 2.29. A cyclomatic complexity of 250 or more is what I would call extreme, and this is two and a half times that. The nesting depth is only 4, so the function is wide, not deep. The excerpt shows a long series of sequential checks after the SHOW keyword: PHYSICAL, FULL, STATS, PROCESSLIST, COLUMNS and FIELDS, and presumably many more SHOW variants beyond the part I can see. Each variant has its own optional WHERE, ORDER and LIMIT handling.
+
+<MetricBar label='Cyclomatic Complexity' value='250' threshold='30' max='250' />
+
+One thing I noticed in the excerpt is that the check for the COLUMNS identifier appears twice in sequence, once combined with FIELDS and once alone. I cannot see the rest of the function, so I will not claim that second check is unreachable, but it is a reasonable thing to verify during review. The refactoring is straightforward in shape: each SHOW variant becomes its own method, and `parseShow` becomes a thin router. Because this function has 5 touches in the last year and each new SHOW variant adds branches, I would do this before the next SHOW-related feature lands, not after.
+
+### `parseCreateMaterializedViewRest` — MySqlStatementParser.java
+
+<FunctionCard fn='parseCreateMaterializedViewRest' file='core/src/main/java/com/alibaba/druid/sql/dialect/mysql/parser/MySqlStatementParser.java' risk='2.24' band='critical' cc='17' nd='5' fo='56' touches='5' />
+
+`parseCreateMaterializedViewRest` is the smallest of the five by cyclomatic complexity at 17, but its nesting depth of 5 and fan-out of 56 are still high, and it carries an activity-weighted risk score of 2.24. It overrides a base-class method, as the annotation in the excerpt shows. The body is a loop over table element definitions inside parentheses: CLUSTERED keys and indexes, plain columns, constraints (primary, unique, check, foreign), regular indexes and keys, and a lookahead that uses a saved lexer position to decide whether a KEY token starts a column or an index.
+
+The save-and-reset lookahead is the part I would be most careful with, since it makes the control flow depend on lexer state that is restored manually. Because this is an override, its effective coupling extends into the base class and any other dialect that overrides the same hook, which static fan-out does not capture. Much of this element-list parsing looks similar to what a CREATE TABLE parser would need, so I would check whether it can share an element-parsing helper with the table path instead of maintaining a parallel copy. That is a hypothesis from the structure, not something I can confirm without the rest of the file.
+
+## Where to start
+
+I would treat `MySqlStatementParser.java` as one refactoring project with an order of attack. First, `parseShow` and `parseStatementListDialect`, because their cyclomatic complexity of 250 and 112 make them the largest test-coverage gaps and the most likely places for a new branch to cause a surprise. Second, `parseInsert`, because it has the highest activity-weighted risk score and the deepest nesting. Third, `parseCreateDatabase` and `parseCreateMaterializedViewRest`, where the wins are removing duplicated hint handling and sharing element parsing.
+
+The five functions above are both complex and changing today, which is why I would start with them.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/alibaba/druid
+cd druid
+git checkout fa8dc9912637a2f729eef9f55356621fec18d40e
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
