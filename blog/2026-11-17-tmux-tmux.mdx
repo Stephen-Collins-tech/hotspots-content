@@ -1,0 +1,126 @@
+---
+title: "tmux's format and input paths carry the highest activity risk — 5 functions first"
+titleSeo: "tmux code health: format.c and server-client.c lead refactoring priority"
+description: "Five critical-band functions across format.c, screen-redraw.c, and server-client.c are both structurally complex and changed within the last day, with format_replace reaching a cyclomatic complexity of 190."
+introContent: "Five of tmux's most complex functions were modified on the day of the analysis, and one of them, format_replace, has a cyclomatic complexity of 190. If you are shipping a change to format strings, mouse handling, or redraw this week, you are working in the riskiest code in the repo."
+pubDate: 2026-11-17
+tags: ["oss", "c", "refactoring", "code-health"]
+draft: true
+repo: "tmux/tmux"
+commit: "49ef4397d1a4dd7c2aa9d894f5eb91da381d032d"
+language: "c"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-17T11:41:16Z"
+clone_depth: 1997
+topRisk: 3.64
+topFunction: "format_replace"
+topFile: "format.c"
+qaSection:
+  - question: "What makes the cyclomatic complexity of format_replace a problem in tmux?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and a value above 30 is generally treated as high. `format_replace` in format.c has a value of 190, so a single function has roughly 190 paths, each of which is a potential bug surface and a case a thorough test suite would need to cover. The function was touched 108 times in the last year and last changed 0 days ago, so that complexity is in code that is being edited continuously. A reader changing one modifier has to reason about how it interacts with the shared local state used by all the others."
+  - question: "How do I reduce cyclomatic complexity in c?"
+    answer: "The main technique is extract-method combined with decompose-conditional: pull each branch family into a named helper and pass shared state through a small struct. A function above a cyclomatic complexity of 15 deserves a split, and one above 30 deserves attention right away. For `format_replace`, a first step you can take today is moving the modifier-collection loop into a helper that returns a populated options struct, and then extracting the substitution and truncation modifiers into their own functions. That alone should remove a large share of the branches from the main function and make each piece testable on its own."
+  - question: "Is tmux actively maintained?"
+    answer: "The data says yes. All five top hotspots are active-tier, and each was last changed 0 days before the analysis. `server_client_check_mouse` and `server_client_handle_key0` were each touched 110 times in the last year, `format_replace` and `format_find` 108 times, and `redraw_draw` 91 times. Across the repo, 2,301 of 3,311 functions are in the active tier. Active development and high structural debt are not mutually exclusive, and this analysis shows both: the most-changed code is also the most complex."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from its GitHub repository and check out commit 49ef439 of tmux/tmux. Then run `hotspots analyze . --mode snapshot --force` from the repo root. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. In this analysis the window-customize.c functions illustrate the point: `window_customize_draw_option` has a cyclomatic complexity of 83 but scores 2.1, while the top five score between 3.58 and 3.64 because they were all changed within the last day. The score helps focus refactoring effort where it reduces the chance of introducing a bug right now."
+---
+
+Five functions in tmux sit in the critical band, and all five were last changed 0 days before the analysis, so this is live regression risk rather than a backlog item. The top two share an activity-weighted risk score of 3.64: `format_replace` in format.c (cyclomatic complexity 190, 108 touches in the last year) and `redraw_draw` in screen-redraw.c (91 touches in the last year). tmux is a terminal multiplexer written in C; I analyzed 3,311 functions at commit 49ef439 and 594 of them landed in the critical band. If you are changing format expansion, mouse input, key handling, or redraw logic this week, I would start with these five functions before anything else.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `format_replace` | format.c | 3.6 | 190 | 4 | 51 |
+| `redraw_draw` | screen-redraw.c | 3.6 | 48 | 3 | 30 |
+| `server_client_check_mouse` | server-client.c | 3.6 | 107 | 4 | 26 |
+| `server_client_handle_key0` | server-client.c | 3.6 | 48 | 4 | 18 |
+| `format_find` | format.c | 3.6 | 43 | 4 | 24 |
+
+The numbers below come from a snapshot at commit 49ef439. Of 3,311 functions, 2,301 are in the active tier and 1,010 are in the quiet tier, so most of tmux falls in the active tier by this metric.
+
+<BandChart active='2301' quiet='1010' />
+
+All five hotspots are active-tier and critical-band, and all five were changed on the day of the analysis. Three files hold them: format.c holds two, server-client.c holds two, and screen-redraw.c holds one. That concentration matters because a change to one function in a file is likely to land near another high-risk function in the same file.
+
+### `format_replace` — format.c
+
+<FunctionCard fn='format_replace' file='format.c' risk='3.64' band='active' cc='190' nd='4' fo='51' touches='108' />
+
+I would start with `format_replace` because it has a cyclomatic complexity of 190, a fan-out of 51, and 108 touches in the last year, with the latest change 0 days ago. A complexity of 190 means roughly 190 independent paths, and each one is a potential bug surface and a case you would want covered by a test.
+
+<MetricBar label='Cyclomatic Complexity' value='190' threshold='30' max='200' />
+
+From the excerpt, the function copies the key, builds a list of modifiers, and then walks that list with a switch on the modifier character. The visible cases handle comparison, negation, search, substitution, truncation limits, and padding width. Each modifier adds a branch, and the combinations interact through shared local state: the function declares well over twenty local variables up front, including sort criteria, loop flags, and several modifier pointers. That shape, a long modifier-dispatch switch feeding shared state, is what drives the complexity count rather than deep nesting. The nesting depth is only 4.
+
+The file-level history adds context. format.c has 192 total commits, a bug-fix rate of about 17%, and 3 reverts. Zero commits are explicitly linked to bugs in the enrichment data, so I would not read this as a defect record. Three reverts on a file that is touched this often are still a reason to give changes here more review attention. The file also has 4 distinct authors in the last 90 days and a review-comment density of 0.75, so more than one person is changing it.
+
+My recommendation is to extract each modifier family into its own helper that takes the shared state as a small parameter struct. The comparison, substitution, truncation and padding modifiers look like natural first candidates. Moving the modifier-collection loop into a function that returns a populated options struct would cut the main function's branch count substantially and let the individual modifiers be tested without building a full format tree.
+
+### `redraw_draw` — screen-redraw.c
+
+<FunctionCard fn='redraw_draw' file='screen-redraw.c' risk='3.64' band='active' cc='48' nd='3' fo='30' touches='91' />
+
+`redraw_draw` ties `format_replace` on activity-weighted risk at 3.64, with a cyclomatic complexity of 48, a fan-out of 30, and 91 touches in the last year. It was last changed 0 days ago. The fan-out of 30 is the figure I would focus on, because it means a change here can interact with status handling, side status, pane borders, pane status, menus, and logging.
+
+The excerpt shows the function working through a sequence of flag-gated stages: status line, side status, pane border and pane status resets, and per-pane status construction. Each stage tests redraw flags and can return early, which is why the branch count is high while nesting stays at 3. Multiple early returns are also a test-coverage burden, since each exit path needs its own case.
+
+The file has 137 total commits and a bug-fix rate of about 23%, with no reverts and no explicitly bug-linked commits. The review-comment density is 2.0, the highest of the five, which suggests changes here draw more discussion than elsewhere. There are 3 distinct authors in the last 90 days.
+
+My recommendation is to split the function along its existing stage boundaries: one helper for status and side-status decisions, one for resetting border state, one for building pane status. The flag-masking logic that decides whether to return early is repeated between the status and side-status blocks and could become a single helper.
+
+**`server_client_check_mouse` and `server_client_handle_key0` — server-client.c**
+
+This function and `server_client_handle_key0` share a file and a history, so I am treating them together. The file has 194 total commits, a bug-fix rate of about 28% (the highest of the three files in this analysis), no reverts, and 4 distinct authors in the last 90 days. Both functions were touched 110 times in the last year and were last changed 0 days ago.
+
+<FunctionCard fn='server_client_check_mouse' file='server-client.c' risk='3.62' band='active' cc='107' nd='4' fo='26' touches='110' />
+
+`server_client_check_mouse` has a cyclomatic complexity of 107. The excerpt shows a long else-if chain that classifies the event as double-click, move, drag, wheel, release, or ordinary click, then handles second and triple click through client flags and a timer. Much of the complexity comes from this classification step, with a compound condition on SGR mouse state in one of the branches. After classification, the function goes on to work out where the click landed and which pane or status range it hit. An event classifier and a hit-tester are two jobs in one function.
+
+My recommendation is to pull the event-type classification into its own function that returns the type and the coordinates, and leave hit-testing as a second function. The classifier has a clean input (the mouse event and client state) and a clean output, which makes it the easiest piece to test in isolation.
+
+<FunctionCard fn='server_client_handle_key0' file='server-client.c' risk='3.58' band='active' cc='48' nd='4' fo='18' touches='110' />
+
+`server_client_handle_key0` has a cyclomatic complexity of 48 and a fan-out of 18. The excerpt shows a sequence of guard checks with early returns: consumed keys, unattached clients, theme-report keys, then a block of special cases for dead panes, modal cancel keys, panes capturing all keys, menus, and the command prompt. The comment in the code says these cases must be processed immediately rather than queued, which explains why they are all in one place, and also why reordering them is risky.
+
+The function calls `server_client_check_mouse` for mouse keys inside the capture-all-keys branch, so the two hotspots are coupled directly. A change to the mouse function's return contract, such as its handling of an unknown key, flows straight into this function. I would treat them as one review unit.
+
+My recommendation is to move the special-case block into a dedicated function that returns whether the key was handled. That keeps the early-return ordering intact in one place and shrinks the main function's branch count without changing behavior.
+
+### `format_find` — format.c
+
+<FunctionCard fn='format_find' file='format.c' risk='3.58' band='active' cc='43' nd='4' fo='24' touches='108' />
+
+`format_find` has a cyclomatic complexity of 43, a fan-out of 24, and 108 touches in the last year, with the latest change 0 days ago. It sits in the same file as `format_replace`, so the history is the same: 192 total commits, 3 reverts, and a bug-fix rate of about 17%.
+
+The excerpt shows a lookup that tries several sources in order: options at global, pane, window, and session scope, then a format table, then a per-tree entry lookup, then session and global environment. The long run of option lookups is repeated checks with the same shape, and the function uses goto to jump to a shared exit that handles time-string conversion. I read this as a precedence chain, where the order of sources defines behavior, so reordering or adding a source changes what users see.
+
+My recommendation is to turn the option-scope lookups into a small loop over an ordered list of option sets, and move the time-string conversion at the shared exit into its own helper. That would remove several of the repeated branches and make the source precedence visible in one table instead of scattered across if statements.
+
+**Context: quiet debt in window-customize.c**
+
+The next group of critical functions is not in the top five, but I want to flag it for contrast. Five functions in window-customize.c are quiet-tier with 23 touches in the last year and 33 days since last change. Their activity-weighted risk scores are around 2.0, well below the 3.6 range of the top five. This is structural debt with a high blast radius when next touched, and it is overdue for refactoring, but nothing in the data says it is changing now.
+
+## Where to start
+
+If I had one week, I would spend it in this order. First, `server_client_check_mouse` and `server_client_handle_key0` together, since they are coupled and share the file with the highest bug-fix rate of the three. Second, `format_replace`, because its cyclomatic complexity of 190 makes it the most expensive function in the repo to reason about. Third, `format_find` alongside it, since the two share a file and a revert history. `redraw_draw` is the lowest-complexity of the five, but its fan-out of 30 and review-comment density of 2.0 mean it deserves a look before the next redraw change.
+
+None of this says the code is defective. It says these functions are hard to read and are being changed continuously, which is the condition under which a small edit is most likely to have an unintended effect.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/tmux/tmux
+cd tmux
+git checkout 49ef4397d1a4dd7c2aa9d894f5eb91da381d032d
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
