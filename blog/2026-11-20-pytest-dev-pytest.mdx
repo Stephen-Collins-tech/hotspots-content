@@ -1,0 +1,112 @@
+---
+title: "pytest's fixture machinery carries the highest activity risk in 5 functions"
+titleSeo: "pytest code health: fixtures.py concentrates the top refactoring priorities"
+description: "All five of pytest's highest-risk functions live in src/_pytest/fixtures.py, a file touched 51 times in the last year and changed 2 days before the analyzed commit."
+introContent: "Every one of pytest's top five risk hotspots sits in a single file, fixtures.py, and it was modified two days before the analyzed commit. That concentration matters more than any individual function score."
+pubDate: 2026-11-20
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "pytest-dev/pytest"
+commit: "9efd0121a4396da80c20d7c3b7844825966612f6"
+language: "python"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-20T11:15:38Z"
+clone_depth: 871
+topRisk: 3.38
+topFunction: "reorder_items_atscope"
+topFile: "src/_pytest/fixtures.py"
+qaSection:
+  - question: "What makes the nesting depth of reorder_items_atscope a problem in pytest?"
+    answer: "Nesting depth is the deepest level of control structures stacked inside one another, and a depth of 4 or more makes code hard to reason about. `reorder_items_atscope` reaches 7, with loops inside loops inside a branch that special-cases PyPy. To predict what a change does, you have to track the state of a queue, an ignore set, and several ordered dictionaries across all of those levels at once. It also calls itself recursively on a lower scope, which adds another layer of state to follow. Combined with cyclomatic complexity 18 and fan-out 19, that makes it hard to test in isolation."
+  - question: "How do I reduce nesting depth and cyclomatic complexity in python?"
+    answer: "The main technique is extract-method, often paired with guard clauses to flatten conditionals. A cyclomatic complexity above 15 warrants splitting the function, and above 30 warrants immediate attention; nesting depth above 4 is a signal to restructure. A concrete first step in `reorder_items_atscope` is to pull the innermost block that rewrites per-argument-key ordering, including the PyPy workaround, into its own helper. That removes several levels of nesting in one move and gives the interpreter-specific code a single place to live and be tested."
+  - question: "Is pytest actively maintained?"
+    answer: "The data points to yes. All five top functions are in the active tier, and the file they share has 51 touches in the last year, 59 total commits, and a last change 2 days before the analyzed commit. Five distinct authors contributed in the last 90 days. Across the repo, 1,500 of 2,714 functions are in active files. Active development and structural complexity coexist here: the same file that is being worked on constantly also holds the highest-risk functions. The quiet-tier hotspots tell a different story: `determine_setup`, `locate_config`, and `get_common_ancestor` have 7 touches in the last year and 73 days since their last change, and `_compare_eq_cls` has 10 touches and 114 days, so they are structural debt rather than live churn."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit 9efd012 of pytest-dev/pytest. Then run `hotspots analyze . --mode snapshot --force`. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the file has changed. Functions that are both hard to understand and in changing code score highest. A very complex function that hasn't been touched in two years scores lower than a moderately complex one that changes weekly, because the dormant one has less near-term regression risk. That ordering points refactoring effort at the places where it most reduces the chance of introducing bugs right now, not just where code looks complicated in the abstract."
+---
+
+All five of the highest-risk functions in pytest live in `src/_pytest/fixtures.py`, which makes the module, not any single function, the real hotspot. The top function, `reorder_items_atscope`, has an activity-weighted risk score of 3.38 and sits in active code: 51 touches in the last year and a last change 2 days before commit 9efd012. pytest is a Python testing framework; this analysis covers 2,714 functions, 145 of them in the critical band, and I would start with this file before anything else.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `reorder_items_atscope` | src/_pytest/fixtures.py | 3.4 | 18 | 7 | 19 |
+| `_get_active_fixturedef` | src/_pytest/fixtures.py | 3.2 | 14 | 2 | 15 |
+| `formatrepr` | src/_pytest/fixtures.py | 3.2 | 12 | 4 | 17 |
+| `pytest_generate_tests` | src/_pytest/fixtures.py | 3.1 | 9 | 3 | 7 |
+| `execute` | src/_pytest/fixtures.py | 3.1 | 8 | 3 | 12 |
+
+<BandChart active='1500' quiet='1214' />
+
+The tier split is close to even: 1,500 functions sit in active files and 1,214 in quiet ones. The top five all land in the active group, and they all share the same file-level history. Each of them reports 51 touches in the last year, 59 total commits on the file, a bug-fix rate of 81%, one revert, 5 distinct authors in the last 90 days, and a pull-request review comment density of 11. Those are file-level signals, so they describe `fixtures.py` as a whole and cannot be attributed to any one function. They do not show that any of these functions is defective. They do say this file has attracted a lot of corrective work, with an unusually high share of its commits being bug fixes, and that is the context I would hold while reading the per-function numbers.
+
+A note on the signals: the count of commits explicitly linked to bugs is zero for this file, so the 81% bug-fix rate comes from commit classification, not from linked issues. I would treat that as a strong prompt to review, not as proof of anything.
+
+### `reorder_items_atscope` — fixtures.py
+
+<FunctionCard fn='reorder_items_atscope' file='src/_pytest/fixtures.py' risk='3.38' band='critical' cc='18' nd='7' fo='19' touches='51' />
+
+I would start with `reorder_items_atscope` because it combines the deepest nesting in the top five with the widest fan-out, and it lives in code that changed 2 days ago. Its activity-weighted risk score is 3.38, the highest in this top five. Cyclomatic complexity is 18, nesting depth is 7, and it calls 19 distinct functions.
+
+<MetricBar label='Nesting Depth' value='7' threshold='4' max='10' />
+
+From the source, this function reorders test items so that those sharing parametrized fixture arguments at a given scope run together. The structure is a nested loop pair driving a double-ended queue, with an inner loop that walks matching items, then iterates over higher scopes, then over argument keys, and finally branches on whether the interpreter is PyPy. That PyPy branch is a workaround for an interpreter-specific bug, referenced by issue links in a comment. It also calls itself recursively with the next lower scope. Recursion plus a queue that is mutated while being consumed means you have to track loop state, queue contents, and an ignore set at once to know what a change will do.
+
+Nesting depth 7 is past the point where I would call the control flow reasonable to hold in your head. The recommendation: extract the innermost block, the one that rewrites the per-argument-key ordering with the PyPy special case, into a named helper. That alone removes several levels of nesting and isolates the interpreter workaround so it can be tested and deleted independently when the upstream bug is no longer a concern.
+
+### `_get_active_fixturedef` — fixtures.py
+
+<FunctionCard fn='_get_active_fixturedef' file='src/_pytest/fixtures.py' risk='3.22' band='critical' cc='14' nd='2' fo='15' touches='51' />
+
+This one is a different kind of complexity. Nesting depth is only 2, but cyclomatic complexity is 14 and fan-out is 15, with an activity-weighted risk score of 3.22. The shape is a long, mostly flat sequence of guard clauses and lookups: a special case for the request fixture, a cache check, a lookup of fixture definitions with a dynamic fallback, two separate error raises for missing definitions, override-chain index arithmetic, parametrization handling, a scope check, a deprecation warning path for lookups during teardown, and finally execution.
+
+Flat does not mean simple. Each of those steps is a decision point that needs its own test, and the override-chain logic depends on walking the request chain, which is easy to get subtly wrong. I would split the function along its own comments: one helper to resolve which fixture definition applies given overrides, one to build the sub-request with its parameter and scope, and leave the original as a short coordinator. Because `execute` in the same file calls it, any change to its behavior propagates to every fixture setup.
+
+### `formatrepr` — fixtures.py
+
+<FunctionCard fn='formatrepr' file='src/_pytest/fixtures.py' risk='3.16' band='critical' cc='12' nd='4' fo='17' touches='51' />
+
+`formatrepr` builds the error report shown when a fixture lookup fails. Cyclomatic complexity is 12, nesting depth is 4, and fan-out is 17, giving an activity-weighted risk score of 3.16. It does two jobs in one body: it walks the fixture stack collecting source lines for each function (with a fallback when source is unavailable), and it composes a diagnostic message that distinguishes a recursive dependency from a plainly missing fixture, appending a sorted list of available fixtures.
+
+This is a good extract-method candidate because the two jobs are independent. Moving the source-gathering loop into one function and the message composition into another would let each be tested with plain inputs. Error-message code is also where regressions are least likely to be noticed, since formatting changes rarely break functional tests, which is one more reason to give it direct test coverage.
+
+### `pytest_generate_tests` — fixtures.py
+
+<FunctionCard fn='pytest_generate_tests' file='src/_pytest/fixtures.py' risk='3.13' band='critical' cc='9' nd='3' fo='7' touches='51' />
+
+`pytest_generate_tests` is the smallest of the group by complexity: cyclomatic complexity 9, nesting depth 3, fan-out 7, activity-weighted risk 3.13. It ranks in the top five largely because of where it lives. It is a hook that applies parametrized fixtures to a test's metadata, skipping arguments the test itself parametrizes, and walking overriding fixtures in reverse order. The comments reference two issue numbers and an xfail'd test describing a known unhandled case, which tells me the override handling has edge cases the maintainers are already aware of.
+
+I would not refactor this one first. I would leave it alone structurally and make sure the known gap, the transitively requested super-fixture case, stays covered by its expected-failure test so it is visible when someone changes the surrounding logic.
+
+### `execute` — fixtures.py
+
+<FunctionCard fn='execute' file='src/_pytest/fixtures.py' risk='3.11' band='critical' cc='8' nd='3' fo='12' touches='51' />
+
+`execute` has cyclomatic complexity 8, nesting depth 3, fan-out 12, and an activity-weighted risk score of 3.11. By the numbers it is the mildest function here, but the source shows why it deserves care: it resolves dependent fixtures, checks a cache with a fallback comparison for objects whose equality raises, tears down stale parametrized instances, registers finalizers conditionally by scope, and dispatches to hooks. Ordering is the hazard. The comments reference issue numbers for finalizer registration order and for a cache invalidation case, which suggests earlier bugs here came from the sequence of steps rather than from any single branch.
+
+The practical recommendation is to pin that ordering down with tests that assert finalizer order explicitly, so a refactor of the neighbors cannot silently reorder teardown.
+
+## Where to start
+
+The order I would work in: `reorder_items_atscope` first, because it has the deepest nesting and widest fan-out and is the highest-scoring function; then `_get_active_fixturedef`, which gates every fixture lookup; then `formatrepr`, which has the cleanest split available. The last two, `pytest_generate_tests` and `execute`, are better served by tests than by restructuring.
+
+For contrast, other functions in the repo are structurally comparable but quiet, with no change in 73 days or more. I would schedule those for refactoring before the next development push in those areas, and keep the fixtures work as the immediate priority.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/pytest-dev/pytest
+cd pytest
+git checkout 9efd0121a4396da80c20d7c3b7844825966612f6
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
