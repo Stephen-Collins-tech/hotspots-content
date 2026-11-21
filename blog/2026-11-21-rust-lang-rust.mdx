@@ -1,0 +1,126 @@
+---
+title: "Rust's type-checker diagnostics carry the highest activity risk — 5 functions first"
+titleSeo: "rust-lang/rust code health: diagnostics and parser functions lead refactoring priority"
+description: "Five critical-band functions across rustc's type-check diagnostics, trait error reporting, the item parser, and the bootstrap test runner are all complex and were changed in the last two days."
+introContent: "Five functions in rust-lang/rust are both among its most structurally complex and in code that changed in the last two days. Three of them are diagnostic-suggestion code in the type checker and trait solver, which is where I would look before the next feature push."
+pubDate: 2026-11-21
+tags: ["oss", "rust", "refactoring", "code-health"]
+draft: true
+repo: "rust-lang/rust"
+commit: "c7d5ba59d8e11ee2e2204b173458eec4cb41c973"
+language: "rust"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-21T11:06:09Z"
+clone_depth: 35845
+topRisk: 3.92
+topFunction: "suggest_traits_to_import"
+topFile: "compiler/rustc_hir_typeck/src/method/suggest.rs"
+qaSection:
+  - question: "What makes a cyclomatic complexity of 167 in `report_selection_error` a problem in rust?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a potential bug surface and a test case you would need to cover. A value of 167 is well past the 100-plus range I treat as extreme. In `report_selection_error` it is paired with a fan-out of 79, meaning the function directly calls 79 distinct functions, so a change in any of them can alter its behavior. Rust's trait and lifetime machinery means a single mistaken branch can change which diagnostic a user sees, and that is hard to verify across 167 paths."
+  - question: "How do I reduce cyclomatic complexity in a function like `suggest_traits_to_import` in rust?"
+    answer: "The technique I would use is extract-method combined with decompose-conditional: pull each self-contained decision into its own function with a narrow signature. As a rule of thumb, a complexity above 15 warrants splitting and above 30 warrants immediate attention; `suggest_traits_to_import` is at 102. A concrete first step is to move the loop that probes alternative receiver forms into a separate function that returns a small result type. That one extraction should remove a large share of the branching and leaves the original function as orchestration code."
+  - question: "Is rust actively maintained?"
+    answer: "Yes, by this data. All five top hotspots are in the active tier, with touches in the last year ranging from 177 to 258, and the most recent change 0 days ago in the bootstrap test runner (`run`, 236 touches in the last year). The other four were last changed 1 to 2 days ago. Of the 160,084 functions analyzed, 159,342 are in the active tier. Active development and high structural debt coexist here: the same functions that are changing constantly are also the ones with the highest complexity."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository, then check out commit c7d5ba5 of rust-lang/rust. Run `hotspots analyze . --mode snapshot --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the file has changed, so functions that are both hard to understand and in changing code score highest. A function with a cyclomatic complexity of 80 that hasn't been touched in two years scores lower than one with a complexity of 20 that is touched every week, because the dormant function has lower near-term regression risk. This helps teams spend refactoring effort where it reduces the chance of introducing bugs now, not just where code looks complicated in the abstract."
+---
+
+Anyone shipping compiler changes this week is likely to be editing near five functions I found in rust-lang/rust: all structurally critical, all in code that changed within the last two days. The top-ranked, `suggest_traits_to_import`, has an activity-weighted risk score of 3.92, a cyclomatic complexity of 102 and 197 touches in the last year, which makes it a strong candidate for attention before the next change. Across the 160,084 functions analyzed, 3,733 land in the critical band, and these five are where complexity and ongoing change overlap most.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `suggest_traits_to_import` | compiler/rustc_hir_typeck/src/method/suggest.rs | 3.9 | 102 | 7 | 60 |
+| `report_selection_error` | compiler/rustc_trait_selection/src/error_reporting/traits/fulfillment_errors.rs | 3.9 | 167 | 6 | 79 |
+| `suggest_deref_ref_or_into` | compiler/rustc_hir_typeck/src/fn_ctxt/suggestions.rs | 3.9 | 54 | 7 | 30 |
+| `parse_item_kind` | compiler/rustc_parse/src/parser/item.rs | 3.9 | 43 | 22 | 27 |
+| `run` | src/bootstrap/src/core/build_steps/test.rs | 3.8 | 120 | 4 | 64 |
+
+## Codemod / Tooling Files in Results
+
+Several of the context-only functions come from `library/hashbrown/src/raw.rs`, which is the hash table implementation the standard library pulls in. I excluded them from the analysis sections because they appear to be vendored third-party code, and none appear in the Top 5. If you want them out of your own results, add `{ "exclude": ["library/hashbrown/"] }` to `.hotspotsrc.json`.
+
+I ranked these by activity-weighted risk, which rewards functions that are both hard to reason about and in files that keep changing. None of this is a verdict on the maintainers. A compiler that emits precise diagnostics for every kind of mistake will naturally concentrate branching logic in a few places. My point is that those places are where a reviewer's attention is best spent.
+
+<BandChart active='159342' quiet='742' />
+
+Almost the entire repository is in the active tier (159,342 functions against 742 quiet), so the tier does not discriminate much here. The band does the work: 3,733 critical and 7,311 high out of 160,084. All five hotspots below are critical and active, and all five were last touched two days ago or less, with the bootstrap test runner changed today.
+
+### `suggest_traits_to_import` — suggest.rs
+
+<FunctionCard fn='suggest_traits_to_import' file='compiler/rustc_hir_typeck/src/method/suggest.rs' risk='3.92' band='active' cc='102' nd='7' fo='60' touches='197' />
+
+I would start here because it has the highest activity-weighted risk score (3.92) and the code was last changed 1 day ago. From the excerpt, it builds a 'you probably forgot a `use`' diagnostic. It takes twelve parameters, probes the receiver type under several alternative self-type forms (plain, mutable reference, shared reference), skips a list of well-known traits, and then does more work inside each successful probe, including checking for multiple crate versions of the same trait. That is a lot of independent decisions in a single function body.
+
+<MetricBar label='Cyclomatic Complexity' value='102' threshold='30' max='170' />
+
+A cyclomatic complexity of 102 means roughly a hundred independent paths, each a candidate test case. A fan-out of 60 means it directly calls 60 distinct functions, so a signature change in any of them can ripple here. File-level history adds a little context: the file's history shows a bug-fix rate of 18.7%, one revert, and 10 distinct authors in the last 90 days. None of those counts proves a defect, but ten recent authors on a function this branchy is the kind of ownership spread that makes accidental interaction between branches more likely.
+
+My recommendation is to extract the arbitrary-self-type probing loop into its own function that returns a small result type. The per-probe diagnostic assembly can then become a second function, and `suggest_traits_to_import` itself would shrink to orchestration. The loop already iterates over a fixed list of (type, prefix, method) tuples, which is a natural seam.
+
+### `report_selection_error` — fulfillment_errors.rs
+
+<FunctionCard fn='report_selection_error' file='compiler/rustc_trait_selection/src/error_reporting/traits/fulfillment_errors.rs' risk='3.87' band='active' cc='167' nd='6' fo='79' touches='258' />
+
+This is the most complex function in the set: a cyclomatic complexity of 167, a fan-out of 79, and 258 touches in the last year, the highest touch count of the five. It was last changed 1 day ago. The excerpt shows a match over the kind of selection error, and inside the 'unimplemented' case there are early returns for several specialized obligation causes (impl-item comparison, const-parameter type errors) before it reaches a second match over the predicate kind. Multiple early exits plus nested matching mean a lot of paths to cover with tests.
+
+<MetricBar label='Fan-out' value='79' threshold='15' max='90' />
+
+The file history shows 177 commits, a bug-fix rate of 26.0%, one revert, and 23 distinct authors in the last 90 days. That is the widest recent ownership spread in this analysis. Combined with 258 touches in a year, it suggests many people are adding cases to one function. That is a normal way for an error reporter to grow, and also the way a function reaches a complexity of 167.
+
+I would split by error variant: one function per top-level selection-error case, with the shared setup (span, long-type-file handling) passed in a small context struct. The early-return branches for impl-item and const-parameter errors are the cheapest first extraction because they already behave as self-contained handlers.
+
+### `suggest_deref_ref_or_into` — suggestions.rs
+
+<FunctionCard fn='suggest_deref_ref_or_into' file='compiler/rustc_hir_typeck/src/fn_ctxt/suggestions.rs' risk='3.86' band='active' cc='54' nd='7' fo='30' touches='177' />
+
+This function tries a sequence of suggestion strategies for a type mismatch (dereference or reference, else-branch closures, calling a function, and others) and returns early with `true` as soon as one applies. A cyclomatic complexity of 54 with a nesting depth of 7 and a fan-out of 30 is moderate by this repository's standards, but the activity numbers keep it high: 177 touches in the last year and a last change 1 day ago.
+
+The excerpt also shows a loop over HIR parent nodes that tracks tuple indexes and walks a local type annotation, nested inside the first suggestion branch. That is where the nesting depth of 7 likely comes from. File history lists 70 commits, a bug-fix rate of 25.7%, no reverts, and 14 distinct authors in the last 90 days.
+
+The recommendation is to lift the tuple-index and annotation walk into a helper that returns an optional annotation span. That should drop the nesting depth meaningfully and leave the main function as a flat chain of 'try this strategy, else the next' calls, which is easier to extend without growing the nesting further.
+
+### `parse_item_kind` — item.rs
+
+<FunctionCard fn='parse_item_kind' file='compiler/rustc_parse/src/parser/item.rs' risk='3.85' band='active' cc='43' nd='22' fo='27' touches='204' />
+
+This is the outlier on nesting. A cyclomatic complexity of 43 is the lowest in the set, but a nesting depth of 22 is far past the point (8+) where I treat nesting as a strong refactoring signal. The excerpt suggests a likely reason: it is a long `if / else if` chain that tests for each kind of top-level item (use, fn, extern crate, extern block, static, trait, impl, const block, const), and the depth may come mostly from the chain's shape rather than deeply layered logic, though the excerpt is truncated so I cannot confirm that.
+
+<MetricBar label='Nesting Depth' value='22' threshold='4' max='25' />
+
+That distinction affects the fix. This function is not hard to follow branch by branch, but every new item kind (the excerpt already includes const-block items and a defaultness-tracking closure) means adding another link in a chain that is already 22 levels deep. It has 204 touches in the last year, was last changed 2 days ago, and its file shows 105 commits, an 18.1% bug-fix rate, no reverts, and 11 distinct authors in the last 90 days.
+
+I would restructure it as a sequence of early-returning checks, one helper per item kind, each returning an optional parsed item. That flattens the nesting to roughly one level without changing the order of the checks, which matters in a parser where earlier checks take priority.
+
+### `run` — test.rs
+
+<FunctionCard fn='run' file='src/bootstrap/src/core/build_steps/test.rs' risk='3.84' band='active' cc='120' nd='4' fo='64' touches='236' />
+
+This one is in the bootstrap build tooling, not the compiler itself, but it is the most recently touched function in the set: 0 days since last change, with 236 touches in the last year. A cyclomatic complexity of 120 with a nesting depth of only 4 describes a long, flat function. From the excerpt it handles the test-suite setup for compiletest: a stage-0 guard, early returns for doc-only and disabled codegen tests, a special case for `ui-fulldeps` at stage 1, and several conditional `ensure` calls that build the compiler, standard library, wasm proc-macro support, or debugger scripts depending on the suite.
+
+The file history shows 137 commits, a bug-fix rate of 10.2% (the lowest of the five), no reverts, 16 distinct authors in the last 90 days, and the highest review-comment density value in the set (5.0). I read that as a function that gets scrutinized in review but keeps absorbing new suite-specific branches. A fan-out of 64 means a lot of build steps are coupled to this single method.
+
+The obvious extraction is per-suite setup: ui-fulldeps handling, debuginfo handling, and the shared prerequisite builds could each be a method on the step, with `run` reduced to sequencing them. Since the nesting depth is only 4, this should be a mechanical refactor.
+
+## Where to start
+
+I would start with `suggest_traits_to_import`. It has the top risk score, a cyclomatic complexity of 102, and a fan-out of 60, and it sits in diagnostics code where 10 authors have been active in the last 90 days. `report_selection_error` is the larger structural problem (cyclomatic complexity 167, fan-out 79, 23 recent authors), but splitting it by error variant is a bigger job, so I would schedule it after the smaller wins. `parse_item_kind` is the cheapest fix with the clearest payoff: flattening a nesting depth of 22 is mostly mechanical. I did not see any lower-ranked functions that change this picture; the context-only functions in the hashbrown module sit in the high band but are quiet (last changed 57 days ago, 22 touches in the last year), so their risk is structural debt and blast radius rather than live regression, and they rank below any of the five above.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/rust-lang/rust
+cd rust
+git checkout c7d5ba59d8e11ee2e2204b173458eec4cb41c973
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
