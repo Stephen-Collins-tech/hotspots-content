@@ -1,0 +1,61 @@
+---
+title: "hotspots v4.0.0: delta mode is gone, diff was always the better tool"
+category: "product-releases"
+description: "A major version bump that removes analyze --mode delta and analyze --policy outright instead of running out a deprecation window, plus a new hotspots agent command that prints a dense, machine-readable contract for coding agents driving the CLI."
+pubDate: 2026-11-20
+author: "Stephen Collins"
+tags: ["release-notes", "hotspots", "rust", "cli", "ci"]
+ogImage: "/og.png"
+summary: "v4.0.0 removes analyze --mode delta and analyze --policy entirely — hotspots diff has been a strict superset since v1.12.0 (auto base-ref detection, --scope-to-diff, --explain, identical merge-base resolution), so there was no reason to keep both once that was true. The removal also closes a bug for free: a --top ranking issue that only existed in the code being deleted. The release also adds hotspots agent, a new command that prints a hand-written execution contract for coding agents scripting against this CLI."
+introContent: "I shipped a soft deprecation warning for analyze --mode delta two releases ago, expecting to run out a deprecation window before removing it. Reviewing the diff again changed my mind: diff had already absorbed every delta-mode capability, including the GitHub Action's own fallback path. There was nothing left for the deprecation window to protect."
+---
+
+I shipped [v4.0.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v4.0.0) of [hotspots](https://github.com/Stephen-Collins-tech/hotspots) today. It's a major bump for one reason: `analyze --mode delta` and `analyze --policy` are gone. Not deprecated — removed. The release also adds a new command, `hotspots agent`, aimed squarely at a different kind of user: a coding agent, not a human running the CLI by hand.
+
+## Why remove instead of deprecate
+
+Two releases back, `analyze --mode delta` started printing a deprecation warning pointing at `hotspots diff`. The plan at the time was to run a normal deprecation window — warn for a few releases, then remove. Going back through the actual capability gap between the two before writing the removal PR changed that plan: there wasn't one. `diff` already had auto base-ref detection, `--scope-to-diff`, `--explain`, and the identical PR-context merge-base resolution delta mode used — all absorbed in earlier releases, mostly without delta mode in mind at the time. `--policy` worked identically on both. The deprecation window exists to give people time to migrate before something breaks; there was nothing migrate-worthy left to protect against, so I removed it outright instead.
+
+Removing the mode also closes a bug for free. An open issue tracked `--top` being silently ignored in delta mode's ranking — the kind of bug that's easy to introduce when two code paths duplicate similar logic and only one gets touched during a later change. Deleting the whole code path deletes the bug along with it; there was no fix to write.
+
+## What actually got deleted
+
+This wasn't a flag removal with a one-line diff. `analyze.rs` lost `handle_delta_mode`, `emit_delta_output`, `emit_delta_text`, `emit_delta_html`, `compute_pr_delta`, `enrich_delta`, `load_merge_base_or_fallback`, and the validation function that only existed to reject `--policy` outside delta mode — over 300 lines, once everything that existed solely to serve that one `--mode` value was traced and removed. `OutputMode` is now a one-variant enum (`Snapshot`), so `--mode delta` fails with clap's own "invalid value" error rather than a custom message — there's no special case left in the CLI to write one.
+
+```
+$ hotspots analyze --mode delta .
+error: invalid value 'delta' for '--mode <MODE>'
+  [possible values: snapshot]
+```
+
+The more consequential discovery was outside the CLI crate entirely. The GitHub Action — `action/src/main.ts` — had its own fallback path that called `analyze --mode delta` directly: used whenever a PR's base snapshot was missing, the base SHA wasn't available from the event payload, or `diff`'s JSON output failed to parse. That's not a code path I'd have found by grepping `docs/` for examples; it only turned up while fixing a sentence in the command reference that said "used by the GitHub Action." The fallback now runs `diff --auto-analyze` instead, and `action/dist/` is rebuilt from the edited source rather than left stale.
+
+## Finding a real bug while reviewing the fallout
+
+One of the three PRs in this release cycle was a paused "dogfood hotspots on its own diffs" addition to this repo's own `CLAUDE.md` — docs-only, already green, seemingly just waiting on a merge. Re-checking it before merging turned up a factual error unrelated to the delta-mode removal: it claimed `diff --policy` could exit with code 4 when policy couldn't be evaluated. Exit 4 was real, but it only ever belonged to `analyze --mode delta --policy`'s specific baseline case — `diff` structurally can't reach that state, since both its `Delta::new` call sites always pass a real base snapshot. `diff` exits 2 on auto-analysis failure or 3 on a missing snapshot; neither means "policy passed," they mean "policy never ran," which is the distinction the exit code claim was trying and failing to make correctly. Fixed before merge, confirmed against `diff.rs`'s actual exit paths rather than just rewording the guess.
+
+## `hotspots agent`: a contract, not a feature
+
+The second half of this release is new surface, not cleanup. `hotspots agent [analyze|diff]` prints a dense, machine-readable contract aimed at a coding agent driving this CLI non-interactively — four sections: an Execution Contract (always pass `--format json`; the one interactive prompt in the entire CLI belongs to `train`, not `analyze`/`diff`), a Command & Schema Map (flag names and JSON shape, pointing at the existing reference docs rather than re-deriving a schema by hand), Exit Code Semantics, and Guardrails & Anti-Patterns — including, now, "`analyze --mode delta` doesn't exist, use `diff --policy`."
+
+```
+$ hotspots agent diff
+
+## Execution Contract
+
+- Always pass `--format json`. Human-readable `text`/`html` output is for people, not parsers.
+...
+```
+
+It's hand-written, not generated from the Clap command tree — an explicit choice to validate the shape by hand first rather than build codegen for a one-command surface. No `--format` flag, because the command's own output *is* the documentation; there's nothing underneath it to parse differently. First pass covers `analyze` and `diff` only, the two commands an agent is most likely to script against; the rest of the surface can follow once this shape proves out.
+
+## Shipping it
+
+Three PRs landed in sequence: the delta-mode removal (closing the `--top` bug for free), `hotspots agent`, and the dogfood `CLAUDE.md` addition — each rebuilt against the previous one's merge before its own CI run, since the second PR's `main.rs` and doc edits collided textually with the first's. Full workspace test suite, `clippy -D warnings`, and the Action's own Jest suite stayed green at every step; the release binary's actual behavior — the clap error on `--mode delta`, `diff --policy` still working unchanged, `hotspots agent` printing the right scoped section for each subcommand — got checked against a real build before merging, not just inferred from the diff.
+
+[v4.0.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v4.0.0) is live now.
+
+```bash
+hotspots diff --auto-analyze --policy
+hotspots agent
+```
