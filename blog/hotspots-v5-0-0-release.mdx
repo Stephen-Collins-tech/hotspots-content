@@ -1,0 +1,59 @@
+---
+title: "hotspots v5.0.0: eight subcommands down to three"
+category: "product-releases"
+description: "A major version bump that removes coordinate, prune, config, telemetry, and agent as standalone subcommands, folding all five into analyze as flags or environment variables, and strips train down to its load-bearing flags."
+pubDate: 2026-11-21
+author: "Stephen Collins"
+tags: ["release-notes", "hotspots", "rust", "cli", "ux"]
+ogImage: "/og.png"
+summary: "v5.0.0 collapses the CLI from 8 subcommands to 3 (analyze, diff, train). coordinate, prune, config, telemetry, and agent are gone as top-level verbs — their behavior now lives behind analyze flags (--files/--diff/--staged/--ownership, --prune, --show-config/--validate-config, --help-agent) or environment variables (HOTSPOTS_JOBS, HOTSPOTS_SKIP_TOUCH_METRICS, HOTSPOTS_SKIP_GATE, HOTSPOTS_TELEMETRY). train drops --n-estimators, --max-depth, --eval, --screen, and --quiet; screening and P@K eval now always run, and progress verbosity follows stderr's own TTY state instead of a flag. analyze also defaults its path argument to the current directory and always persists a snapshot unless --no-persist is passed. The PR that implemented this tripped the repo's own dogfooded risk-policy gate on handle_analyze itself, which needed a follow-up commit splitting the new dispatch logic into its own function before the release could ship."
+introContent: "An audit of this CLI's docs against its actual flag surface turned up three undocumented flags and, more importantly, a surface that had grown to 8 subcommands and 18 flags on analyze alone. Fixing the docs gap was the easy part. The harder question was which of that surface was load-bearing, which was research-validated but rarely touched, and which was just debug/tuning cruft that had accumulated one flag at a time."
+---
+
+I shipped [v5.0.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v5.0.0) of [hotspots](https://github.com/Stephen-Collins-tech/hotspots) today. It removes five subcommands — `coordinate`, `prune`, `config`, `telemetry`, `agent` — and cuts `train`'s own flag list in half. What's left is three verbs: `analyze`, `diff`, `train`.
+
+## How this started
+
+A routine audit of `docs/REFERENCE.md` against the actual Clap command tree found three flags the docs didn't mention (`--source-url`, `--axes`, `--label-before`). That's a normal, small fix — [PR #377](https://github.com/Stephen-Collins-tech/hotspots/pull/377) landed it. But writing the audit meant laying out every subcommand and flag in one table, and the table itself was the real finding: 8 subcommands, 18 flags on `analyze`, 11 on `train`. A surface that size isn't a documentation problem, it's a design problem the documentation happened to make visible.
+
+## Sorting load-bearing from load-adjacent
+
+Not every flag earns the same scrutiny. Some were genuinely independent capabilities wearing a subcommand's clothing — `coordinate`'s ownership-risk report, `prune`'s snapshot maintenance, `config`'s show/validate, `agent`'s contract printer — each useful, none needing to be a top-level verb competing for the same `--help` real estate as `analyze` and `diff`. Others were CI/benchmarking knobs that had been promoted to first-class flags for no reason beyond "that's how you add an option to a Clap struct": `--jobs`, `--skip-touch-metrics`, `--skip-gate` on `analyze`; `--n-estimators`, `--max-depth`, `--screen`, `--eval`, `--quiet` on `train`. And `--mode` on `analyze` was down to a single possible value (`snapshot`) after an earlier release removed `--mode delta` — a flag with one legal value isn't a flag, it's a tautology clap still made you type.
+
+`train`'s own tuning flags had a clean resolution: `TrainConfig::default()` already supplies `n_estimators: 200, max_depth: 6`, matching what `--n-estimators`/`--max-depth` almost always got set to in practice (the research backing the trained-model path — regime screening, Ridge vs. a depth-6 RandomForest — treats model-class selection as something the tool decides, not the user). Dropping the CLI flags doesn't change behavior; it stops the CLI from threading user overrides through state nobody was actually overriding. `--screen` and `--eval` followed the same logic from a different angle: they were opt-in gates in front of checks that have no real cost to run unconditionally, so making them always-on removes a step instead of removing a capability. `--quiet` became `!stderr().is_terminal()`, the same TTY-detection pattern `analyze` already used for its own color output — one less flag by reusing a precedent already in the codebase rather than inventing a new convention.
+
+## What moved into `analyze`
+
+`coordinate`, `prune`, `config`, and `agent` didn't lose any capability — they lost their standalone `Commands::` variant. `--files`/`--diff`/`--staged`/`--ownership` now dispatch straight into the same `handle_coordinate` that used to back `hotspots coordinate`; `--prune` (plus `--unreachable`/`--older-than`/`--compact`/`--dry-run`) calls the same `handle_prune`; `--show-config`/`--validate-config` call the same `handle_config`; `--help-agent [analyze|diff]` calls the same `handle_agent`. None of those four modules' internals changed — only `main.rs`'s dispatch and the flags that trigger it.
+
+`telemetry` is the one exception that changed shape rather than just moving. Its CLI-facing `enable`/`disable`/`status`/`reset` actions are gone; the on-disk install-id/ping state it already tracked stays, now gated by a `HOTSPOTS_TELEMETRY=on` environment variable instead of a subcommand, with current state surfaced as one line of `analyze --show-config`'s output. Telemetry never had an interactive flow worth preserving — there was nothing to lose by making it an env var.
+
+```
+$ hotspots coordinate --staged
+error: unrecognized subcommand 'coordinate'
+
+$ hotspots analyze --staged
+# same ownership-risk report, now a flag instead of a verb
+```
+
+`analyze` also picked up two smaller fixes while its dispatch was already being rewritten: its path argument now defaults to `.` (matching `train`, which already did), and it always persists a snapshot by default instead of the old implicit "promote to snapshot but force `--no-persist`" behavior that only kicked in when `.hotspots/ranker.json` happened to exist. `--no-persist` is still there as the explicit opt-out; there's no more silent mode-switching based on what files happen to be on disk.
+
+## The release caught its own regression
+
+This repo dogfoods its own risk-policy gate on every PR — `hotspots diff --policy --auto-analyze` runs against the diff in CI, the same mechanism covered in [a prior post on how hotspots measures itself](/blog/how-hotspots-measures-itself). It caught something real here: folding four subcommands' dispatch logic directly into the top of `handle_analyze` pushed that function's own risk score up by 1.74 LRS against a 1.0 threshold — a real regression, not a false positive, and exactly the "analyze gets more complex as it absorbs things" tradeoff this redesign was trying to avoid in the first place.
+
+The fix was a straight extraction, not a suppression: a `dispatch_absorbed_command` entry point that chains through four flag-specific dispatchers (`dispatch_help_agent`, `dispatch_config`, `dispatch_prune`, `dispatch_coordinate`), each returning `None` to fall through if its flag isn't set. The first version of that extraction put all four branches in one function, which was itself large enough to trip a *different* policy — `critical-introduction` — on the brand-new function. Splitting it into five smaller functions, mirroring the file's own existing `validate_analyze_flags` → per-flag-group-helper pattern, cleared both policies: `handle_analyze`'s own delta went from +1.74 to -0.35, and nothing introduced crossed the critical band. Confirmed by running the exact policy-check invocation locally against the before/after commits, not just inferred from the test suite passing.
+
+## Shipping it
+
+Four commits landed in [one PR](https://github.com/Stephen-Collins-tech/hotspots/pull/380): `train`'s flag reduction, the subcommand-absorption into `analyze`, docs rewritten across `REFERENCE.md`/`COMMANDS.md`/`USAGE.md`/`README.md`/`TELEMETRY.md`, and updates to the GitHub Action and both integration test suites — plus the `handle_analyze` extraction once the policy gate caught it. Full workspace build, `clippy -D warnings`, the complete test suite, the Python integration tests, and the Action's own Jest suite all stayed green; the release binary's actual behavior — old subcommands failing with clap's "unrecognized subcommand" error, the absorbed flags producing identical output to their old standalone commands, persistence defaulting on — was checked against a real build, not inferred from the diff.
+
+[v5.0.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v5.0.0) is live now.
+
+```bash
+hotspots analyze
+hotspots analyze --staged --ownership
+hotspots analyze --prune --unreachable --dry-run
+hotspots diff --auto-analyze --policy
+hotspots train
+```
