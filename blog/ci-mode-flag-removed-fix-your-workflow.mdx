@@ -1,0 +1,61 @@
+---
+title: "My Own CI Broke on My Own Breaking Change — Here's the Fix"
+category: "engineering-playbooks"
+description: "A GitHub Actions workflow of mine was still calling hotspots analyze --mode delta --policy, a command surface I removed across v4.0.0 and v5.0.0. It failed with a flat clap error instead of a deprecation warning, because nothing had re-run it since the flags disappeared. Here's why that happens, and the two ways to fix it."
+pubDate: 2026-11-24
+author: "Stephen Collins"
+tags: ["editorial", "ci", "hotspots", "migration"]
+ogImage: "/og.png"
+summary: "If a CI workflow still calls `hotspots analyze . --mode delta --policy` or `--mode snapshot`, it will fail outright: `error: unexpected argument '--mode' found`. v4.0.0 removed `--mode delta`/`--policy` in favor of `hotspots diff`; a later v5.0.0-era change removed `--mode` entirely. Fix is either `hotspots diff --auto-analyze --policy` directly, or the official GitHub Action, which now owns PR-aware delta detection and the policy gate."
+introContent: "I shipped two breaking CLI releases with full write-ups each time. Then a CI workflow of my own, built against the interface those releases removed, sat untouched for days until it ran again and failed outright. The flags were gone; nothing had told that specific YAML file."
+---
+
+I've written up [two major hotspots releases](https://github.com/Stephen-Collins-tech/hotspots/releases) in the last week, each one explaining exactly what CLI surface was being removed and why. Then a CI workflow of my own — unrelated to either release, just a repo that happened to run `hotspots analyze` on every PR — failed with a clap error I'd caused myself: `error: unexpected argument '--mode' found`.
+
+## What broke
+
+The workflow was simple and, until recently, correct:
+
+```bash
+# on a PR
+hotspots analyze . --mode delta --policy
+
+# on push to main
+hotspots analyze . --mode snapshot --format json > /dev/null
+```
+
+Both invocations now fail outright. `--mode delta` and the standalone `--policy` flag were removed in [v4.0.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v4.0.0) — `hotspots diff` had already absorbed every capability delta mode had, so the release deleted the old path rather than deprecating it. `--mode` itself — including its one remaining legal value, `snapshot` — was removed in the [v5.0.0](https://github.com/Stephen-Collins-tech/hotspots/releases/tag/v5.0.0) subcommand collapse, because a flag with a single possible value isn't really a flag. `analyze` now always does what `--mode snapshot` used to do, by default.
+
+Neither removal was quiet. Both shipped with a full release post explaining the change, the rationale, and the replacement command. The gap wasn't documentation — it was that nothing re-ran that specific workflow file between the release going out and the next PR that happened to trigger it. A deprecation warning only helps if something is watching stderr; a CI job that just checks the exit code doesn't notice a warning, it only notices a failure, and by the time it failed, the warning period was already over.
+
+## The fix, two ways
+
+**If you want to stay on the raw CLI**, the direct replacement is `hotspots diff`, which has covered everything delta mode did since v1.12.0 — auto base-ref detection, merge-base resolution in PR context, `--explain`, and now `--policy` directly:
+
+```bash
+hotspots diff --auto-analyze --policy
+```
+
+For the push-to-main snapshot side, drop `--mode snapshot` entirely — `analyze` persists a snapshot by default now:
+
+```bash
+hotspots analyze . --format json > /dev/null
+```
+
+**If you want something that doesn't need touching again**, use the official GitHub Action instead of a hand-rolled `curl | sh` install plus raw CLI call. It wraps the same `diff`/`policy` machinery, auto-detects PR vs. push context, and additionally handles PR comments and HTML report artifacts — the parts a raw CLI invocation has to reimplement by hand:
+
+```yaml
+- uses: Stephen-Collins-tech/hotspots/action@v5.0.0
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+I went with the Action for the workflow that broke on me. Not because the raw `diff` command doesn't work — it does, and it's one line — but because the whole reason this broke in the first place is that a hand-written CLI invocation has no mechanism to notice its own interface moved out from under it. The Action is one more layer removed from that problem: it's versioned and pinned the same way any other dependency is, so the next breaking change shows up as a version bump I choose to take, not a workflow that silently goes stale until it fails.
+
+## Bottom line
+
+If you have a CI workflow anywhere calling `hotspots analyze` with `--mode` or a bare `--policy` flag, it is currently broken, not just outdated — both were removed, not deprecated, as of v5.0.0. Check for `--mode` in any `.github/workflows/*.yml` that shells out to hotspots directly, and swap it for `hotspots diff --auto-analyze --policy` or the Action above. Worth repeating here since I missed it myself: writing the release notes for a breaking change and actually finding every place that change reaches are two different jobs, and only one of them shows up in a changelog.
+
+---
+
+_Hotspots highlights structural and activity risk, not "bad code" — findings are a prioritization aid, not a bug predictor. Full editorial policy: [README.md](https://github.com/Stephen-Collins-tech/hotspots-content/blob/main/README.md#editorial-policy)._
