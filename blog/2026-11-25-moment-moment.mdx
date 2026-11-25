@@ -1,0 +1,112 @@
+---
+title: "Moment's locale loader: 4 of the top 5 risk hotspots in one file"
+titleSeo: "moment code health: locales.js leads refactoring priority across 1,983 functions"
+description: "Four of the five highest-risk functions in moment/moment live in src/lib/locale/locales.js, a module that defines, loads, selects and updates locales and was last changed 0 days before this snapshot."
+introContent: "Four of moment's five riskiest functions sit in a single file, src/lib/locale/locales.js, and all four were touched on the day of the snapshot. If you are about to change how locales load, this is the file I would review first."
+pubDate: 2026-11-25
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: true
+repo: "moment/moment"
+commit: "c2a703a4d84aa57ee2722ff8fb4a8016279fb3c4"
+language: "javascript"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-25T12:30:32Z"
+clone_depth: 68
+topRisk: 2.26
+topFunction: "defineLocale"
+topFile: "src/lib/locale/locales.js"
+qaSection:
+  - question: "What makes the nesting depth of `defineLocale` a problem in moment?"
+    answer: "Maximum nesting depth is the deepest level of nested control structures in a function, and a depth of 4 or more starts to make code hard to reason about. `defineLocale` reaches 6, with nested checks for a null config, an existing locale, a named parent, and whether that parent is loaded. Each level adds a condition the reader must hold in mind, and the function also contains an ordering constraint, setting the global locale only after child locales exist, that is easy to break when editing deep inside the structure. Because the function was changed 0 days before the snapshot, that risk is live."
+  - question: "How do I reduce nesting depth and branching in JavaScript?"
+    answer: "Use guard clauses to return early on simple cases, and apply extract-method to pull coherent branches into named functions. A nesting depth above 4 or a cyclomatic complexity above 15 is a reasonable trigger to act. For `defineLocale`, the first step I would take is extracting the parent-configuration lookup into its own function that returns either a config or a signal to defer; that should roughly halve the nesting depth. For `updateLocale`, splitting the update path from the revert path removes a top-level decision and several nested conditions."
+  - question: "Is moment actively maintained?"
+    answer: "The data shows recent activity. The four locales.js functions (`defineLocale`, `loadLocale`, `chooseLocale` and `updateLocale`) each had 4 touches in the last year and 0 days since last change, and the locales.js file has 2 distinct authors in the last 90 days. Across the repository, 994 of 1,983 functions are in the active tier. At the same time, 127 functions are in the critical band, so active development and structural debt coexist. The quiet critical functions, such as `configFromISO` with 1 touch in the last year and 77 days since last change, are structural debt and blast-radius risk rather than code being worked on now."
+  - question: "How do I reproduce this analysis?"
+    answer: "Clone the repository, run `git checkout c2a703a`, and use the hotspots CLI from its GitHub repository. The command is `hotspots analyze . --mode snapshot --force`. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. A function with cyclomatic complexity 92 that has not changed in 77 days, like `processRelativeTime` in src/locale/sl.js with a score of 1.21, ranks below `defineLocale` with a score of 2.26 despite much lower complexity, in part because `defineLocale` was changed 0 days ago. This ordering points review effort at the code most likely to see a new defect introduced soon, not just the code that looks most complicated."
+---
+
+Four of the five top hotspots in moment/moment live in src/lib/locale/locales.js, so I would treat that file, not any single function in it, as the unit of review. All four are in the active tier, each with 4 touches in the last year and 0 days since last change, which makes this active code rather than a backlog item; the highest, defineLocale, carries an activity-weighted risk score of 2.26. The repository has 1,983 functions with 127 in the critical band, and the pattern that stands out is how many of the highest-scoring ones are locale-related.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `defineLocale` | src/lib/locale/locales.js | 2.3 | 8 | 6 | 7 |
+| `loadLocale` | src/lib/locale/locales.js | 2.1 | 12 | 2 | 5 |
+| `chooseLocale` | src/lib/locale/locales.js | 2.1 | 8 | 3 | 8 |
+| `updateLocale` | src/lib/locale/locales.js | 2.1 | 11 | 4 | 4 |
+| `processRelativeTime$1` | min/moment-with-locales.js | 2.0 | 92 | 4 | — |
+
+## Codemod / Tooling Files in Results
+
+The entry for `processRelativeTime$1` is in min/moment-with-locales.js, which appears to be a built bundle of every locale rather than hand-written source; it scores highly because it duplicates the Slovenian relative-time logic from src/locale/sl.js and was last changed 23 days ago. I did not give it its own recommendation beyond noting it follows the source. To keep generated bundles out of future runs, add `{ "exclude": ["min/"] }` to .hotspotsrc.json.
+
+<BandChart active='994' quiet='989' />
+
+The tier split is almost even: 994 active functions and 989 quiet ones. That matters for how I read the list. The top four entries are active and sit in one file. The context entries outside the top five are quiet, with 77 days since last change. They are structural debt, not live churn.
+
+### `defineLocale` — locales.js
+
+<FunctionCard fn='defineLocale' file='src/lib/locale/locales.js' risk='2.26' band='critical' cc='8' nd='6' fo='7' touches='4' />
+
+I would start with `defineLocale` because it has the highest activity-weighted risk score in the repository (2.26), a nesting depth of 6, and it was changed 0 days ago. Its cyclomatic complexity of 8 is modest, so the risk here comes from depth, not from path count.
+
+<MetricBar label='Nesting Depth' value='6' threshold='4' max='8' />
+
+From the source excerpt, the function branches on whether the config is null, then on whether a locale with that name already exists, then on whether a parent locale is named, then on whether that parent is already loaded or must be loaded on demand. When the parent cannot be found, it queues the child in a family list and returns null. Once the new locale is built, it re-defines any queued children recursively and sets the global locale as a backwards-compatibility step. The comment in the code says the global locale must be set only after all child locales exist. That ordering constraint is the kind of thing a nested structure hides. The same function also emits a deprecation warning when an existing locale is overridden, so one function handles creation, override, deferred-parent resolution and test teardown (the delete branch).
+
+The file-level history adds context. Four commits touched the file, and 75% of them are tagged as bug fixes, with no revert and no commit directly linked to a tracked bug. Two distinct authors touched it in the last 90 days. That bug-fix rate does not show this function is defective, but a small file history that skews toward fixes is a reason to review it with more care.
+
+My recommendation: flatten the nesting with guard clauses and extract the parent-resolution logic into its own function. The branch that finds the parent configuration (existing locale, loaded parent, or deferred parent) is a natural unit with a single output, either a parent config or a signal to defer. Pulling it out should take the nesting depth from 6 to around 3 without changing behavior.
+
+### `loadLocale` — locales.js
+
+<FunctionCard fn='loadLocale' file='src/lib/locale/locales.js' risk='2.11' band='high' cc='12' nd='2' fo='5' touches='4' />
+
+`loadLocale` has the highest cyclomatic complexity of the four locales.js functions at 12, with shallow nesting of 2 and a fan-out of 5. It resolves a locale by exact name, then by normalized name, then, in a Node-style module environment, by requiring a locale file from disk. The excerpt shows comments about guarding against names like `__proto__` and `constructor` by using an own-property check, and about caching a null result so failed lookups do not repeat an expensive require call.
+
+The function also mixes three concerns: cache lookup, name validation, and filesystem loading with global-locale save and restore around the require.
+
+My recommendation: separate the cache lookup from the Node-specific load path. A small function that only answers 'is this name already registered' and another that only attempts the file load would let each be tested without stubbing module state.
+
+### `chooseLocale` — locales.js
+
+<FunctionCard fn='chooseLocale' file='src/lib/locale/locales.js' risk='2.11' band='high' cc='8' nd='3' fo='8' touches='4' />
+
+`chooseLocale` has the highest fan-out of the group at 8, alongside a cyclomatic complexity of 8 and nesting depth of 3. It walks a list of candidate locale names, splits each into subtags, tries progressively shorter prefixes through `loadLocale`, and compares against the next candidate to decide whether to break early. If nothing matches, it returns the global locale.
+
+The risk I see is the coupling. This function calls `loadLocale`, which itself calls `getSetGlobalLocale`, which can call `defineLocale`. So a change to any of those can alter what `chooseLocale` returns, and the dependency is not obvious from the signature. JavaScript's dynamic dispatch and shared module state make static fan-out undercount this kind of coupling, so I would treat the reported 8 as a floor.
+
+My recommendation: write characterization tests around the prefix-fallback and next-candidate comparison logic before touching anything else in this file. That inner loop is where the subtle behavior lives.
+
+### `updateLocale` — locales.js
+
+<FunctionCard fn='updateLocale' file='src/lib/locale/locales.js' risk='2.08' band='high' cc='11' nd='4' fo='4' touches='4' />
+
+`updateLocale` has a cyclomatic complexity of 11, nesting depth of 4 and fan-out of 4. From the excerpt, it has three distinct modes in one body: update a child locale in place, merge a new config onto a parent and register the result, or, when the config is null, undo a previous update. Each mode mutates the shared locales registry and may reset the global locale.
+
+The null-config branch is described in a comment as useful for tests. That means the function carries a branch that the comment ties to test use.
+
+My recommendation: split `updateLocale` into an update path and a revert path. The two share almost no logic once the config check is made, and separating them removes one top-level decision and several nested conditions.
+
+## Where to start
+
+I would start with locales.js as a whole. Four functions in one file, all touched 4 times in the last year and all changed on the day of the snapshot, means the file is under steady change. Begin with `defineLocale`, because its nesting depth of 6 is the clearest structural problem and `chooseLocale`, `loadLocale` and `updateLocale` all call into related locale-loading code. Then add tests around `chooseLocale` and `loadLocale` before any further changes, and split `updateLocale` into update and revert paths. The fifth entry, `processRelativeTime$1` in min/moment-with-locales.js, is a bundled copy (see the note below), so I would leave the Slovenian relative-time functions for later: the complexity is high but it is rule-driven, fan-out is 0, and the source copies have gone 77 days without a change.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/moment/moment
+cd moment
+git checkout c2a703a4d84aa57ee2722ff8fb4a8016279fb3c4
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
