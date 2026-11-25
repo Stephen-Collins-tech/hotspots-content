@@ -1,0 +1,116 @@
+---
+title: "matplotlib's _axes.py carries the highest activity risk: 5 methods to address first"
+titleSeo: "matplotlib code health: _axes.py plotting methods lead refactoring priority"
+description: "All five of matplotlib's highest-risk functions (errorbar, hist, bxp, hexbin, pie) live in lib/matplotlib/axes/_axes.py, a file touched 60 times in the last year with its latest change 7 days ago."
+introContent: "Every one of matplotlib's top five risk hotspots sits in a single file, _axes.py, and all of them were last changed a week ago. I looked at what that concentration means for anyone touching the plotting API."
+pubDate: 2026-11-25
+tags: ["oss", "python", "refactoring", "code-health"]
+draft: false
+repo: "matplotlib/matplotlib"
+commit: "ed25523818fb2fc1573225a5d13b6e32f4ff6070"
+language: "python"
+hotspots_version: "3.4.1"
+analyzed_at: "2026-11-25T12:37:34Z"
+clone_depth: 2004
+topRisk: 3.61
+topFunction: "errorbar"
+topFile: "lib/matplotlib/axes/_axes.py"
+qaSection:
+  - question: "What makes the cyclomatic complexity of hist a problem in matplotlib?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a place a bug can hide and a case a test needs to cover. The `hist` method in lib/matplotlib/axes/_axes.py has a complexity of 81, where roughly 10 is moderate and 30 or more is considered high. A function that accepts many options, several input shapes and multiple output modes makes the number of path combinations hard to cover exhaustively. It also sits in a file that was touched 60 times in the last year, so each edit lands in code that is expensive to reason about."
+  - question: "How do I reduce fan-out or cyclomatic complexity in python?"
+    answer: "The main technique is extract-method: pull a coherent phase out of a long function into a named helper, and decompose big conditionals into smaller ones. As a rule of thumb, a complexity above 15 warrants splitting and above 30 warrants immediate attention. A concrete first step for `hist` is to move the logic that normalizes the accepted input shapes into its own function, which can be tested without drawing anything and removes a large share of the branching. For `hexbin`, whose fan-out is 76, extracting the binning and reduction phase into a private helper narrows how many functions the main method has to call directly."
+  - question: "Is matplotlib actively maintained?"
+    answer: "The data points to yes. All five top hotspots are in the active tier, each with 60 touches in the last year and a last change 7 days ago, and the analysis found 10 distinct authors in the last 90 days on the file. Across the repository, 3,420 of 6,375 functions are in active files. Active development and structural debt are not mutually exclusive, and the same file that is clearly being worked on also holds the five highest-risk functions."
+  - question: "How do I reproduce this analysis?"
+    answer: "Install the hotspots CLI from its GitHub repository and check out the commit I analyzed, ed25523. Then run `git checkout ed25523` followed by `hotspots analyze . --mode snapshot --force` from the repository root. The same command works on any local git repository without extra configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. A function with a cyclomatic complexity of 80 that has not been touched in two years scores lower than a less complex function touched every week, because the dormant one has lower near-term regression risk. In this analysis, `errorbar` leads with a score of 3.61. This ordering points refactoring effort at the places where it most reduces the chance of introducing bugs right now, rather than wherever the code merely looks complicated."
+---
+
+In matplotlib's snapshot at commit ed25523, all 5 of the top 5 hotspots live in one file, lib/matplotlib/axes/_axes.py: errorbar, hist, bxp, hexbin and pie. That makes this a module-level problem, not a single-function one. Of 6,375 analyzed functions, 341 are critical, and the top spots all belong to code that is complex and changing now: errorbar carries an activity-weighted risk score of 3.61, with 60 touches in the last year and its last change 7 days ago. I would start there, and treat the whole file as the review unit.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `errorbar` | lib/matplotlib/axes/_axes.py | 3.6 | 54 | 5 | 50 |
+| `hist` | lib/matplotlib/axes/_axes.py | 3.6 | 81 | 4 | 62 |
+| `bxp` | lib/matplotlib/axes/_axes.py | 3.5 | 43 | 3 | 58 |
+| `hexbin` | lib/matplotlib/axes/_axes.py | 3.5 | 36 | 3 | 76 |
+| `pie` | lib/matplotlib/axes/_axes.py | 3.5 | 33 | 3 | 39 |
+
+<BandChart active='3420' quiet='2955' />
+
+The tier split shows a codebase with a lot of live code: 3,420 functions are in active files and 2,955 are quiet. The five hotspots below are all active, and that distinction matters for how I read them. These are not backlog items sitting still. They are public plotting methods in a file that people are editing right now.
+
+One pattern in the numbers is worth stating once rather than five times. All five functions show 60 touches in the last year and 7 days since last change. That is the file-level activity signal, so those columns do not separate the functions from each other. What separates them is structure: cyclomatic complexity ranges from 33 to 81 and fan-out from 39 to 76. The file-level history is also identical across all five: a bug-fix rate of 40%, no reverts, no bug-linked commits, 10 distinct authors in the last 90 days, and a pull-request review comment density of 6.33. I read that as a busy, widely shared file with a meaningful share of bug-fix work. It does not show that any individual function is defective.
+
+Because these are `Axes` methods, they are public API surface. Anything I say about changing them carries the usual library caveat: every caller inherits the blast radius, and in Python the coupling is more implicit than the fan-out numbers suggest, since types resolve at runtime.
+
+### `errorbar` — _axes.py
+
+<FunctionCard fn='errorbar' file='lib/matplotlib/axes/_axes.py' risk='3.61' band='active' cc='54' nd='5' fo='50' touches='60' />
+
+<MetricBar label='Max Nesting Depth' value='5' threshold='4' max='8' />
+
+`errorbar` has the top activity-weighted risk score at 3.61, and it has the deepest nesting in the group (5) alongside a cyclomatic complexity of 54 and fan-out of 50. The signature has 17 named parameters plus keyword arguments, covering error sizes, limit markers (`lolims`, `uplims`, `xlolims`, `xuplims`), caps, line styles and ordering. The docstring also notes that caps and error lines are drawn in polar coordinates on polar plots, a feature added in 3.7, which suggests the function has absorbed behavior variants over time.
+
+Nesting at depth 5 is the part I would worry about when reasoning about changes, because it is the point where a reader has to hold several conditions in mind at once. I would extract the x-direction and y-direction error handling into one shared helper parameterized by axis, since the parameter names (`xerr`/`yerr`, `xlolims`/`lolims`) are visibly symmetric. That would likely cut both complexity and nesting without changing behavior.
+
+### `hist` — _axes.py
+
+<FunctionCard fn='hist' file='lib/matplotlib/axes/_axes.py' risk='3.59' band='active' cc='81' nd='4' fo='62' touches='60' />
+
+<MetricBar label='Cyclomatic Complexity' value='81' threshold='10' max='90' />
+
+`hist` has the highest cyclomatic complexity of the five, at 81, and its fan-out of 62 is the second highest. Its signature takes a long list of options, including `bins`, `range`, `density`, `weights`, `cumulative`, `histtype`, `align`, `orientation`, `stacked` and more, and the docstring describes accepting a single array, a list of datasets, or a 2D array with transposed semantics. That input flexibility plus several output modes is a plausible source of the branching: 81 independent paths means a thorough test matrix is large, and each new option multiplies it. Nesting depth is a moderate 4, so the difficulty comes from breadth of branches rather than deep indentation.
+
+My recommendation: separate input normalization (turning the accepted input shapes into a uniform list of datasets) from the drawing logic per histogram type. Extracting the normalization step into its own function is a safe first cut because it can be tested without any plotting.
+
+### `bxp` — _axes.py
+
+<FunctionCard fn='bxp' file='lib/matplotlib/axes/_axes.py' risk='3.52' band='active' cc='43' nd='3' fo='58' touches='60' />
+
+`bxp` draws box-and-whisker plots from precomputed statistics. Its cyclomatic complexity is 43 with nesting depth of only 3, but its fan-out is 58, so most of its cost is coupling: it calls a lot of distinct functions. The signature exposes a property dictionary for each visual element (`boxprops`, `whiskerprops`, `flierprops`, `medianprops`, `capprops`, `meanprops`) plus switches such as `showcaps`, `showbox`, `showfliers`, `shownotches` and `showmeans`. The docstring also shows a deprecation in progress: `vert` is deprecated in 3.11 in favor of `orientation`, and while both are accepted, one overrides the other. A deprecation shim adds branches that exist only to be deleted later.
+
+My recommendation: split drawing per component (box, whiskers, caps, median, mean, fliers) into small helpers. The element-level switches in the signature already suggest that decomposition, and it would give the `vert` removal a smaller area to touch when the deprecation period ends.
+
+### `hexbin` — _axes.py
+
+<FunctionCard fn='hexbin' file='lib/matplotlib/axes/_axes.py' risk='3.51' band='active' cc='36' nd='3' fo='76' touches='60' />
+
+<MetricBar label='Fan-out' value='76' threshold='15' max='80' />
+
+`hexbin` has the highest fan-out in the file at 76 distinct functions called, against a more modest cyclomatic complexity of 36 and nesting depth of 3. That profile is an orchestration-heavy function: not many branches, but a lot of collaborators. Parameters like `xscale`, `yscale`, `bins`, `mincnt`, `marginals`, `reduce_C_function` and `colorizer` point to several distinct phases: coordinate transformation, binning, reduction, and collection and marginal plot construction. In a dynamically typed language, 76 call targets means 76 places where a changed return shape or argument convention can break this method without a static check noticing.
+
+My recommendation: carve the phases into private helpers so that each one has a narrower set of dependencies. The binning and reduction step is the best candidate to extract first because it can be unit-tested with plain arrays and no figure.
+
+### `pie` — _axes.py
+
+<FunctionCard fn='pie' file='lib/matplotlib/axes/_axes.py' risk='3.49' band='active' cc='33' nd='3' fo='39' touches='60' />
+
+`pie` is the smallest of the five by every structural measure: cyclomatic complexity 33, nesting depth 3, fan-out 39. It is still critical, and its signature and docstring show active API evolution. The `labels` parameter carries a deprecation note for 3.12, new `wedge_labels` and `wedge_label_distance` parameters were added in 3.12, `labeldistance` defaults to a sentinel (`_UNSET`), and `autopct` is flagged as discouraged in favor of the new options. That means the function is currently carrying both the old and new labeling paths at once.
+
+I would use `pie` as the pilot for a refactor of this file because it is the least tangled. Once the deprecation completes, the old label path can be deleted, which should lower the complexity without any restructuring. Until then, the overlap between `autopct`, `labels` and `wedge_labels` is the first place I would look for redundant branches.
+
+## Where to start
+
+I would start with `errorbar`, because it has the highest activity-weighted risk score (3.61) and the deepest nesting of the group, and with `hist`, because a cyclomatic complexity of 81 is the largest test-matrix problem in the file. Since all five share one file, I would also treat `_axes.py` as the unit of review: agree on a shared extraction pattern (normalize inputs, then draw) once, and apply it five times, rather than five unrelated cleanups.
+
+For context, the next-ranked critical functions outside this table are quiet structural debt rather than live risk, and they are not where I would spend the first week.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/matplotlib/matplotlib
+cd matplotlib
+git checkout ed25523818fb2fc1573225a5d13b6e32f4ff6070
+hotspots analyze . --mode snapshot --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze . --mode snapshot` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
