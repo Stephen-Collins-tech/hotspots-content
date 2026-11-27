@@ -1,0 +1,126 @@
+---
+title: "Wireshark's O-RAN and TNS dissectors carry the highest activity risk"
+titleSeo: "wireshark code health: dissect_tns_message and O-RAN dissectors lead refactoring priority"
+description: "A 458-path TNS dissector and a 399-path O-RAN section dissector were both changed within the last week, while proto.c contributes two more critical functions."
+introContent: "One function in Wireshark's Oracle TNS dissector has 458 independent execution paths and was changed seven days before this analysis. It sits at the extreme end of a list where cyclomatic complexity runs from 50 to 458."
+pubDate: 2026-11-27
+tags: ["oss", "c", "refactoring", "code-health"]
+draft: false
+repo: "wireshark/wireshark"
+commit: "4c04973d692c62445e9336fb080b6db275e5e3c4"
+language: "c"
+hotspots_version: "5.0.2"
+analyzed_at: "2026-11-27T12:14:08Z"
+clone_depth: 7195
+topRisk: 3.74
+topFunction: "dissect_oran_c_section"
+topFile: "epan/dissectors/packet-oran.c"
+qaSection:
+  - question: "What makes the cyclomatic complexity of dissect_tns_message a problem in wireshark?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a potential bug surface and a test case you would need to write. A value of 10 is moderate and 30 is already high, while `dissect_tns_message` in `epan/dissectors/packet-tns.c` has 458 paths and calls 92 distinct functions. That makes it practically impossible to test every path, and a change to one case of its message switch can have ripple effects through the broad set of functions it calls. It was also touched 145 times in the last year, so people are working in it constantly."
+  - question: "How do I reduce cyclomatic complexity in c?"
+    answer: "The main technique is extract-method: pull each branch of a large switch or if-chain into its own function and leave the original as a dispatcher. A cyclomatic complexity above 15 is a reasonable point to start splitting, and above 30 deserves immediate attention. In `dissect_tns_message`, a first step you could take today is moving the SET_PROTOCOL case, which contains two near-duplicate loops for request and response, into a single helper that takes the field identifiers as parameters. Repeating that for each case of the switch would reduce the cyclomatic complexity of the parent function."
+  - question: "Is wireshark actively maintained?"
+    answer: "Yes, going by the data. All five top hotspots are in the active tier, and `dissect_tns_message` was touched 145 times in the last year and last changed 7 days before the analysis, while `dissect_oran_c_section` and `dissect_oran_c` were each touched 100 times and last changed 3 days before the analysis. The two functions in `epan/proto.c` were touched 53 times in the last year and changed 0 days before the analysis. Across the repository, 138,614 of 167,600 functions are in the active tier. Active development and high structural complexity are not mutually exclusive, and the same functions that are being worked on the most are also the hardest to reason about."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out the commit I analyzed, 4c04973. Run `git checkout 4c04973` and then `hotspots analyze . --force` from the repository root. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently the code has changed, so functions that are both hard to understand and in changing code score highest. Dormant code carries lower near-term regression risk than code that is changing constantly. This helps focus refactoring effort where it reduces the chance of introducing bugs now, not just where the code looks complicated in the abstract. In this analysis, the top function's score is 3.74, against 1.56 for the highest-ranked quiet function."
+---
+
+I would start with `dissect_tns_message` in `epan/dissectors/packet-tns.c`: its cyclomatic complexity is 458, and the top-ranked `dissect_oran_c_section` sits at 399, against 50 for the fifth function on the list, `proto_registrar_dump_values`. A gap of roughly 350 to 400 points between the leaders and the fifth entry is a different category of problem from the rest of the table, not just a higher number on the same scale. Across the 167,600 functions in wireshark/wireshark, 9,862 land in the critical band, and all five of the top hotspots are in the active tier, which makes this live regression risk rather than a backlog item. `dissect_oran_c_section` leads with an activity-weighted risk score of 3.74, and the O-RAN pair was last changed 3 days before this analysis.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `dissect_oran_c_section` | epan/dissectors/packet-oran.c | 3.7 | 399 | 7 | 62 |
+| `dissect_oran_c` | epan/dissectors/packet-oran.c | 3.7 | 152 | 6 | 61 |
+| `dissect_tns_message` | epan/dissectors/packet-tns.c | 3.7 | 458 | 6 | 92 |
+| `proto_custom_set` | epan/proto.c | 3.6 | 60 | 6 | 34 |
+| `proto_registrar_dump_values` | epan/proto.c | 3.6 | 50 | 6 | 18 |
+
+Wireshark is mostly an active codebase, and that shapes how I read the numbers below.
+
+<BandChart active='138614' quiet='28986' />
+
+Of the 167,600 functions I analyzed, 138,614 are in the active tier and 28,986 are quiet. All five hotspots below are active, so none of them can be filed under dormant structural debt. The history signals I have are also mild: every one of these files shows zero bug-linked commits and zero reverts, and the bug-fix rates range from about 8% to 25%. I read that as maintainability and review-cost risk, not as evidence that anything is defective.
+
+The five functions fall into two groups: three protocol dissectors that are enormous single functions, and two routines in `epan/proto.c` that are smaller but sit in the core framework every dissector depends on.
+
+### `dissect_oran_c_section` — packet-oran.c
+
+<FunctionCard fn='dissect_oran_c_section' file='epan/dissectors/packet-oran.c' risk='3.74' band='critical' cc='399' nd='7' fo='62' touches='100' />
+
+This is the top-ranked function with an activity-weighted risk score of 3.74. It has 100 touches in the last year, was last changed 3 days before the analysis, and had 6 distinct authors in the last 90 days.
+
+<MetricBar label='Cyclomatic Complexity' value='399' threshold='30' max='460' />
+
+From the excerpt, the function parses the C-Plane section of the O-RAN fronthaul protocol. It takes 14 parameters, declares a long list of local state variables up front (fixed-size arrays for PRB flags and UE IDs, bitmask and subtree handles), and then branches on section type. One condition groups section types 0, 1, 2, 3, 5, 9, 10 and 11 as 'similar, so handle as common with per-type differences', with further type checks nested inside it. Several comments in that excerpt flag things I'd read as unfinished work, such as 'TODO: mark as ignored if SE6, SE12 or SE19 present'.
+
+That structure is a branch-per-section-type pattern, and the domain explains much of it: the protocol defines many section types and extensions. The cost still falls on whoever touches it. With 399 paths, a complete test suite would need hundreds of cases, and a nesting depth of 7 plus fan-out of 62 mean a change in one section-type branch is hard to reason about in isolation. A 100-touch history on a function this size is also where merge conflicts and accidental cross-branch edits are most likely.
+
+My recommendation is to split along the section-type boundary that the code already draws: pull the common ST0/1/2/3/5/9/10/11 handling into one helper and give the other section types their own functions, with the shared local state passed as a small struct instead of 14 parameters. The extensions are a second natural seam, since they are separate protocol concepts.
+
+### `dissect_oran_c` — packet-oran.c
+
+<FunctionCard fn='dissect_oran_c' file='epan/dissectors/packet-oran.c' risk='3.7' band='critical' cc='152' nd='6' fo='61' touches='100' />
+
+This is the caller of the function above, in the same file, with an activity-weighted risk score of 3.7 and an identical change history: 100 touches in the last year, 3 days since last change, 6 distinct authors in the last 90 days. Its cyclomatic complexity is 152, nesting depth 6, fan-out 61.
+
+The excerpt shows an entry-point dissector doing several jobs at once: setting protocol and info columns, building the subtree, reading the eAxC ID, looking up per-conversation flow state, allocating that state on first visit, and doing sequence-number checks that record unexpected sequence numbers in a results table. That combination of presentation, state management and protocol validation in one function is what drives the 61 distinct callees.
+
+The fact that both O-RAN functions share the same touch count and last-change date suggests they usually change together, which is what I'd expect from a caller and callee pair. My recommendation is to extract the conversation-state and sequence-analysis block into its own function first. The excerpt shows it runs only on the first visit of a frame, which makes it a plausible candidate for testing apart from the tree-building code.
+
+### `dissect_tns_message` — packet-tns.c
+
+<FunctionCard fn='dissect_tns_message' file='epan/dissectors/packet-tns.c' risk='3.67' band='critical' cc='458' nd='6' fo='92' touches='145' />
+
+This function has the highest cyclomatic complexity in the data, 458, and the highest fan-out, 92, with an activity-weighted risk score of 3.67. It was touched 145 times in the last year, most recently 7 days before the analysis, by 4 distinct authors in the last 90 days. Its bug-fix rate is about 7.6%, the lowest of the five.
+
+<MetricBar label='Fan-out' value='92' threshold='15' max='100' />
+
+The excerpt shows a switch over a data function ID, with each case parsing a different Oracle TNS message type. The SET_PROTOCOL case alone has two near-identical loops, one for the request side and one for the response side, each reading version bytes until a zero terminator and appending them to a subtree. The only differences are the field identifiers and a few surrounding items. There is also an early return to a separate OCI-specific dissector, `dissect_tns_oci_message`, for server responses to OCI clients, which shows the authors have already been peeling pieces off this function.
+
+That is the direction I'd continue. Make each case of the switch a function of its own, starting with the cases that duplicate request and response logic, and keep `dissect_tns_message` as a dispatcher. With 145 touches in a year, this is the most frequently changed function of the five, so every case extracted removes lines from the place that is edited most.
+
+### `proto_custom_set` — proto.c
+
+<FunctionCard fn='proto_custom_set' file='epan/proto.c' risk='3.62' band='critical' cc='60' nd='6' fo='34' touches='53' />
+
+This is a different kind of hotspot. At cyclomatic complexity 60 it is much smaller than the dissectors, but it lives in `epan/proto.c`, which the dissectors all depend on. It had 53 touches in the last year, was changed 0 days before the analysis, and has a bug-fix rate of about 24.5% with 2 distinct authors in the last 90 days.
+
+From the excerpt, it evaluates a list of custom column fields and writes comma-separated results into two caller-supplied character buffers, tracking two offsets and checking against a size limit before each separator. That is manual buffer management in C, where the offset arithmetic is part of the complexity beyond what the cyclomatic count captures. The loop handles several cases: a display filter that returns values, one that only passes or fails, and plain field lookups, with an occurrence index adjusting which value is picked. The comments contain several 'XXX' notes about unresolved design questions, such as how occurrence should apply when multiple fields are involved.
+
+The bug-fix rate is the highest in this list, but there are still no bug-linked commits or reverts recorded for the file, so I'd treat it as a prompt for careful review, not evidence of defects. My recommendation is to separate the 'filter returned values' branch from the 'filter passed or failed' branch and the plain-field branch, and to put the append-with-separator logic in one helper so the bounds check exists in one place instead of being repeated.
+
+### `proto_registrar_dump_values` — proto.c
+
+<FunctionCard fn='proto_registrar_dump_values' file='epan/proto.c' risk='3.58' band='critical' cc='50' nd='6' fo='18' touches='53' />
+
+This is the fifth function and the smallest by every structural measure, with cyclomatic complexity 50, nesting depth 6 and fan-out 18. It shares `proto.c`'s history: 53 touches in the last year, changed 0 days before the analysis, 2 distinct authors in the last 90 days, and a bug-fix rate of about 24.5%.
+
+Based on its name and the excerpt, it walks the registered header-field table, skips deregistered entries, protocols and text-only fields, and then selects a value-string, range-string, 64-bit value-string, true/false or unit-name table depending on the field's type and display flags. The condition that checks whether the type is one of roughly twenty numeric types is a long chain of equality comparisons, which contributes much of the complexity count without adding any real decision logic.
+
+This is the easiest fix on the list. Move the numeric-type check into a small predicate function and the table-selection logic into its own function, and the cyclomatic complexity should drop well below its current 50. It is a good first change for anyone wanting to build confidence in refactoring this file before touching `proto_custom_set`.
+
+## Where to start
+
+I would start with `dissect_tns_message`. It has the highest cyclomatic complexity and fan-out, and with 145 touches in the last year it is the most frequently changed function here, so every extracted case pays off quickly. Next I would take the section-type split in `dissect_oran_c_section` and the state-and-sequence extraction in `dissect_oran_c`, since they share a file, a change history and 6 recent authors, and are likely edited together. The two `proto.c` functions are cheap, low-risk practice for the same techniques, but because that file underpins every dissector, I would make sure any refactoring there has a test in place first.
+
+Other critical-band functions outside the top five are quiet-tier: structural debt, not live churn.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/wireshark/wireshark
+cd wireshark
+git checkout 4c04973d692c62445e9336fb080b6db275e5e3c4
+hotspots analyze . --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze .` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
