@@ -1,0 +1,120 @@
+---
+title: "pyenv's PyPy and RustPython scripts carry the highest activity risk"
+titleSeo: "pyenv code health: add_pypy.py and the python-build scripts lead refactoring priority"
+description: "Three of the five highest-risk functions in pyenv sit in plugins/python-build/scripts/add_pypy.py, with the other two in add_rustpython.py, so the top of the ranking is concentrated in release-automation scripts."
+introContent: "I expected pyenv's risk to sit in its shell core. Instead, the top five functions are all in two Python release-automation scripts, and three of them share a single file that was changed today."
+pubDate: 2026-11-28
+tags: ["oss", "shell", "refactoring", "code-health"]
+draft: true
+repo: "pyenv/pyenv"
+commit: "f357aa2dfb3c542841e6446f6607823204bba866"
+language: "shell"
+hotspots_version: "5.0.2"
+analyzed_at: "2026-11-28T11:35:04Z"
+clone_depth: 402
+topRisk: 2.11
+topFunction: "main"
+topFile: "plugins/python-build/scripts/add_pypy.py"
+qaSection:
+  - question: "What makes the nesting depth of 6 in `main` a problem in pyenv?"
+    answer: "Nesting depth is the deepest level of control structures stacked inside one another, and a depth of 4 or more makes code hard to reason about. The `main` function in add_pypy.py reaches 6, which means a reader tracks a release loop, an exclusion check, a per-target loop, an existence check and a write-or-print branch at the same time. Each added level multiplies the conditions that must be true for a line to run, which makes the function harder to test and easier to break when edited. Because the file was changed today, that difficulty applies right now, not at some later date."
+  - question: "How do I reduce nesting and fan-out in shell?"
+    answer: "The technique is extract-method, often combined with early returns to flatten conditions. For the `main` function in add_pypy.py, I would first move the per-release body into its own function, then move the write-or-dry-run branch into another, which should cut nesting depth from 6 to about 3. Depth above 4 is worth acting on, and fan-out above 15 is a strong signal. The add_pypy.py script is Python, but the same moves apply to shell functions: pull inner loops into named functions and use guard clauses to exit early."
+  - question: "Is pyenv actively maintained?"
+    answer: "The data points to yes. 65 of the 66 functions I analyzed are in the active tier. The top-ranked `main` in add_pypy.py has 2 touches in the last year and 0 days since last change, as do `parse_pypy_ver` and `parse_checksums_ext` in the same file. The two RustPython functions, `list_versions` and `main` in add_rustpython.py, each have 1 touch in the last year and were last changed 1 day ago. The one quiet function, `realpath_builtin` in src/realpath.c, has 3 touches in the last year and was last changed 81 days ago, so it is structural debt rather than live churn. Active development and structural complexity can coexist, and here they do."
+  - question: "How do I reproduce this analysis?"
+    answer: "The hotspots CLI is on GitHub. I analyzed commit f357aa2, so run `git checkout f357aa2` and then `hotspots analyze . --force` from the repository root. The same command works on any local git repo without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines a function's structural complexity (cyclomatic complexity, nesting depth and fan-out) with how much and how recently its file has changed, so functions that are both hard to understand and in changing code score the highest. A function with cyclomatic complexity 80 that has not been touched in two years scores much lower than one with complexity 20 that is touched every week, because the dormant function has lower near-term regression risk. This helps teams focus refactoring effort where it reduces the chance of bugs being introduced right now, not just where the code looks complicated in the abstract."
+---
+
+plugins/python-build/scripts/add_pypy.py holds 3 of the 5 highest-risk functions in my analysis of pyenv, so I would treat that module as the unit of review rather than any one function inside it. Its main function has an activity-weighted risk score of 2.11 and sits in the critical band, in a file with 2 touches in the last year and 0 days since last change, so it is recently changed code. The analysis covered 66 functions in pyenv/pyenv at commit f357aa2, 5 of them critical, and the other two top-five slots belong to add_rustpython.py in the same scripts directory.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `main` | plugins/python-build/scripts/add_pypy.py | 2.1 | 8 | 6 | 12 |
+| `list_versions` | plugins/python-build/scripts/add_rustpython.py | 1.9 | 6 | 3 | 12 |
+| `parse_pypy_ver` | plugins/python-build/scripts/add_pypy.py | 1.9 | 2 | 1 | 4 |
+| `main` | plugins/python-build/scripts/add_rustpython.py | 1.9 | 7 | 2 | 9 |
+| `parse_checksums_ext` | plugins/python-build/scripts/add_pypy.py | 1.9 | 3 | 1 | 5 |
+
+<BandChart active='65' quiet='1' />
+
+Almost everything I analyzed is in the active tier: 65 of 66 functions. That is worth stating up front, because it means the tier tells me little about ranking here. The differences come from complexity and from how the changes cluster in specific files. The one quiet function sits outside the top five, and I will leave it out of the sections below.
+
+The top five all live in `plugins/python-build/scripts/`. Those scripts look like generators that scrape upstream release information and write new version-definition files into the python-build plugin. That is a reasonable thing to automate, and it explains why they change often: every time PyPy or RustPython ships, someone may need to touch them.
+
+### `main` — add_pypy.py
+
+<FunctionCard fn='main' file='plugins/python-build/scripts/add_pypy.py' risk='2.11' band='critical' cc='8' nd='6' fo='12' touches='2' />
+
+I would start with `main` in add_pypy.py because it is the highest-ranked function in the analysis and it is in code that changed today. It has cyclomatic complexity of 8, nesting depth of 6 and fan-out of 12, and its activity-weighted risk score of 2.11 puts it in the critical band.
+
+The complexity count is moderate. The nesting is what stands out. From the source excerpt, the function fetches a checksums page, loops over the checksum blocks, filters out excluded releases, loops again over a binary and a source target, checks whether each output file already exists, formats a script template, and then branches between writing the file and printing it for a dry run. Six levels of nesting means a reader has to hold the page-scraping loop, the exclusion check, the per-target loop, the existence check and the write-or-print branch in their head at once. Fan-out of 12 adds broad coupling to the HTML session, path handling, the two parsing helpers and file I/O.
+
+The file-level history adds some supporting context. It has 2 commits in total, a bug-fix rate of 50%, no bug-linked commits, no reverts, 2 distinct authors in the last 90 days and a review-comment density of 2. With only 2 commits, a 50% bug-fix rate means one commit, so I would not read much into it. I would read it as a file that is still settling, not as evidence that `main` is defective.
+
+My recommendation is extract-method. Pull the per-release body into a function that takes a checksum block and returns the list of files to write, and pull the write-or-dry-run branch into its own small function. That should take nesting depth from 6 to roughly 3 and leave `main` as a loop over releases.
+
+<FunctionCard fn='parse_pypy_ver' file='plugins/python-build/scripts/add_pypy.py' risk='1.86' band='moderate' cc='2' nd='1' fo='4' touches='2' />
+
+The two parsers in add_pypy.py share a file and a score, so I am grouping them. Both have an activity-weighted risk score of 1.86 and both are in the moderate band. Their cyclomatic complexity is 2 and 3, nesting depth is 1, and fan-out is 4 and 5. Structurally they are small. They rank in the top five because they sit in a file that was changed today, not because they are hard to read. In a moderate band they bear watching, not a refactoring priority.
+
+From the source excerpt, `parse_pypy_ver` uses a regular expression to pull the Python and PyPy version strings out of a checksum block, and returns an empty string when it does not find exactly one distinct match. That return value is an inconsistency worth a look. The signature declares a pair of strings, but the failure path returns a single empty string, so a caller that unpacks the result will fail in a way the type hint does not predict. I am inferring that from the excerpt, not from runtime behavior, but it is cheap to verify.
+
+`parse_checksums_ext` builds a mapping of platform names to checksums by running one regular expression per platform, then returns a dictionary keyed by names that the script template consumes. The excerpt shows it indexing the first match for each platform directly, with no visible guard for a platform that has no match. If upstream ever drops or renames a platform in the checksum page, I would expect that to surface as an index error, not a readable message. A guarded lookup that names the missing platform would be an easy improvement.
+
+The file-level history is the same as for `main`: 2 commits, a 50% bug-fix rate, no reverts, 2 distinct authors in the last 90 days. These are maintainability concerns in small functions, and the fix is small too. A few unit tests with sample checksum text would pin down both parsers.
+
+### `list_versions` — add_rustpython.py
+
+<FunctionCard fn='list_versions' file='plugins/python-build/scripts/add_rustpython.py' risk='1.9' band='high' cc='6' nd='3' fo='12' touches='1' />
+
+`list_versions` has an activity-weighted risk score of 1.9 and is in the high band, with cyclomatic complexity of 6, nesting depth of 3 and fan-out of 12. It was last changed 1 day ago and has 1 touch in the last year.
+
+From the excerpt, it pages through a tags endpoint, filters tag names to a three-part numeric version pattern, compares each against a minimum version, collects name and commit SHA pairs, follows the next-page link, and finally sorts the result. That is several responsibilities in one function: HTTP pagination, tag filtering and version ordering. The version-tuple conversion appears in both the filter and the sort, which is a small duplication I would pull into a helper.
+
+Fan-out of 12 is the same as `main` in add_pypy.py, and the nesting depth of 3 is more manageable. The history here is thin: the file has 1 commit, no bug-fix signal, no reverts, 1 author in the last 90 days and no review comments. Nothing in the history raises concern. I would classify this as maintainability debt in a young file, and I would act on it while the file is small.
+
+My recommendation is to split pagination from filtering. A generator that yields raw tags page by page, plus a separate function that filters and sorts, would make each piece testable without mocking the whole session.
+
+### `main` — add_rustpython.py
+
+<FunctionCard fn='main' file='plugins/python-build/scripts/add_rustpython.py' risk='1.86' band='high' cc='7' nd='2' fo='9' touches='1' />
+
+### `parse_checksums_ext` — add_pypy.py
+
+<FunctionCard fn='parse_checksums_ext' file='plugins/python-build/scripts/add_pypy.py' risk='1.86' band='moderate' cc='3' nd='1' fo='5' touches='2' />
+
+This `main` has an activity-weighted risk score of 1.86, in the high band, with cyclomatic complexity of 7, nesting depth of 2 and fan-out of 9. It was last changed 1 day ago, with 1 touch in the last year.
+
+The excerpt shows an orchestration function: it builds an HTTP session, optionally attaches an authorization header from an environment variable, iterates the versions from `list_versions`, skips any whose output file already exists, formats a script template, and either prints it for a dry run or writes it. It returns 0 if anything was added and 1 otherwise. That last detail is worth knowing: an exit code of 1 for no new versions is a design choice that a calling workflow has to interpret correctly, and I would want it documented where the workflow consumes it.
+
+Compared with the PyPy `main`, this one is flatter. Nesting depth of 2 against 6 is the clearest difference, and it shows that the same job can be written with much less indentation. That makes the RustPython script a useful template for flattening the PyPy one.
+
+The file history matches `list_versions`: 1 commit, no bug-fix signal, 1 author in the last 90 days. I would put this at low urgency. The practical step is to move the write-or-print branch into a small helper, which would also remove the duplication with the PyPy script.
+
+## Where to start
+
+I would start with `main` in add_pypy.py. It has the highest risk score, the deepest nesting in the set at 6, and it shares a file with two other top-five functions that were also changed today. A refactor there can be reviewed alongside the two parsers in one pass.
+
+Second, I would add tests for `parse_pypy_ver` and `parse_checksums_ext` using real sample checksum text, including a case where a platform is missing. Third, I would look at whether the two scripts should share a helper for the write-or-dry-run branch, since the logic appears in both.
+
+None of this says the scripts are broken. The risk scores say these are the places where complexity and recent change overlap, and that is where a review is most likely to pay off.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/pyenv/pyenv
+cd pyenv
+git checkout f357aa2dfb3c542841e6446f6607823204bba866
+hotspots analyze . --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze .` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
