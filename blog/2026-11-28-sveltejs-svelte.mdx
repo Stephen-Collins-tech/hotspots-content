@@ -1,0 +1,126 @@
+---
+title: "Svelte's batch.js carries the highest activity risk: 3 of 5 top functions in one file"
+titleSeo: "svelte code health: batch.js reactivity hotspots lead refactoring priority"
+description: "Three of svelte's five highest activity-risk functions sit in packages/svelte/src/internal/client/reactivity/batch.js, with the other two in runtime.js, all in code touched today."
+introContent: "Three of the five riskiest functions in svelte live in a single file, batch.js, and all five were modified on the day I ran the analysis. The reactivity core is where complexity and change are concentrated."
+pubDate: 2026-11-28
+tags: ["oss", "javascript", "refactoring", "code-health"]
+draft: false
+repo: "sveltejs/svelte"
+commit: "fd610a266ff5d9ff6fdb502c2987997049ca991c"
+language: "javascript"
+hotspots_version: "5.0.2"
+analyzed_at: "2026-11-28T11:37:55Z"
+clone_depth: 800
+topRisk: 3.52
+topFunction: "flush_queued_effects"
+topFile: "packages/svelte/src/internal/client/reactivity/batch.js"
+qaSection:
+  - question: "What makes the cyclomatic complexity of `get` a problem in svelte?"
+    answer: "Cyclomatic complexity counts the independent execution paths through a function, and each path is a potential bug surface and a test case you need to write. The `get` function in runtime.js has a cyclomatic complexity of 64, and 30 or more is already high. It also calls 22 distinct functions, so a change to any of its branches can ripple into many places. Because it is the signal-read path that much of the reactivity system depends on, that combination makes it hard to change confidently."
+  - question: "How do I reduce cyclomatic complexity in javascript?"
+    answer: "The usual technique is extract-method, often combined with decompose-conditional. As a rule of thumb, a function above 15 paths deserves a look and above 30 deserves prompt attention. A concrete first step for `get` is to move the development-only diagnostics block, which sits behind a flag, into its own function; that alone should remove a large share of the 64 paths from the main logic. For `flush_queued_effects`, extracting the eager-block pass would bring the nesting depth down from 7 to around 4."
+  - question: "Is svelte actively maintained?"
+    answer: "The data says yes. All five top functions are in the active tier and were changed on the day of analysis with 0 days since last change; `flush_queued_effects`, `mark`, and `activate` have 90 touches in the last year, and `get` and `is_dirty` have 39. The files also show 6 to 7 distinct authors in the last 90 days, so work is not concentrated in one person. Active development and high structural complexity can coexist, and in the reactivity core they clearly do."
+  - question: "How do I reproduce this analysis?"
+    answer: "Use the hotspots CLI from GitHub and check out commit fd610a2 of sveltejs/svelte. Then run `hotspots analyze . --force` from the repo root. The same command works on any local git repository without configuration."
+  - question: "What does activity-weighted risk mean?"
+    answer: "Activity-weighted risk combines structural complexity (cyclomatic complexity, nesting depth, and fan-out) with how much and how recently the code has changed. A function that is hard to understand and also changing now scores highest. A very complex function that has not been touched in two years scores lower than a moderately complex one touched every week, because its near-term regression risk is lower. The point is to focus refactoring where it reduces the chance of introducing bugs right now, not just where the code looks complicated in the abstract."
+---
+
+I would start with `batch.js` rather than any single function in it: three of the top five hotspots in sveltejs/svelte (`flush_queued_effects`, `mark`, and `activate`) live in packages/svelte/src/internal/client/reactivity/batch.js, each with an activity-weighted risk score between 3.32 and 3.52 and 90 touches in the last year. All of them were changed today, which makes this a review-now item and not a backlog item. The other two, `get` and `is_dirty`, are in runtime.js, so the entire top five is the client reactivity engine, out of 6,211 functions analyzed and 245 in the critical band.
+
+The table below ranks functions by **activity-weighted risk** — a score that multiplies structural complexity by recent commit frequency. A function that is both hard to understand (high cyclomatic complexity) and actively changing is a higher priority than one that is complex but untouched. CC = cyclomatic complexity (independent execution paths); ND = max nesting depth; FO = fan-out (distinct callees).
+
+## Top 5 Hotspots
+
+| Function | File | Risk | CC | ND | FO |
+|---|---|---|---|---|---|
+| `flush_queued_effects` | packages/svelte/src/internal/client/reactivity/batch.js | 3.5 | 30 | 7 | 9 |
+| `mark` | packages/svelte/src/internal/client/reactivity/batch.js | 3.4 | 19 | 5 | 7 |
+| `get` | packages/svelte/src/internal/client/runtime.js | 3.4 | 64 | 6 | 22 |
+| `activate` | packages/svelte/src/internal/client/reactivity/batch.js | 3.3 | 15 | 4 | 4 |
+| `is_dirty` | packages/svelte/src/internal/client/runtime.js | 3.3 | 18 | 6 | 6 |
+
+## Codemod / Tooling Files in Results
+
+The benchmarking/analyze-compiler-profile.js file appears in the context list (`analyze_compiler_profiles`, `normalize_url`, `get_stack`, `get_frame_index`). It is a developer tooling script and not part of the shipped runtime or compiler. If you only want to track product code, add `{ "exclude": ["benchmarking/"] }` to `.hotspotsrc.json`.
+
+<BandChart active='3041' quiet='3170' />
+
+The tier split is nearly even across the repo, but the top five are all active, and every one has zero days since last change. That is the argument for treating this as a review-now list. None of this is a judgment on the maintainers: it is what complex code looks like when it sits in the part of the project that is being worked on hardest.
+
+One thing I want to flag before the individual sections. The three batch.js functions share the same file-level history: 90 commits in the last year, a bug-fix rate of 64%, one revert, 6 distinct authors in the last 90 days, and a pull-request review comment density of 18.2. The two runtime.js functions share theirs: 39 commits, a bug-fix rate of 72%, no reverts, 7 distinct authors in the last 90 days, and a comment density of 4.4. These are file-level signals, not proof that any single function is defective. They do tell me where review time is likely already being spent, and batch.js has the denser review history of the two.
+
+### `flush_queued_effects` — batch.js
+
+<FunctionCard fn='flush_queued_effects' file='packages/svelte/src/internal/client/reactivity/batch.js' risk='3.52' band='active' cc='30' nd='7' fo='9' touches='90' />
+
+I would start with `flush_queued_effects` because it has the highest activity-weighted risk score in the repo (3.52), a cyclomatic complexity of 30, and a nesting depth of 7, in a file touched 90 times in the last year.
+
+<MetricBar label='Max Nesting Depth' value='7' threshold='4' max='10' />
+
+From the excerpt, the function walks a queue of effects, skips destroyed, inert, skipped, or deferred ones, runs the dirty ones, and then handles a second pass over 'eager block effects' that includes an ancestor-before-descendant ordering step and a try/finally that restores saved module-level state. The nesting depth of 7 comes from that second pass: a loop inside a loop inside a try inside a conditional inside the outer loop. The function also reads and writes several module-level variables (the eager block set, the eager block writes map, the teardown context), which fan-out of 9 undercounts as coupling because those are shared state and not calls.
+
+My recommendation: extract the eager-block pass into its own function with an explicit parameters-in, state-restored-out contract. The ancestor ordering loop can come out separately as a small helper that takes an effect and a set and returns an ordered list. That would take the nesting depth from 7 to roughly 4 without changing behavior, and it makes the save-and-restore of module state something a test can assert directly.
+
+### `mark` — batch.js
+
+<FunctionCard fn='mark' file='packages/svelte/src/internal/client/reactivity/batch.js' risk='3.4' band='active' cc='19' nd='5' fo='7' touches='90' />
+
+`mark` has an activity-weighted risk score of 3.4 with a cyclomatic complexity of 19. It propagates a status to the reactions of a signal and recurses into itself for derived reactions. The excerpt shows a runes-versus-legacy check, a cycle guard that activates a seen set once a dependency counter crosses 100,000, and three distinct branches (eager effects, deriveds, plain effects) with different scheduling rules.
+
+The recursion plus the lazily activated seen set is the part I would be cautious about. The guard only exists on a high-count path, so most tests will never exercise it, and the comment in the code ties it to a specific issue with a very large graph. A branch that only fires at scale is exactly the kind a coverage report can hide.
+
+My recommendation: split the per-reaction body into three named handlers, one per branch, so `mark` becomes a loop that dispatches. Then add a test that forces the seen-set path with a small threshold injected for the test.
+
+### `get` — runtime.js
+
+<FunctionCard fn='get' file='packages/svelte/src/internal/client/runtime.js' risk='3.38' band='active' cc='64' nd='6' fo='22' touches='39' />
+
+`get` is the outlier in this list: the lowest-touch function of the five at 39 touches in the last year, but with by far the largest structure. Its cyclomatic complexity of 64 is more than double `flush_queued_effects`, and its fan-out of 22 is well past the level I treat as a strong coupling signal.
+
+<MetricBar label='Cyclomatic Complexity' value='64' threshold='30' max='80' />
+
+This reads as the central signal-read path. The excerpt shows it registering dependencies on the active reaction, handling late reads after an await, and then a large block gated on a development flag covering reactivity-loss warnings and tracing. Dependency tracking and development diagnostics share one function body, and that is where most of the 64 paths come from.
+
+My recommendation: the development-only block is the cleanest first cut. Move it into a separate function called behind the same flag, which should remove a large share of the paths from the hot read path and leave the production logic readable on its own. After that, the dependency registration branches (in-update versus late read) are the next natural split. Because `get` is called from everywhere, I would do this in small steps with the existing suite as the safety net.
+
+### `activate` — batch.js
+
+<FunctionCard fn='activate' file='packages/svelte/src/internal/client/reactivity/batch.js' risk='3.32' band='active' cc='15' nd='4' fo='4' touches='90' />
+
+`activate` is the smallest of the three batch.js entries (cyclomatic complexity 15, nesting 4, fan-out 4) but shares the same 90-touch history. It sets the current batch and view, resets state in several early-return cases, and then builds a values map that overrides values from other batches, folding earlier intersecting batches into this one. The comments describe this as 'time travelling' between batches.
+
+The metrics make this look manageable. The risk is conceptual: the function encodes rules about which batches fold into which, and those rules interact with `mark` and `flush_queued_effects` through shared module state. I would treat it as part of the same review as the other two and not in isolation.
+
+My recommendation: pull the loop over other batches into a named function that returns the folded list and the value overrides, so the early-return cases and the batch-merging logic stop sharing one body.
+
+### `is_dirty` — runtime.js
+
+<FunctionCard fn='is_dirty' file='packages/svelte/src/internal/client/runtime.js' risk='3.28' band='active' cc='18' nd='6' fo='6' touches='39' />
+
+`is_dirty` has a cyclomatic complexity of 18 and a nesting depth of 6, and I would read the nesting as the main concern. It decides whether a reaction needs to rerun, with separate paths for assigned deriveds, dirty flags, and a dependency walk that either compares versions or consults a batch-aware check. Inside the dependency walk there is a memoization branch that only activates after a counter exceeds 100,000, the same scale-triggered pattern as in `mark`.
+
+The duplicated threshold idea across `mark` and `is_dirty` is worth noting. Both guard against the same class of large-graph blowup in different files, and the `is_dirty` comment explicitly references `Batch#mark`. Those two safeguards are coupled by intent, so a change to one probably needs a look at the other.
+
+My recommendation: extract the non-batch dependency walk, including the memo handling, into its own function. That isolates the scale-triggered path and cuts the nesting depth by two levels.
+
+## Where to start
+
+I would review batch.js as one unit, starting with `flush_queued_effects`, then `mark`, then `activate`, because they share module state and a single file history of 90 commits. In parallel, I would peel the development-only diagnostics out of `get` in runtime.js, since that gives the largest single reduction in paths (cyclomatic complexity 64) for the least behavioral risk.
+
+For framing, a few critical-band functions outside the top five are quiet: they were touched once in the last year and have been unchanged for months, so they are quiet debt, not a live risk.
+
+## Reproduce This Analysis
+
+```bash
+git clone https://github.com/sveltejs/svelte
+cd svelte
+git checkout fd610a266ff5d9ff6fdb502c2987997049ca991c
+hotspots analyze . --force
+```
+
+To run the same analysis on your own codebase, run `hotspots analyze .` in any local git repo — no configuration required.
+
+_I use Hotspots to highlight structural and activity risk — not "bad code." I treat these findings as a prioritization aid, not a bug predictor. [Editorial policy →](https://github.com/Stephen-Collins-tech/hotspots-content#editorial-policy)_
